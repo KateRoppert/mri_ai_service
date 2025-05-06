@@ -1,10 +1,10 @@
 import os
 import pydicom
 import json
-import argparse  # Для CLI
-import logging   # Для логирования
-import sys       # Для sys.exit
-from pathlib import Path # Для удобной работы с путями
+import argparse
+import logging
+import sys
+from pathlib import Path
 
 # --- Глобальная настройка логгера ---
 logger = logging.getLogger(__name__)
@@ -187,7 +187,6 @@ def extract_metadata(dicom_dir, output_dir):
             except Exception as e:
                 logger.error(f"    Ошибка при обработке файла {src_file_path}: {e}", exc_info=True)
                 error_files += 1
-                # Записываем пустой файл или файл с ошибкой? Пока просто пропускаем запись.
                 # Можно добавить запись файла с сообщением об ошибке:
                 # try:
                 #     with open(json_file_path, 'w', encoding='utf-8') as f:
