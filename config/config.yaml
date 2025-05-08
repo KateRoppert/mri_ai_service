@@ -36,13 +36,13 @@ steps:
   quality_metrics:
     anisotropy_thresh: 3.0
   mriqc:
-    enabled: true              # true - запускать, false - пропустить
+    enabled: false              # true - запускать, false - пропустить
     report_type: "both"        # participant, group, или both
     n_procs: 2               
     n_threads: 4             
     mem_gb: 8                 
   mriqc_interpretation:
-    enabled: true 
+    enabled: false
   preprocessing:
     keep_intermediate_files: false
     intensity_normalization:
