@@ -1,0 +1,67 @@
+# Базовые пути
+paths:
+  raw_input_dir: "/home/roppert/work/mri_ai_service/tests/sample_data"
+  output_base_dir: "/home/roppert/work/pipeline_results"
+  template_path: "/home/roppert/work/mri_ai_service/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
+  # Имена поддиректорий внутри папки запуска
+  subdirs:
+    bids_dicom: "bids_data_dicom"
+    dicom_checks: "dciodvfy_reports"
+    dicom_meta: "dicom_metadata"
+    bids_nifti: "bids_data_nifti"
+    validation_reports: "validation_results" # Для отчета bids-validator и лога шага 5
+    fast_qc_reports: "bids_quality_metrics"
+    mriqc_output: "mriqc_output"
+    mriqc_interpret: "mriqc_interpretation"
+    transforms: "transformations"
+    preprocessed: "preprocessed_data"
+    logs: "logs" # Директория для лог-файлов шагов пайплайна
+
+# Пути к исполняемым файлам (укажите полный путь или 'имя_команды', если она в PATH)
+executables:
+  dcm2niix: "/home/roppert/abin/dcm2niix_lnx/dcm2niix"  # Предполагаем, что нужен для шага 4 (нужно проверить скрипт)
+  dciodvfy: "/usr/bin/dciodvfy"
+  bids_validator: "/usr/local/bin/bids-validator"
+  mriqc: "/home/roppert/work/mri_ai_service/venv/bin/mriqc"
+  # FSL BET обычно находится через PATH или FSLDIR, но можно указать явно, если нужно
+  # fsl_bet: "/path/to/fsl/bin/bet"
+
+# Параметры для конкретных шагов пайплайна
+steps:
+  reorganize_folders: {} # Нет специфичных параметров пока
+  dicom_standard_check: {}
+  extract_metadata: {}
+  convert_dicom_to_nifti: {}
+  bids_validation: {}
+  quality_metrics:
+    anisotropy_thresh: 3.0
+  mriqc:
+    enabled: true              # true - запускать, false - пропустить
+    report_type: "both"        # participant, group, или both
+    n_procs: 2               
+    n_threads: 4             
+    mem_gb: 8                 
+  mriqc_interpretation:
+    enabled: true 
+  preprocessing:
+    keep_intermediate_files: false
+    intensity_normalization:
+      method: "HistogramMatching" # Пока только один метод, но можно расширить
+      # Другие параметры для HistogramMatching, если нужны
+    bias_field_correction:
+      method: "N4BiasFieldCorrection" # Пока только один метод
+      sitk_shrinkFactor: 4
+      # sitk_numberOfIterations: [50, 50, 50, 50] # Можно задать явно количество итераций для каждого уровня
+      # sitk_convergenceThreshold: 0.0
+    registration:
+      method: "ANTsPy" # Пока только один метод
+      ants_transform_type: "SyN" # Тип трансформации для ANTs
+      # ants_metric: "MI" # Можно добавить параметры метрики схожести
+      # ants_iterations: "100x70x50x20" # Параметры итераций ANTs
+      # ants_regularization: "Gauss[3,0]"
+      # ants_smoothing_sigmas: "3x2x1x0vox"
+    skull_stripping:
+      method: "FSL_BET" # Пока только один метод
+      bet_fractional_intensity_threshold: 0.5 # Параметр -f для BET
+      bet_robust: true # Параметр -R для BET
+      # bet_options: "-B -f 0.4" # Можно передать строку с доп. опциями BET, если интерфейс Nipype не все поддерживает
