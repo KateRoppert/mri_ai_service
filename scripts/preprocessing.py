@@ -1,4 +1,5 @@
 import os
+import sys 
 import glob
 import shutil
 import json
@@ -8,12 +9,13 @@ import subprocess
 import argparse
 from pathlib import Path
 from datetime import datetime
+import numpy as np 
 
-import yaml # <<< Добавлен импорт для чтения конфига
+import yaml  # Для чтения конфига
 import SimpleITK as sitk
 from nipype.interfaces.fsl import BET, FSLCommand
-from nipype.interfaces.base import Undefined
-import ants
+from nipype.interfaces.base import Undefined # Для проверки вывода Nipype
+import ants # Для ANTsPy
 
 # --- Настройка логгера ---
 logger = logging.getLogger(__name__)
@@ -22,270 +24,432 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s.%(funcNam
 
 # Глобальные переменные
 fsl_present = None
-ANISOTROPY_THRESHOLD = 3.0 # Значение по умолчанию, может быть переопределено в будущем
+ANISOTROPY_THRESHOLD = 3.0 # Значение по умолчанию
 
 def setup_main_logging(log_file_path: str, console_level: str = "INFO"):
-    """Настраивает основной логгер скрипта."""
-    if logger.hasHandlers(): logger.handlers.clear()
-    # Консоль
+    """
+    Настраивает основной логгер скрипта: вывод в консоль и в указанный файл.
+    """
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Консольный обработчик
     ch = logging.StreamHandler(sys.stdout)
-    try: ch.setLevel(getattr(logging, console_level.upper()))
-    except AttributeError: ch.setLevel(logging.INFO); print(f"WARN: Invalid console log level '{console_level}'. Using INFO.")
-    ch.setFormatter(formatter); logger.addHandler(ch)
-    # Файл
+    try:
+        ch.setLevel(getattr(logging, console_level.upper()))
+    except AttributeError:
+        ch.setLevel(logging.INFO)
+        print(f"Предупреждение: Неверный уровень логирования '{console_level}'. Используется INFO.")
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    # Файловый обработчик
     try:
         log_dir = os.path.dirname(log_file_path)
-        if log_dir: os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(log_file_path, encoding='utf-8', mode='a')
-        fh.setLevel(logging.DEBUG); fh.setFormatter(formatter); logger.addHandler(fh)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        fh = logging.FileHandler(log_file_path, encoding='utf-8', mode='a') # Дозапись в лог
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
         logger.debug(f"Основное логирование в файл настроено: {log_file_path}")
-    except Exception as e: print(f"CRITICAL ERROR: Failed to setup main log file {log_file_path}: {e}"); sys.exit(1) # Выход, если лог не настроить
+    except Exception as e:
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось настроить основной файловый лог {log_file_path}: {e}")
+        # Не выходим, т.к. логгер консоли может работать
 
 def check_fsl_availability():
-    """Проверяет доступность FSL."""
+    """
+    Проверяет доступность FSL (команды 'bet') и устанавливает глобальную переменную fsl_present.
+    """
     global fsl_present
-    if fsl_present is not None: return fsl_present
+    if fsl_present is not None: # Проверяем только один раз
+        return fsl_present
+
     try:
-        FSLCommand.check_fsl(); logger.info("Проверка FSL: Найден через Nipype."); fsl_present = True
-    except Exception:
-        logger.warning("Проверка FSL: Nipype не нашел FSL. Проверка PATH...");
-        try: result = subprocess.run(['which', 'bet'], check=True, capture_output=True, text=True)
-             logger.info(f"Проверка FSL: 'bet' найден в PATH: {result.stdout.strip()}"); fsl_present = True
-        except: logger.error("Проверка FSL: 'bet' НЕ НАЙДЕН в PATH. Удаление черепа не будет выполнено."); fsl_present = False
+        FSLCommand.check_fsl() # Пытаемся через Nipype
+        logger.info("Проверка FSL: Найден через Nipype.")
+        fsl_present = True
+    except Exception as e:
+        logger.warning(f"Проверка FSL: Nipype не нашел FSL: {e}")
+        logger.info("Проверка FSL: Попытка найти 'bet' в системном PATH...")
+        try:
+            # Пытаемся через subprocess 'which'
+            result = subprocess.run(['which', 'bet'], check=True, capture_output=True, text=True)
+            logger.info(f"Проверка FSL: 'bet' найден в PATH: {result.stdout.strip()}")
+            fsl_present = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.error(
+                "Проверка FSL: Команда 'bet' НЕ найдена в PATH. "
+                "Шаг удаления черепа (skull stripping) не будет выполнен."
+            )
+            fsl_present = False
     return fsl_present
 
 def create_output_paths(
-    input_nifti_path_str: str, input_root_str: str,
-    output_root_prep_str: str, output_root_tfm_str: str
+    input_nifti_path_str: str,
+    input_root_str: str,
+    output_root_prep_str: str,
+    output_root_tfm_str: str
 ) -> tuple[Path, Path]:
-    """Создает выходные пути и директории."""
-    input_path = Path(input_nifti_path_str); input_root = Path(input_root_str)
-    output_root_prep = Path(output_root_prep_str); output_root_tfm = Path(output_root_tfm_str)
-    try: relative_path = input_path.relative_to(input_root)
-    except ValueError: logger.warning(f"Не удалось опред. отн. путь {input_path} от {input_root}."); relative_path = Path(input_path.name)
+    """
+    Создает и возвращает пути для конечного предобработанного файла
+    и директории для хранения трансформаций, сохраняя относительную структуру.
+
+    Args:
+        input_nifti_path_str: Путь к исходному NIfTI файлу.
+        input_root_str: Корневая директория входных данных.
+        output_root_prep_str: Корневая директория для предобработанных файлов.
+        output_root_tfm_str: Корневая директория для трансформаций.
+
+    Returns:
+        tuple[Path, Path]: (Путь к финальному файлу, Путь к директории трансформаций).
+
+    Raises:
+        OSError: Если не удалось создать выходные директории.
+    """
+    input_path = Path(input_nifti_path_str)
+    input_root = Path(input_root_str)
+    output_root_prep = Path(output_root_prep_str)
+    output_root_tfm = Path(output_root_tfm_str)
+
+    try:
+        # Определяем относительный путь файла внутри входной директории
+        relative_path = input_path.relative_to(input_root)
+    except ValueError:
+        # Если файл не находится внутри input_root, используем только имя файла
+        logger.warning(
+            f"Не удалось определить относительный путь для {input_path} от {input_root}. "
+            f"Результаты будут сохранены в корне выходных директорий."
+        )
+        relative_path = Path(input_path.name)
+
+    # Формируем путь к финальному предобработанному файлу
     final_prep_path = output_root_prep / relative_path
+    # Формируем путь к директории трансформаций для этого файла
     transform_dir_name = input_path.name.replace(".nii.gz", "").replace(".nii", "")
     transform_dir = output_root_tfm / relative_path.parent / transform_dir_name
+
+    # Создаем необходимые директории
     try:
         final_prep_path.parent.mkdir(parents=True, exist_ok=True)
         transform_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e: logger.error(f"Ошибка создания выходных директорий для {input_path.name}: {e}"); raise
+    except OSError as e:
+        logger.error(f"Ошибка создания выходных директорий для {input_path.name}: {e}")
+        raise # Передаем ошибку выше
+
     logger.debug(f"Путь к предобработанному файлу: {final_prep_path}")
     logger.debug(f"Директория для трансформаций: {transform_dir}")
     return final_prep_path, transform_dir
 
-# === Функции шагов предобработки (теперь принимают словарь параметров) ===
 
 def original_bias_field_correction(
     input_img_path_str: str,
     out_path_str: str,
-    params: dict # <<< Параметры N4 из конфига
+    params: dict
 ) -> sitk.Image:
-    """Выполняет N4 коррекцию поля смещения."""
-    logger.info(f"  N4 Bias Field Correction: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
-    raw_img_sitk = sitk.ReadImage(input_img_path_str, sitk.sitkFloat32)
-    head_mask = sitk.LiThreshold(raw_img_sitk, 0, 1) # Маска по порогу Li
+    """
+    Выполняет N4 коррекцию поля смещения с использованием SimpleITK и параметров из конфига.
 
-    # Используем параметры из конфига или значения по умолчанию
+    Args:
+        input_img_path_str: Путь к входному изображению.
+        out_path_str: Путь для сохранения скорректированного изображения.
+        params (dict): Словарь с параметрами для N4 (например, 'sitk_shrinkFactor').
+
+    Returns:
+        sitk.Image: Логарифм поля смещения.
+    """
+    step_name = "N4 Bias Field Correction"
+    logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
+
+    # Чтение входного изображения
+    raw_img_sitk = sitk.ReadImage(input_img_path_str, sitk.sitkFloat32)
+
+    # Создание маски головы по порогу Li
+    head_mask = sitk.LiThreshold(raw_img_sitk, 0, 1)
+
+    # Получение параметров из конфига или использование значений по умолчанию
     shrinkFactor = params.get('sitk_shrinkFactor', 4)
-    n_iterations = params.get('sitk_numberOfIterations', [50] * shrinkFactor) # По умолчанию 50 итераций на каждом уровне
+    # По умолчанию 50 итераций на каждом уровне масштабирования
+    n_iterations = params.get('sitk_numberOfIterations', [50] * shrinkFactor)
     conv_thresh = params.get('sitk_convergenceThreshold', 0.0)
 
-    # Убедимся, что n_iterations имеет правильную длину
+    # Валидация и подгонка длины списка итераций
     if len(n_iterations) != shrinkFactor:
-        logger.warning(f"Длина sitk_numberOfIterations ({len(n_iterations)}) не совпадает с shrinkFactor ({shrinkFactor}). Используется усеченный/дополненный список.")
-        n_iterations = (n_iterations * shrinkFactor)[:shrinkFactor] # Простой способ подогнать длину
+        logger.warning(
+            f"    {step_name}: Длина sitk_numberOfIterations ({len(n_iterations)}) "
+            f"не совпадает с shrinkFactor ({shrinkFactor}). Используется адаптированный список."
+        )
+        # Просто повторяем или обрезаем список до нужной длины
+        n_iterations = (n_iterations * shrinkFactor)[:shrinkFactor]
 
-    logger.debug(f"    Параметры N4: shrinkFactor={shrinkFactor}, iterations={n_iterations}, convergence={conv_thresh}")
+    logger.debug(f"    {step_name} параметры: shrinkFactor={shrinkFactor}, iterations={n_iterations}, convergence={conv_thresh}")
 
+    # Уменьшение изображения и маски
     inputImage_shrink = sitk.Shrink(raw_img_sitk, [shrinkFactor] * raw_img_sitk.GetDimension())
     maskImage_shrink = sitk.Shrink(head_mask, [shrinkFactor] * raw_img_sitk.GetDimension())
 
+    # Настройка и выполнение N4 корректора
     bias_corrector = sitk.N4BiasFieldCorrectionImageFilter()
     bias_corrector.SetMaximumNumberOfIterations(n_iterations)
-    if conv_thresh > 0: # Устанавливаем порог, только если он задан
+    if conv_thresh > 0: # Устанавливаем порог сходимости, только если он задан
         bias_corrector.SetConvergenceThreshold(conv_thresh)
 
-    logger.debug("    Выполнение N4...")
-    corrected_shrink = bias_corrector.Execute(inputImage_shrink, maskImage_shrink)
-    logger.debug("    Получение логарифма поля смещения...")
+    logger.debug("    Выполнение N4 коррекции на уменьшенном изображении...")
+    _ = bias_corrector.Execute(inputImage_shrink, maskImage_shrink) # Результат не используется напрямую
+
+    logger.debug("    Получение логарифма поля смещения для полного разрешения...")
     log_bias_field = bias_corrector.GetLogBiasFieldAsImage(raw_img_sitk)
-    logger.debug("    Применение коррекции...")
+
+    logger.debug("    Применение коррекции к изображению полного разрешения...")
+    # Добавляем малое число для стабильности деления
     corrected_image_full_resolution = raw_img_sitk / (sitk.Exp(log_bias_field) + 1e-7)
+
+    # Сохранение результата
     sitk.WriteImage(corrected_image_full_resolution, out_path_str)
-    logger.debug("    N4 коррекция завершена.")
+    logger.debug("    N4 коррекция успешно завершена.")
+
     return log_bias_field
+
 
 def original_intensity_normalization(
     input_img_path_str: str,
     out_path_str: str,
     template_img_path_str: str,
-    params: dict # <<< Параметры нормализации из конфига (пока не используются, но передаются)
+    params: dict # Параметры из конфига (в этой реализации не используются)
 ):
-    """Выполняет нормализацию интенсивности методом сопоставления гистограмм."""
-    logger.info(f"  Intensity Normalization (Histogram Matching): {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
-    logger.debug(f"    Используемый шаблон: {template_img_path_str}")
-    logger.debug(f"    Параметры из конфига (intensity_normalization): {params}") # Логируем параметры
+    """
+    Выполняет нормализацию интенсивности методом сопоставления гистограмм с шаблоном.
 
+    Args:
+        input_img_path_str: Путь к входному изображению.
+        out_path_str: Путь для сохранения нормализованного изображения.
+        template_img_path_str: Путь к файлу шаблона.
+        params (dict): Словарь с параметрами шага (для логирования).
+    """
+    step_name = "Intensity Normalization (Histogram Matching)"
+    logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
+    logger.debug(f"    Используемый шаблон: {template_img_path_str}")
+    logger.debug(f"    Параметры из конфига для этого шага: {params}") # Логируем полученные параметры
+
+    # Чтение изображений
     template_img_sitk = sitk.ReadImage(template_img_path_str, sitk.sitkFloat32)
     raw_img_sitk = sitk.ReadImage(input_img_path_str, sitk.sitkFloat32)
-    logger.debug("    Выполнение сопоставления гистограмм...")
+
+    # Выполнение сопоставления гистограмм
+    logger.debug("    Выполнение sitk.HistogramMatching...")
     transformed = sitk.HistogramMatching(raw_img_sitk, template_img_sitk)
+
+    # Сохранение результата
     sitk.WriteImage(transformed, out_path_str)
     logger.debug("    Нормализация интенсивности завершена.")
+
 
 def original_registration(
     input_img_path_str: str,
     out_path_str: str,
     template_img_path_str: str,
     transforms_prefix_str: str,
-    params: dict # <<< Параметры регистрации из конфига
+    params: dict # Параметры регистрации из конфига
 ) -> tuple[list[str], list[str]]:
-    """Выполняет регистрацию с использованием ANTsPy."""
-    logger.info(f"  ANTs Registration: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
+    """
+    Выполняет регистрацию изображения на шаблон с использованием ANTsPy.
 
-    # Используем параметры из конфига или значения по умолчанию
+    Args:
+        input_img_path_str: Путь к движущемуся изображению (которое регистрируем).
+        out_path_str: Путь для сохранения зарегистрированного изображения.
+        template_img_path_str: Путь к фиксированному изображению (шаблону).
+        transforms_prefix_str: Префикс для сохранения файлов трансформаций ANTs.
+        params (dict): Словарь с параметрами для ants.registration (например, 'ants_transform_type').
+
+    Returns:
+        tuple[list[str], list[str]]: Списки путей к файлам прямых и обратных трансформаций.
+    """
+    step_name = "ANTs Registration"
+    logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
+
+    # Получаем параметры из конфига или используем значения по умолчанию
     transform_type = params.get('ants_transform_type', 'SyN')
-    # Другие параметры ANTs (примеры, можно добавить больше по необходимости)
-    # registration_params = {
-    #     'metric': params.get('ants_metric', 'MI'),
-    #     'iterations': params.get('ants_iterations', (100, 70, 50, 20)), # Пример формата для ANTsPy
-    #     'reg_iterations': params.get('ants_reg_iterations', None),
-    #     'smoothing_sigmas': params.get('ants_smoothing_sigmas', (3, 2, 1, 0)), # Пример формата
-    #     'sigma_units': ['vox'] * 4, # Пример
-    #     'shrink_factors': params.get('ants_shrink_factors', (8, 4, 2, 1)), # Пример
-    #     'grad_step': params.get('ants_grad_step', 0.1),
-    #     # ... и т.д.
-    # }
-    # # Удаляем None значения, чтобы не передавать их в ants.registration
-    # registration_params = {k: v for k, v in registration_params.items() if v is not None}
+    # Можно добавить чтение других параметров ANTs из `params`, если они заданы в YAML
+    # ants_metric = params.get('ants_metric', 'MI') # Пример
 
     logger.debug(f"    Тип трансформации: {transform_type}")
-    # logger.debug(f"    Дополнительные параметры ANTs: {registration_params}")
+    # logger.debug(f"    Метрика: {ants_metric}") # Пример
     logger.debug(f"    Префикс выходных файлов трансформации: {transforms_prefix_str}")
 
+    # Чтение изображений с помощью ANTsPy
     template_img_ants = ants.image_read(template_img_path_str)
     raw_img_ants = ants.image_read(input_img_path_str)
 
-    logger.debug(f"    Выполнение ants.registration (тип: {transform_type})...")
+    logger.debug(f"    Выполнение ants.registration (тип: {transform_type}). Это может занять время...")
+    # Выполнение регистрации
     transformation = ants.registration(
         fixed=template_img_ants,
         moving=raw_img_ants,
         type_of_transform=transform_type,
-        outprefix=transforms_prefix_str,
-        verbose=False, # Отключаем встроенный вывод ANTsPy
-        # **registration_params # Передаем остальные параметры
+        outprefix=transforms_prefix_str, # ANTs добавит сюда суффиксы для файлов
+        verbose=False  # Отключаем подробный вывод ANTs в консоль
+        # Здесь можно передать другие параметры через **kwargs, если они извлечены из params
+        # syn_metric=ants_metric, ...
     )
+
+    # Сохранение зарегистрированного изображения
     registered_img_ants = transformation['warpedmovout']
     registered_img_ants.to_file(out_path_str)
     logger.debug("    ANTs регистрация завершена.")
+
+    # Возвращаем списки путей к файлам трансформаций
     return transformation.get('fwdtransforms', []), transformation.get('invtransforms', [])
 
 
 def original_skull_stripping(
     input_img_path_str: str,
     out_file_base_str: str,
-    params: dict # <<< Параметры BET из конфига
+    params: dict # Параметры BET из конфига
 ) -> tuple[str | None, str | None]:
-    """Выполняет удаление черепа с помощью FSL BET, используя параметры из конфига."""
+    """
+    Выполняет удаление черепа с помощью FSL BET, используя параметры из конфига.
+    Запрашивает выход в формате NIFTI_GZ.
+
+    Args:
+        input_img_path_str: Путь к входному NIfTI файлу.
+        out_file_base_str: Базовый путь и имя для выходных файлов BET (без расширения).
+        params (dict): Словарь с параметрами для BET (например, 'bet_fractional_intensity_threshold').
+
+    Returns:
+        tuple[str | None, str | None]: (Путь к файлу с удаленным черепом, Путь к файлу маски).
+                                      Возвращает (None, None) при ошибке.
+    """
     global fsl_present
-    if not fsl_present:
-         logger.error("  Skull Stripping: FSL 'bet' не найден. Шаг пропускается.")
+    if not fsl_present: # Проверяем доступность FSL
+         logger.error("  Skull Stripping: FSL 'bet' команда не найдена. Шаг пропускается.")
          return None, None
 
-    logger.info(f"  Skull Stripping (FSL BET): {Path(input_img_path_str).name} -> {out_file_base_str}.nii.gz")
+    step_name = "Skull Stripping (FSL BET)"
+    logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {out_file_base_str}.nii.gz")
 
-    # Используем параметры из конфига или значения по умолчанию
+    # Получаем параметры BET из конфига или используем значения по умолчанию
     frac_thresh = params.get('bet_fractional_intensity_threshold', 0.5)
     robust = params.get('bet_robust', True)
     additional_opts = params.get('bet_options', "") # Дополнительные опции строкой
 
     logger.debug(f"    Параметры BET: frac={frac_thresh}, robust={robust}, options='{additional_opts}'")
 
+    # Настройка интерфейса Nipype BET
     bet = BET()
     bet.inputs.in_file = input_img_path_str
-    bet.inputs.out_file = out_file_base_str
+    bet.inputs.out_file = out_file_base_str # BET добавит .nii.gz сам
     bet.inputs.frac = frac_thresh
-    bet.inputs.mask = True
+    bet.inputs.mask = True      # Всегда запрашиваем маску
     bet.inputs.robust = robust
-    bet.inputs.output_type = 'NIFTI_GZ'
-    if additional_opts: # Если заданы доп. опции
+    bet.inputs.output_type = 'NIFTI_GZ' # Явно указываем желаемый формат
+    if additional_opts: # Добавляем кастомные аргументы, если они есть
         bet.inputs.args = additional_opts
 
     try:
-        logger.debug(f"    Команда BET: {bet.cmdline}")
-        result = bet.run()
+        logger.debug(f"    Выполняемая команда BET: {bet.cmdline}")
+        result = bet.run() # Запускаем BET через Nipype
+
+        # --- Проверка выходных файлов ---
         stripped_path_str = result.outputs.out_file
         mask_path_str = result.outputs.mask_file
 
-        # Проверка существования файлов (как и раньше)
         expected_stripped_path = Path(f"{out_file_base_str}.nii.gz")
         if stripped_path_str is Undefined or not Path(stripped_path_str).exists():
             if expected_stripped_path.exists():
-                logger.warning(f"    Вывод BET (stripped) некорректен. Используется: {expected_stripped_path}")
+                logger.warning(f"    Вывод BET (stripped) некорректен/отсутствует. Используется ожидаемый путь: {expected_stripped_path}")
                 stripped_path_str = str(expected_stripped_path)
             else:
-                logger.error(f"    BET не создал файл удаленного черепа: {expected_stripped_path}")
-                if hasattr(result, 'runtime') and result.runtime and result.runtime.stderr: logger.error(f"    BET stderr:\n{result.runtime.stderr.strip()}")
-                return None, None
+                logger.error(f"    BET не создал основной выходной файл: {expected_stripped_path}")
+                # Логируем stderr, если он доступен в runtime
+                if hasattr(result, 'runtime') and result.runtime and hasattr(result.runtime, 'stderr') and result.runtime.stderr:
+                     logger.error(f"    BET stderr:\n{result.runtime.stderr.strip()}")
+                return None, None # Критическая ошибка шага
 
         expected_mask_path = Path(f"{out_file_base_str}_mask.nii.gz")
         if mask_path_str is Undefined or not Path(mask_path_str).exists():
             if expected_mask_path.exists():
-                logger.warning(f"    Вывод BET (mask) некорректен. Используется: {expected_mask_path}")
+                logger.warning(f"    Вывод BET (mask) некорректен/отсутствует. Используется ожидаемый путь: {expected_mask_path}")
                 mask_path_str = str(expected_mask_path)
             else:
-                logger.error(f"    BET не создал файл маски: {expected_mask_path}")
-                mask_path_str = None
+                # Если маска не создалась, это предупреждение, но шаг мог удасться
+                logger.warning(f"    BET не создал файл маски по ожидаемому пути: {expected_mask_path}")
+                mask_path_str = None # Явно указываем, что маска не найдена
 
-        logger.debug("    Удаление черепа (BET) завершено.")
+        logger.debug("    Удаление черепа (BET) успешно завершено.")
         return stripped_path_str, mask_path_str
 
     except Exception as e:
-         logger.error(f"    Ошибка при выполнении Nipype BET: {e}", exc_info=True)
+         # Ловим ошибки выполнения интерфейса Nipype
+         logger.error(f"    Ошибка при выполнении Nipype BET интерфейса: {e}", exc_info=True)
+         # Проверяем, не создались ли файлы несмотря на ошибку интерфейса
          expected_stripped_path = Path(f"{out_file_base_str}.nii.gz")
          expected_mask_path = Path(f"{out_file_base_str}_mask.nii.gz")
          if expected_stripped_path.exists():
-              logger.warning("    Nipype BET упал, но выходной файл найден.")
-              mask_found = str(expected_mask_path) if expected_mask_path.exists() else None
-              return str(expected_stripped_path), mask_found
+              logger.warning(
+                  "    Интерфейс Nipype BET завершился с ошибкой, но выходной файл "
+                  f"(stripped) найден: {expected_stripped_path}. Попытка продолжить."
+              )
+              mask_found_after_error = str(expected_mask_path) if expected_mask_path.exists() else None
+              return str(expected_stripped_path), mask_found_after_error
          else:
-              logger.error("    Выходные файлы BET не найдены после ошибки Nipype.")
+              logger.error("    Выходные файлы BET не найдены после ошибки интерфейса Nipype.")
               return None, None
 
+
 def save_parameters(params_dict: dict, output_path: Path):
-    """Сохраняет словарь параметров в JSON файл."""
+    """
+    Сохраняет словарь параметров в JSON файл, преобразуя Path и NumPy типы.
+    """
     try:
+        # Убедимся, что директория для JSON существует
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Создаем копию словаря для сериализации
         params_serializable = {}
         for key, value in params_dict.items():
-             if isinstance(value, Path): params_serializable[key] = str(value.resolve())
+             # Преобразуем Path в строки с абсолютными путями
+             if isinstance(value, Path):
+                 params_serializable[key] = str(value.resolve())
+             # Преобразуем списки путей/строк
              elif isinstance(value, list) and value and isinstance(value[0], (Path, str)):
                  params_serializable[key] = [str(Path(p).resolve()) for p in value]
-             # Добавим обработку numpy типов, которые не сериализуются напрямую
-             elif isinstance(value, (np.integer, np.floating)): params_serializable[key] = value.item()
-             elif isinstance(value, np.ndarray): params_serializable[key] = value.tolist() # Преобразуем массивы в списки
-             else: params_serializable[key] = value
+             # Преобразуем числовые типы NumPy в стандартные Python типы
+             elif isinstance(value, (np.integer)):
+                 params_serializable[key] = int(value)
+             elif isinstance(value, (np.floating)):
+                 params_serializable[key] = float(value)
+             elif isinstance(value, np.ndarray): # Преобразуем массивы NumPy в списки
+                 params_serializable[key] = value.tolist()
+             elif isinstance(value, bool) or isinstance(value, (int, float, str, dict, list)) or value is None:
+                 params_serializable[key] = value # Оставляем стандартные типы JSON
+             else:
+                 # Для неизвестных типов пытаемся преобразовать в строку
+                 logger.warning(f"Не удалось сериализовать параметр '{key}' типа {type(value)}. Преобразование в строку.")
+                 params_serializable[key] = str(value)
+
+        # Записываем JSON
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(params_serializable, f, indent=4, ensure_ascii=False)
         logger.debug(f"Параметры шага сохранены: {output_path}")
+
     except Exception as e:
         logger.error(f"Не удалось сохранить параметры в {output_path}: {e}", exc_info=True)
 
-# === Функции-обертки (теперь принимают словарь параметров шага) ===
+# --- Функции-обертки для шагов (теперь принимают параметры) ---
 
 def run_intensity_normalization_and_save(
     current_input_path: Path, step_output_path: Path, template_path: Path,
-    transform_dir: Path, step_params: dict # <<< Параметры шага
+    transform_dir: Path, step_params: dict
 ) -> tuple[dict, bool]:
     """Обертка для нормализации интенсивности."""
     step_name = "1_intensity_normalization"
     logger.info(f"Запуск шага: {step_name} для {current_input_path.name}")
-    # Сохраняем параметры, с которыми будет запущен шаг
+    # Записываем параметры, которые *будут* использованы (включая путь к шаблону)
     run_params = {**step_params, "template_file": str(template_path.resolve())}
     try:
-        # Передаем параметры в основную функцию
-        original_intensity_normalization(str(current_input_path), str(step_output_path), str(template_path), step_params)
+        original_intensity_normalization(
+            str(current_input_path), str(step_output_path), str(template_path), step_params
+        )
         logger.info(f"  Шаг {step_name} успешно завершен.")
         save_parameters(run_params, transform_dir / f"{step_name}_params.json")
         return run_params, True
@@ -297,20 +461,24 @@ def run_intensity_normalization_and_save(
 
 def run_bias_field_correction_and_save(
     current_input_path: Path, step_output_path: Path,
-    transform_dir: Path, step_params: dict # <<< Параметры шага
+    transform_dir: Path, step_params: dict
 ) -> tuple[dict, bool]:
     """Обертка для N4 коррекции."""
     step_name = "2_bias_field_correction"
     logger.info(f"Запуск шага: {step_name} для {current_input_path.name}")
-    # Сохраняем параметры + пути к выходам
     run_params = {**step_params, "output_log_bias_field_path": None, "output_bias_field_path": None}
     log_bias_field_path = transform_dir / "log_bias_field.nii.gz"
     bias_field_path = transform_dir / "bias_field.nii.gz"
     try:
-        # Передаем параметры в основную функцию
-        log_bias_field_sitk = original_bias_field_correction(str(current_input_path), str(step_output_path), step_params)
-        sitk.WriteImage(log_bias_field_sitk, str(log_bias_field_path)); run_params["output_log_bias_field_path"] = str(log_bias_field_path.resolve())
-        bias_field_sitk = sitk.Exp(log_bias_field_sitk); sitk.WriteImage(bias_field_sitk, str(bias_field_path)); run_params["output_bias_field_path"] = str(bias_field_path.resolve())
+        log_bias_field_sitk = original_bias_field_correction(
+            str(current_input_path), str(step_output_path), step_params # Передаем параметры
+        )
+        # Сохраняем поля смещения
+        sitk.WriteImage(log_bias_field_sitk, str(log_bias_field_path))
+        run_params["output_log_bias_field_path"] = str(log_bias_field_path.resolve())
+        bias_field_sitk = sitk.Exp(log_bias_field_sitk)
+        sitk.WriteImage(bias_field_sitk, str(bias_field_path))
+        run_params["output_bias_field_path"] = str(bias_field_path.resolve())
         logger.info(f"  Шаг {step_name} успешно завершен.")
         save_parameters(run_params, transform_dir / f"{step_name}_params.json")
         return run_params, True
@@ -322,22 +490,24 @@ def run_bias_field_correction_and_save(
 
 def run_registration_and_save(
     current_input_path: Path, step_output_path: Path, template_path: Path,
-    transform_dir: Path, transform_prefix: str, step_params: dict # <<< Параметры шага
+    transform_dir: Path, transform_prefix: str, step_params: dict
 ) -> tuple[dict, bool]:
     """Обертка для регистрации ANTsPy."""
     step_name = "3_registration"
     logger.info(f"Запуск шага: {step_name} для {current_input_path.name}")
     ants_output_prefix_str = str(transform_dir / transform_prefix)
-    # Сохраняем параметры + пути
-    run_params = {**step_params, "template_file": str(template_path.resolve()), "output_prefix": ants_output_prefix_str, "forward_transforms_paths": [], "inverse_transforms_paths": []}
+    run_params = {**step_params, "template_file": str(template_path.resolve()),
+                  "output_prefix": ants_output_prefix_str,
+                  "forward_transforms_paths": [], "inverse_transforms_paths": []}
     try:
-        # Передаем параметры в основную функцию
         fwd_tforms, inv_tforms = original_registration(
-            str(current_input_path), str(step_output_path), str(template_path), ants_output_prefix_str, step_params
+            str(current_input_path), str(step_output_path), str(template_path),
+            ants_output_prefix_str, step_params # Передаем параметры
         )
         run_params["forward_transforms_paths"] = [str(Path(p).resolve()) for p in fwd_tforms]
         run_params["inverse_transforms_paths"] = [str(Path(p).resolve()) for p in inv_tforms]
-        if not run_params["forward_transforms_paths"]: logger.warning(f"  Не найдены файлы прямых трансформаций ANTs (префикс: {ants_output_prefix_str})")
+        if not run_params["forward_transforms_paths"]:
+            logger.warning(f"  Не найдены файлы прямых трансформаций ANTs (префикс: {ants_output_prefix_str})")
         logger.info(f"  Шаг {step_name} успешно завершен.")
         save_parameters(run_params, transform_dir / f"{step_name}_params.json")
         return run_params, True
@@ -349,19 +519,21 @@ def run_registration_and_save(
 
 def run_skull_stripping_and_save(
     current_input_path: Path, final_output_file_path: Path,
-    transform_dir: Path, transform_prefix: str, step_params: dict # <<< Параметры шага
+    transform_dir: Path, transform_prefix: str, step_params: dict
 ) -> tuple[dict, bool]:
     """Обертка для удаления черепа."""
     step_name = "4_skull_stripping"
     logger.info(f"Запуск шага: {step_name} для {current_input_path.name}")
-    # Сохраняем параметры + пути
     run_params = {**step_params, "output_mask_path": None, "output_stripped_path": None}
     bet_temp_output_base_str = str(transform_dir / f"{transform_prefix}_bet_temp")
     final_mask_path = transform_dir / f"{transform_prefix}_brain_mask.nii.gz"
     try:
-        # Передаем параметры в основную функцию
-        stripped_path_str, mask_path_str = original_skull_stripping(str(current_input_path), bet_temp_output_base_str, step_params)
-        if stripped_path_str is None: raise RuntimeError("FSL BET не создал файл с удаленным черепом.")
+        # Передаем параметры в функцию
+        stripped_path_str, mask_path_str = original_skull_stripping(
+            str(current_input_path), bet_temp_output_base_str, step_params
+        )
+        if stripped_path_str is None:
+            raise RuntimeError("FSL BET не создал файл с удаленным черепом.")
 
         generated_stripped_path = Path(stripped_path_str)
         final_output_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -384,11 +556,15 @@ def run_skull_stripping_and_save(
     except Exception as e:
         logger.error(f"  Шаг {step_name} завершился с ошибкой: {e}", exc_info=True)
         run_params["error"] = str(e); save_parameters(run_params, transform_dir / f"{step_name}_params.json")
-        # Очистка временных файлов BET при ошибке
+        # Очистка временных файлов BET
         bet_temp_stripped = Path(bet_temp_output_base_str + ".nii.gz")
         bet_temp_mask = Path(bet_temp_output_base_str + "_mask.nii.gz")
-        if bet_temp_stripped.exists(): try: os.remove(bet_temp_stripped); logger.debug(f"Удален временный файл: {bet_temp_stripped}") except OSError: pass
-        if bet_temp_mask.exists(): try: os.remove(bet_temp_mask); logger.debug(f"Удален временный файл: {bet_temp_mask}") except OSError: pass
+        if bet_temp_stripped.exists(): 
+            try: os.remove(bet_temp_stripped); logger.debug(f"Удален временный файл: {bet_temp_stripped}") 
+            except OSError: pass
+        if bet_temp_mask.exists(): 
+            try: os.remove(bet_temp_mask); logger.debug(f"Удален временный файл: {bet_temp_mask}") 
+            except OSError: pass
         return run_params, False
 
 # === Основная функция пайплайна (теперь читает конфиг) ===
@@ -397,54 +573,49 @@ def run_preprocessing_pipeline(
     output_root_prep_str: str,
     output_root_tfm_str: str,
     template_path_str: str,
-    config_path_str: str # <<< Путь к основному конфигу пайплайна
+    config_path_str: str
 ):
     """
-    Запускает полный конвейер предобработки, читая параметры из конфиг. файла.
+    Запускает полный конвейер предобработки для NIfTI файлов,
+    читая параметры из конфигурационного файла.
     """
-    input_root = Path(input_root_str)
-    output_root_prep = Path(output_root_prep_str)
-    output_root_tfm = Path(output_root_tfm_str)
-    template_path = Path(template_path_str)
+    input_root = Path(input_root_str); output_root_prep = Path(output_root_prep_str)
+    output_root_tfm = Path(output_root_tfm_str); template_path = Path(template_path_str)
     config_path = Path(config_path_str)
 
     # --- Загрузка конфигурации ---
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
+        with open(config_path, 'r', encoding='utf-8') as f: config = yaml.safe_load(f)
         logger.info(f"Конфигурация для шагов предобработки загружена из: {config_path}")
-        # Получаем параметры конкретно для шага preprocessing
         preprocessing_params = config.get('steps', {}).get('preprocessing', {})
         keep_intermediate = preprocessing_params.get('keep_intermediate_files', False)
-        # Получаем параметры для под-шагов
+        # Получаем словари параметров для каждого под-шага (или пустые, если не заданы)
         norm_params_config = preprocessing_params.get('intensity_normalization', {})
         bias_params_config = preprocessing_params.get('bias_field_correction', {})
         reg_params_config = preprocessing_params.get('registration', {})
         strip_params_config = preprocessing_params.get('skull_stripping', {})
-
     except Exception as e:
-        logger.critical(f"Не удалось загрузить или разобрать конфигурационный файл {config_path}: {e}")
-        raise ValueError(f"Ошибка загрузки конфига: {e}") from e # Поднимаем ошибку выше
+        logger.critical(f"Не удалось загрузить/разобрать конфигурацию {config_path}: {e}")
+        raise ValueError(f"Ошибка загрузки конфига: {e}") from e
 
-    # --- Проверки ---
+    # --- Проверки входных путей и утилит ---
     if not input_root.is_dir(): raise FileNotFoundError(f"Входная директория не найдена: {input_root}")
     if not template_path.is_file(): raise FileNotFoundError(f"Файл шаблона не найден: {template_path}")
-    check_fsl_availability()
+    check_fsl_availability() # Проверяем доступность FSL
 
-    try:
-        output_root_prep.mkdir(parents=True, exist_ok=True)
-        output_root_tfm.mkdir(parents=True, exist_ok=True)
+    # Создание выходных директорий
+    try: output_root_prep.mkdir(parents=True, exist_ok=True); output_root_tfm.mkdir(parents=True, exist_ok=True)
     except OSError as e: logger.error(f"Не удалось создать выходные директории: {e}"); raise
 
-    logger.info(f"Начало предобработки NIfTI файлов из: {input_root.resolve()}")
-    logger.info(f"  Предобработанные файлы ->: {output_root_prep.resolve()}")
+    logger.info(f"Начало предобработки NIfTI из: {input_root.resolve()}")
+    logger.info(f"  Предобработанные ->: {output_root_prep.resolve()}")
     logger.info(f"  Трансформации ->: {output_root_tfm.resolve()}")
     logger.info(f"  Шаблон: {template_path.resolve()}")
-    logger.info(f"  Сохранять промежуточные файлы: {'Да' if keep_intermediate else 'Нет'}")
+    logger.info(f"  Сохранять промежуточные: {'Да' if keep_intermediate else 'Нет'}")
 
-    # --- Поиск файлов ---
-    patterns = [ str(input_root / 'sub-*/ses-*/anat/*.nii.gz'), str(input_root / 'sub-*/ses-*/anat/*.nii'),
-                 str(input_root / 'sub-*/anat/*.nii.gz'), str(input_root / 'sub-*/anat/*.nii') ]
+    # --- Поиск NIfTI файлов ---
+    patterns = [ str(input_root / p) for p in ['sub-*/ses-*/anat/*.nii.gz', 'sub-*/ses-*/anat/*.nii',
+                                                'sub-*/anat/*.nii.gz', 'sub-*/anat/*.nii'] ]
     found_files_paths = set()
     for pattern in patterns: found_files_paths.update(glob.glob(pattern, recursive=True))
     nii_files_to_process = sorted(list(found_files_paths))
@@ -483,31 +654,39 @@ def run_preprocessing_pipeline(
 
             # Шаг 1: Нормализация
             step_output_path = temp_processing_dir / f"{nifti_file_stem}_norm.nii.gz"
-            params, success = run_intensity_normalization_and_save(current_step_input_path, step_output_path, template_path, individual_transform_dir, norm_params_config) # Передаем параметры
+            params, success = run_intensity_normalization_and_save(
+                current_step_input_path, step_output_path, template_path, individual_transform_dir, norm_params_config
+            )
             overall_processing_params["steps_parameters"]["1_intensity_normalization"] = params
-            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка на шаге нормализации интенсивности.")
+            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка нормализации интенсивности.")
             current_step_input_path = step_output_path
 
             # Шаг 2: Коррекция поля смещения
             step_output_path = temp_processing_dir / f"{nifti_file_stem}_norm_biascorr.nii.gz"
-            params, success = run_bias_field_correction_and_save(current_step_input_path, step_output_path, individual_transform_dir, bias_params_config) # Передаем параметры
+            params, success = run_bias_field_correction_and_save(
+                current_step_input_path, step_output_path, individual_transform_dir, bias_params_config
+            )
             overall_processing_params["steps_parameters"]["2_bias_field_correction"] = params
-            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка на шаге коррекции поля смещения.")
+            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка коррекции поля смещения.")
             current_step_input_path = step_output_path
 
             # Шаг 3: Регистрация
             step_output_path = temp_processing_dir / f"{nifti_file_stem}_norm_biascorr_reg.nii.gz"
             ants_tfm_prefix = f"{nifti_file_stem}_reg"
-            params, success = run_registration_and_save(current_step_input_path, step_output_path, template_path, individual_transform_dir, ants_tfm_prefix, reg_params_config) # Передаем параметры
+            params, success = run_registration_and_save(
+                current_step_input_path, step_output_path, template_path, individual_transform_dir, ants_tfm_prefix, reg_params_config
+            )
             overall_processing_params["steps_parameters"]["3_registration"] = params
-            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка на шаге регистрации.")
+            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка регистрации.")
             current_step_input_path = step_output_path
 
             # Шаг 4: Удаление черепа
             skullstrip_transform_prefix = f"{nifti_file_stem}_strip"
-            params, success = run_skull_stripping_and_save(current_step_input_path, final_preprocessed_file_path, individual_transform_dir, skullstrip_transform_prefix, strip_params_config) # Передаем параметры
+            params, success = run_skull_stripping_and_save(
+                current_step_input_path, final_preprocessed_file_path, individual_transform_dir, skullstrip_transform_prefix, strip_params_config
+            )
             overall_processing_params["steps_parameters"]["4_skull_stripping"] = params
-            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка на шаге удаления черепа.")
+            if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка удаления черепа.")
 
             processed_count += 1
             logger.info(f"--- Успешно завершена обработка файла: {input_nifti_path.relative_to(input_root)} ---")
@@ -519,10 +698,13 @@ def run_preprocessing_pipeline(
             if per_file_log_handler: logger.debug("Полный traceback ошибки:", exc_info=True)
 
         finally:
+            # Сохраняем общий JSON с параметрами этого файла
             overall_processing_params["processing_status"] = "success" if not file_processing_failed else "failed"
             if file_processing_failed and 'e' in locals() and isinstance(e, Exception): overall_processing_params["error_message"] = str(e)
             save_parameters(overall_processing_params, overall_params_json_path)
+            # Закрываем и удаляем обработчик лога файла
             if per_file_log_handler: logger.removeHandler(per_file_log_handler); per_file_log_handler.close()
+            # Удаляем временную директорию, если нужно
             if temp_processing_dir and temp_processing_dir.exists():
                 if not keep_intermediate and not file_processing_failed:
                     try: shutil.rmtree(temp_processing_dir); logger.debug(f"Временная директория {temp_processing_dir} удалена.")
@@ -536,73 +718,59 @@ def run_preprocessing_pipeline(
     logger.info(f"  Файлов с ошибками: {error_count}"); logger.info("=" * 50)
     return True
 
-# --- Точка входа при запуске скрипта ---
+# --- Точка входа ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Выполняет конвейер предобработки NIfTI МРТ изображений.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    # Основные пути передаются через CLI
     parser.add_argument("--input_dir", required=True, type=str, help="Входная директория BIDS NIfTI.")
     parser.add_argument("--output_prep_dir", required=True, type=str, help="Выходная директория для предобработанных файлов.")
-    parser.add_argument("--output_transform_dir", required=True, type=str, help="Выходная директория для трансформаций и параметров.")
+    parser.add_argument("--output_transform_dir", required=True, type=str, help="Выходная директория для трансформаций.")
     parser.add_argument("--template_path", required=True, type=str, help="Путь к файлу шаблона МРТ.")
-    # Путь к конфигу для получения параметров шагов
-    parser.add_argument("--config", required=True, type=str, help="Путь к основному конфигурационному файлу YAML пайплайна.")
-    # Основной лог и уровень консоли
-    parser.add_argument("--main_log_file", default=None, type=str, help="Путь к основному лог-файлу скрипта. По умолчанию: 'preprocessing_main.log' в output_transform_dir.")
-    parser.add_argument("--console_log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Уровень логирования для консоли.")
-    # Флаг сохранения промежуточных файлов (читается из конфига, но можно переопределить)
-    # parser.add_argument("--keep_intermediate_files", action='store_true', help="Сохранять промежуточные файлы.")
+    parser.add_argument("--config", required=True, type=str, help="Путь к YAML конфиг. файлу пайплайна.")
+    parser.add_argument("--main_log_file", default=None, type=str, help="Путь к основному лог-файлу. По умолч.: 'preprocessing_main.log' в output_transform_dir.")
+    parser.add_argument("--console_log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Уровень лога консоли.")
 
     args = parser.parse_args()
 
-    # --- Настройка основного логирования ---
+    # --- Настройка логирования ---
     main_log_path_arg = args.main_log_file
-    output_tfm_dir_arg = args.output_transform_dir # Используем папку трансформаций для основного лога по умолчанию
+    output_tfm_dir_arg = args.output_transform_dir
     default_log_name = 'preprocessing_main.log'
-
     if main_log_path_arg is None:
         try:
             if output_tfm_dir_arg and not os.path.exists(output_tfm_dir_arg): os.makedirs(output_tfm_dir_arg, exist_ok=True)
             main_log_path_final = os.path.join(output_tfm_dir_arg or '.', default_log_name)
-        except OSError as e:
-            main_log_path_final = default_log_name
-            print(f"Предупреждение: Не удалось исп. {output_tfm_dir_arg} для основного лога...")
-    else:
-        main_log_path_final = main_log_path_arg
-
+        except OSError as e: main_log_path_final = default_log_name; print(f"Предупреждение: Не удалось исп. {output_tfm_dir_arg} для лога...")
+    else: main_log_path_final = main_log_path_arg
     setup_main_logging(main_log_path_final, args.console_log_level)
 
-    # --- Основной блок выполнения ---
+    # --- Запуск пайплайна ---
     try:
-        logger.info("=" * 50)
-        logger.info(f"Запуск скрипта: preprocessing.py")
+        logger.info("=" * 50); logger.info(f"Запуск скрипта: preprocessing.py")
         logger.info(f"  Input: {os.path.abspath(args.input_dir)}")
         logger.info(f"  Output (Preprocessed): {os.path.abspath(args.output_prep_dir)}")
         logger.info(f"  Output (Transforms): {os.path.abspath(args.output_transform_dir)}")
         logger.info(f"  Template: {os.path.abspath(args.template_path)}")
         logger.info(f"  Config File: {os.path.abspath(args.config)}")
-        # keep_intermediate будет прочитан из конфига внутри run_preprocessing_pipeline
+        # keep_intermediate читается из конфига внутри функции
         logger.info(f"  Основной лог: {os.path.abspath(main_log_path_final)}")
         logger.info(f"  Уровень лога консоли: {args.console_log_level}")
         logger.info("=" * 50)
 
-        # Вызываем основную функцию, передавая путь к конфигу
         success = run_preprocessing_pipeline(
             args.input_dir,
             args.output_prep_dir,
             args.output_transform_dir,
             args.template_path,
             args.config # Передаем путь к конфигу
-            # keep_intermediate теперь читается из конфига внутри функции
         )
 
         if success: logger.info("Скрипт предобработки успешно завершил работу."); sys.exit(0)
-        else: logger.error("Скрипт предобработки завершился с ошибкой."); sys.exit(1)
+        else: logger.error("Скрипт предобработки завершился с ошибкой."); sys.exit(1) # Не должно достигаться
 
     except FileNotFoundError as e: logger.error(f"Критическая ошибка: Файл/директория не найдены. {e}"); sys.exit(1)
     except OSError as e: logger.error(f"Критическая ошибка ФС: {e}", exc_info=True); sys.exit(1)
-    except KeyError as e: logger.error(f"Критическая ошибка: Отсутствует ключ в конфигурационном файле ({args.config}): {e}."); sys.exit(1)
-    except ValueError as e: logger.error(f"Критическая ошибка: Неверное значение или ошибка в конфиг. файле ({args.config}): {e}"); sys.exit(1)
+    except (KeyError, ValueError) as e: logger.error(f"Критическая ошибка: Ошибка в конфигурационном файле ({args.config}): {e}"); sys.exit(1)
     except Exception as e: logger.exception(f"Непредвиденная критическая ошибка: {e}"); sys.exit(1)
