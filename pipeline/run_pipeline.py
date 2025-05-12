@@ -152,60 +152,64 @@ def main():
         sys.exit(1)
 
     # --- 2. Определение ID запуска и ключевых путей ---
-    run_id = args.run_id if args.run_id else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    # Если run_id не передан, генерируем его
+    run_id_to_use = args.run_id if args.run_id else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
     # Получаем пути из конфига, с возможностью переопределения через CLI
     try:
-        output_base_dir_str = args.output_base_dir or config['paths']['output_base_dir']
-        raw_input_dir_str = args.input_data_dir or config['paths']['raw_input_dir']
-        template_path_str = config['paths']['template_path']
+        # output_base_dir_from_cli_or_config - это директория, *внутри* которой будет создана папка run_id_to_use,
+        # ЛИБО это уже путь к папке конкретного запуска (если передано из Flask)
+        output_base_dir_from_cli_or_config = Path(args.output_base_dir or config['paths']['output_base_dir']).resolve()
+        raw_input_dir = Path(args.input_data_dir or config['paths']['raw_input_dir']).resolve()
+        template_path = Path(config['paths']['template_path']).resolve()
         subdirs_config = config['paths']['subdirs']
         executables_config = config.get('executables', {})
         steps_config = config.get('steps', {})
-    except KeyError as e:
-        print(f"[CRITICAL ERROR] Отсутствует обязательный ключ в секции 'paths' конфигурационного файла {config_path}: {e}", file=sys.stderr)
-        sys.exit(1)
+    except KeyError as e: print(f"CRITICAL ERROR: Missing key in 'paths' of {config_path}: {e}", file=sys.stderr); sys.exit(1)
 
-    output_base_dir = Path(output_base_dir_str).resolve()
-    raw_input_dir = Path(raw_input_dir_str).resolve()
-    template_path = Path(template_path_str).resolve()
-    run_output_dir = output_base_dir / run_id # Основная папка для этого запуска
+
+    # === ИЗМЕНЕННАЯ ЛОГИКА ФОРМИРОВАНИЯ run_output_dir ===
+    # Если output_base_dir_from_cli_or_config уже заканчивается на run_id_to_use (случай вызова из Flask),
+    # то это и есть наша run_output_dir.
+    # Иначе (при ручном запуске), мы создаем run_output_dir внутри output_base_dir_from_cli_or_config.
+    if output_base_dir_from_cli_or_config.name == run_id_to_use:
+        run_output_dir = output_base_dir_from_cli_or_config
+        # В этом случае, "истинный" output_base_dir (родитель папки запуска) - это output_base_dir_from_cli_or_config.parent
+        # Но для логирования оставим output_base_dir_from_cli_or_config как "переданный базовый выход"
+        effective_output_base_for_log = output_base_dir_from_cli_or_config.parent
+    else:
+        run_output_dir = output_base_dir_from_cli_or_config / run_id_to_use
+        effective_output_base_for_log = output_base_dir_from_cli_or_config
 
     # --- 3. Настройка основного логирования пайплайна ---
     logs_subdir_name = subdirs_config.get('logs', 'logs')
-    pipeline_log_dir = run_output_dir / logs_subdir_name
+    pipeline_log_dir = run_output_dir / logs_subdir_name # Логи теперь внутри run_output_dir
     pipeline_log_file = pipeline_log_dir / 'pipeline.log'
-    # Настраиваем логгер ДО основной работы, чтобы логировать создание папок и т.д.
     try:
-         pipeline_log_dir.mkdir(parents=True, exist_ok=True) # Создаем папку логов заранее
+         pipeline_log_dir.mkdir(parents=True, exist_ok=True)
          setup_pipeline_logging(pipeline_log_file, args.console_log_level)
-    except OSError as e:
-         print(f"[CRITICAL ERROR] Не удалось создать директорию для логов пайплайна {pipeline_log_dir} или настроить логгер: {e}", file=sys.stderr)
-         sys.exit(1)
+    except OSError as e: print(f"CRITICAL ERROR: Create log dir {pipeline_log_dir} or setup logger: {e}", file=sys.stderr); sys.exit(1)
 
     logger.info("=" * 60)
     logger.info(f"Запуск пайплайна обработки МРТ")
-    logger.info(f"Run ID: {run_id}")
+    logger.info(f"Run ID: {run_id_to_use}") # Используем актуальный run_id
     logger.info(f"Конфигурационный файл: {config_path}")
     logger.info(f"Входные сырые данные: {raw_input_dir}")
-    logger.info(f"Базовая выходная директория: {output_base_dir}")
-    logger.info(f"Директория этого запуска: {run_output_dir}")
+    logger.info(f"Базовая выходная директория (эффективная): {effective_output_base_for_log}")
+    logger.info(f"Директория этого запуска: {run_output_dir}") # Это теперь всегда /.../run_ID
     logger.info(f"Файл шаблона: {template_path}")
     logger.info(f"Лог пайплайна: {pipeline_log_file}")
     logger.info("=" * 60)
 
     # --- 4. Проверка входных данных и создание структуры директорий ---
-    if not raw_input_dir.is_dir():
-        logger.critical(f"Входная директория сырых данных не найдена: {raw_input_dir}")
-        sys.exit(1)
-    if not template_path.is_file():
-        logger.critical(f"Файл шаблона не найден: {template_path}")
-        sys.exit(1)
+    if not raw_input_dir.is_dir(): logger.critical(f"Входная директория не найдена: {raw_input_dir}"); sys.exit(1)
+    if not template_path.is_file(): logger.critical(f"Файл шаблона не найден: {template_path}"); sys.exit(1)
 
-    # Определяем пути ко всем промежуточным/финальным папкам на основе конфига
-    sd = subdirs_config # Сокращение
+    # Все пути к поддиректориям строятся от run_output_dir
+    sd = subdirs_config
     bids_dicom_dir = run_output_dir / sd['bids_dicom']
     dicom_checks_dir = run_output_dir / sd['dicom_checks']
+    # ... (и так далее для всех остальных директорий из вашего предыдущего кода main()) ...
     dicom_meta_dir = run_output_dir / sd['dicom_meta']
     bids_nifti_dir = run_output_dir / sd['bids_nifti']
     validation_reports_dir = run_output_dir / sd['validation_reports']
@@ -219,18 +223,15 @@ def main():
         bids_dicom_dir, dicom_checks_dir, dicom_meta_dir, bids_nifti_dir,
         validation_reports_dir, fast_qc_reports_dir, mriqc_output_dir,
         mriqc_interpret_dir, transforms_dir, preprocessed_dir
-        # pipeline_log_dir уже создана
     ]
     try:
         logger.info("Создание структуры выходных директорий...")
         for dir_path in output_dirs_to_create:
             dir_path.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"  Создана/проверена директория: {dir_path}")
+            logger.debug(f"  Создана/проверена: {dir_path}")
         logger.info("Структура выходных директорий готова.")
-    except OSError as e:
-        logger.critical(f"Не удалось создать одну из выходных директорий: {e}")
-        sys.exit(1)
-
+    except OSError as e: logger.critical(f"Не удалось создать выходные директории: {e}"); sys.exit(1)
+    
     # --- 5. Определение путей к скриптам и исполняемым файлам ---
     try:
         project_root = Path(__file__).resolve().parent.parent # Папка, где лежат pipeline/ и scripts/
