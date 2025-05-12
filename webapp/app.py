@@ -327,18 +327,33 @@ def upload_file():
             flask_logger.error(f"Ошибка при распаковке архива {archive_path}: {e}", exc_info=True)
             flash(f"Ошибка распаковки архива: {e}", "error")
             return redirect(url_for('index'))
+        
+        # --- Дополнительная логика для "поднятия" содержимого, если есть одна корневая папка ---
+        # Эта переменная будет передана в пайплайн как --input_data_dir
+        effective_input_data_dir = input_raw_data_dir
+
+        items_in_raw_data = list(input_raw_data_dir.iterdir())
+        if len(items_in_raw_data) == 1 and items_in_raw_data[0].is_dir():
+            # Если внутри input_raw_data только одна папка, предполагаем, что это общая папка архива
+            single_root_folder_in_zip = items_in_raw_data[0]
+            flask_logger.info(
+                f"Обнаружена одна корневая папка в архиве: {single_root_folder_in_zip.name}. "
+                f"Содержимое этой папки будет использовано как входные данные."
+            )
+            effective_input_data_dir = single_root_folder_in_zip
 
         # Формируем команду для запуска пайплайна
         # Пайплайн сам создаст подпапки logs/ и results/ внутри run_specific_dir
         # на основе своего output_base_dir и run_id
+        # Формируем команду для запуска пайплайна, используя effective_input_data_dir
         cmd = [
-            sys.executable, # Используем текущий интерпретатор Python
+            sys.executable,
             str(PIPELINE_RUN_SCRIPT.resolve()),
             "--config", str(CONFIG_FILE_PATH.resolve()),
-            "--run_id", run_id, # Пайплайн будет использовать этот ID для создания своей папки run_id
-            "--input_data_dir", str(input_raw_data_dir.resolve()),
-            "--output_base_dir", str(run_specific_dir.resolve()), # Пайплайн создаст подпапки внутри этого пути
-            "--console_log_level", "DEBUG" # Для пайплайна можно установить DEBUG для детальных логов
+            "--run_id", run_id,
+            "--input_data_dir", str(effective_input_data_dir.resolve()), # <<< ИСПОЛЬЗУЕМ ЭТОТ ПУТЬ
+            "--output_base_dir", str(run_specific_dir.resolve()),
+            "--console_log_level", "DEBUG"
         ]
         flask_logger.info(f"Команда для запуска пайплайна ({run_id}): {' '.join(cmd)}")
 
