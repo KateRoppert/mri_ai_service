@@ -729,13 +729,13 @@ if __name__ == "__main__":
     parser.add_argument("--output_transform_dir", required=True, type=str, help="Выходная директория для трансформаций.")
     parser.add_argument("--template_path", required=True, type=str, help="Путь к файлу шаблона МРТ.")
     parser.add_argument("--config", required=True, type=str, help="Путь к YAML конфиг. файлу пайплайна.")
-    parser.add_argument("--main_log_file", default=None, type=str, help="Путь к основному лог-файлу. По умолч.: 'preprocessing_main.log' в output_transform_dir.")
+    parser.add_argument("--log_file", default=None, type=str, help="Путь к основному лог-файлу. По умолч.: 'preprocessing_main.log' в output_transform_dir.")
     parser.add_argument("--console_log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Уровень лога консоли.")
 
     args = parser.parse_args()
 
     # --- Настройка логирования ---
-    main_log_path_arg = args.main_log_file
+    main_log_path_arg = args.log_file
     output_tfm_dir_arg = args.output_transform_dir
     default_log_name = 'preprocessing_main.log'
     if main_log_path_arg is None:

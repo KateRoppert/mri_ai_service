@@ -322,7 +322,7 @@ def main():
 
     # --- Шаг 6: quality_metrics_without_skull-strip.py ---
     step_name = "6_Fast_Quality_Metrics"
-    step_script = scripts_dir / "quality_metrics_without_skull-strip.py"
+    step_script = scripts_dir / "quality_metrics.py"
     step_log = pipeline_log_dir / "06_fast_qc.log"
     qc_config = steps_config.get('quality_metrics', {})
     anisotropy_thresh_qc = qc_config.get('anisotropy_thresh', 3.0)
