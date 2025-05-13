@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Статус Обработки - {{ run_id }}</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f0f2f5; color: #333; line-height: 1.6; }
+        .container { max-width: 900px; margin: auto; background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 15px rgba(0,0,0,0.1); }
+        h1, h2, h3 { color: #2c3e50; margin-bottom: 15px; }
+        h1 { font-size: 1.8em; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        h2 { font-size: 1.4em; margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 8px;}
+        h3 { font-size: 1.2em; margin-top: 20px;}
+        .status-section { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #e0e0e0;}
+        .status-info p { margin: 8px 0; font-size: 1.1em; }
+        .status-info strong { min-width: 180px; display: inline-block; color: #34495e; }
+        #log_output {
+            background-color: #282c34;
+            color: #d1d5db;
+            padding: 15px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+            border: 1px solid #444;
+        }
+        .reports-section ul, .actions-section ul { list-style: none; padding: 0; }
+        .reports-section li, .actions-section li { margin-bottom: 10px; }
+        .reports-section a, .actions-section button {
+            text-decoration: none;
+            color: #fff;
+            background-color: #3498db;
+            padding: 10px 15px;
+            border-radius: 5px;
+            display: inline-block;
+            transition: background-color 0.3s ease;
+            font-size: 1em;
+        }
+        .actions-section button { border: none; cursor: pointer; }
+        .reports-section a:hover, .actions-section button:hover:not(:disabled) { background-color: #2980b9; }
+        .actions-section button:disabled { background-color: #bdc3c7; cursor: not-allowed; color: #7f8c8d;}
+        .status-badge { padding: 3px 8px; border-radius: 4px; color: white; font-weight: bold; }
+        .status-Running, .status-Queued, .status-MRIQC_Requested, .status-MRIQC_Running, .status-Segmentation_Queued, .status-Segmentation_Running { background-color: #f39c12; } /* Orange */
+        .status-Completed, .status-MRIQC_Completed, .status-Segmentation_Completed { background-color: #2ecc71; } /* Green */
+        .status-Error, .status-MRIQC_Error, .status-Segmentation_Error, .status-Failed { background-color: #e74c3c; } /* Red */
+        .status-Not_Started, .status-Unknown { background-color: #95a5a6; } /* Gray */
+        .flash-messages { list-style: none; padding: 0; margin-bottom: 20px; }
+        .flash-messages li { padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; border: 1px solid transparent; }
+        .flash-messages .success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+        .flash-messages .error { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+        .action-message { font-style: italic; color: #555; font-size: 0.9em; }
+        .back-link { margin-top: 30px; display: block; text-align: center; }
+        .back-link a { font-size: 1.1em; color: #3498db; text-decoration: none; }
+        .back-link a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Статус обработки для запуска: {{ run_id }}</h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flash-messages">
+                {% for category, message in messages %}
+                    <li class="{{ category }}">{{ message }}</li>
+                {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+
+        <div class="status-section">
+            <h3>Общий Статус Запуска</h3>
+            <div class="status-info">
+                <p><strong>ID Запуска:</strong> {{ run_id }}</p>
+                <p><strong>Время начала:</strong> <span id="start_time">{{ run_info.start_time_display }}</span></p>
+                <p><strong>Статус Пайплайна:</strong> <span id="status_pipeline_text" class="status-badge status-{{ run_info.status_pipeline | lower | replace(' ', '_') }}">{{ run_info.status_pipeline }}</span></p>
+                <p><strong>Статус MRIQC:</strong> <span id="status_mriqc_text" class="status-badge status-{{ run_info.status_mriqc | lower | replace(' ', '_') }}">{{ run_info.status_mriqc }}</span></p>
+                <p><strong>Статус Сегментации:</strong> <span id="status_segmentation_text" class="status-badge status-{{ run_info.status_segmentation | lower | replace(' ', '_') }}">{{ run_info.status_segmentation }}</span></p>
+            </div>
+        </div>
+
+        <div class="actions-section">
+            <h3>Дополнительные Действия</h3>
+            <ul>
+                <li>
+                    <button type="button" id="run_mriqc_button" disabled>Запустить MRIQC на сервере</button>
+                    <span id="mriqc_action_message" class="action-message"></span>
+                </li>
+                <li>
+                    <button type="button" id="run_segmentation_button" disabled>Запустить AI Сегментацию</button>
+                    <span id="segmentation_action_message" class="action-message"></span>
+                </li>
+            </ul>
+        </div>
+
+        <h2>Лог Обработки (основной пайплайн)</h2>
+        <pre id="log_output">
+Загрузка логов...
+{%- for line in run_info.user_log -%}
+    {{ line }}
+{%- endfor -%}
+        </pre>
+
+        <div class="reports-section">
+            <h2>Отчеты и Результаты</h2>
+            {% if run_info.reports and run_info.reports|length > 0 %}
+                <ul id="reports_list">
+                {% for report in run_info.reports %}
+                    <li><a href="{{ report.url }}" target="_blank" rel="noopener noreferrer">{{ report.name }}</a></li>
+                {% endfor %}
+                </ul>
+            {% else %}
+                <p id="no_reports_message">Отчеты пока не готовы или отсутствуют.</p>
+            {% endif %}
+        </div>
+
+        <p class="back-link"><a href="{{ url_for('index') }}">Вернуться к списку запусков</a></p>
+    </div>
+
+    <script>
+        const runId = "{{ run_id }}";
+        // Элементы для отображения статусов
+        const pipelineStatusElement = document.getElementById('status_pipeline_text');
+        const mriqcStatusElement = document.getElementById('status_mriqc_text');
+        const segmentationStatusElement = document.getElementById('status_segmentation_text');
+        // Элемент для лога
+        const logOutputElement = document.getElementById('log_output');
+        // Элемент для списка отчетов
+        const reportsListElement = document.getElementById('reports_list');
+        const noReportsMessageElement = document.getElementById('no_reports_message'); // Получаем его один раз
+        // Кнопки и сообщения для действий
+        const runMriqcButton = document.getElementById('run_mriqc_button');
+        const mriqcActionMessageElement = document.getElementById('mriqc_action_message');
+        const runSegmentationButton = document.getElementById('run_segmentation_button');
+        const segmentationActionMessageElement = document.getElementById('segmentation_action_message');
+
+        let statusIntervalId;
+
+        function updateStatusBadge(element, statusText) {
+            if (!element) return; // Защита, если элемент не найден
+            element.textContent = statusText || "N/A"; // Показать N/A если статус пустой
+
+            const baseClass = "status-badge"; // Базовый класс, который всегда должен быть
+            // Удаляем все классы, начинающиеся с "status-", кроме самого "status-badge"
+            const classesToRemove = Array.from(element.classList).filter(
+                cls => cls.startsWith('status-') && cls !== baseClass
+            );
+            classesToRemove.forEach(cls => element.classList.remove(cls));
+            element.className = baseClass; // Восстанавливаем базовый класс
+
+            if (statusText) {
+                // Формируем имя класса: "status-Running" -> "status-running"
+                // "Error (Pipeline Code: 1)" -> "status-error_pipeline_code_1"
+                const statusClass = `status-${statusText.toLowerCase().replace(/\s+/g, '_').replace(/[():]/g, '').replace(/_{2,}/g, '_')}`;
+                element.classList.add(statusClass);
+            } else {
+                element.classList.add(`status-unknown`); // Если статус не определен
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch(`/api/status/${runId}`);
+                if (!response.ok) {
+                    // Если HTTP ошибка, пытаемся прочитать тело ответа, если это JSON
+                    let errorMsg = `HTTP error! status: ${response.status}`;
+                    try {
+                        const errorData = await response.json();
+                        errorMsg += errorData.error ? ` - ${errorData.error}` : "";
+                    } catch (e) { /* не JSON, используем стандартное сообщение */ }
+                    throw new Error(errorMsg);
+                }
+                const data = await response.json();
+
+                // Обновляем статусы
+                updateStatusBadge(pipelineStatusElement, data.status_pipeline);
+                updateStatusBadge(mriqcStatusElement, data.status_mriqc);
+                updateStatusBadge(segmentationStatusElement, data.status_segmentation);
+
+                // Обновление лога
+                if (data.user_log && Array.isArray(data.user_log)) {
+                    logOutputElement.textContent = data.user_log.join('\n'); // ИСПРАВЛЕНО
+                } else if (typeof data.user_log === 'string') {
+                    logOutputElement.textContent = data.user_log;
+                } else {
+                    logOutputElement.textContent = 'Лог пайплайна пока пуст или не загружен.';
+                }
+
+                // Обновление списка отчетов
+                reportsListElement.innerHTML = ''; // Очищаем
+                if (data.reports && data.reports.length > 0) {
+                    if (noReportsMessageElement) noReportsMessageElement.style.display = 'none';
+                    data.reports.forEach(report => {
+                        const li = document.createElement('li');
+                        const a = document.createElement('a');
+                        a.href = report.url;
+                        a.textContent = report.name;
+                        a.target = "_blank";
+                        a.rel = "noopener noreferrer";
+                        li.appendChild(a);
+                        reportsListElement.appendChild(li);
+                    });
+                } else {
+                    if (noReportsMessageElement) {
+                        noReportsMessageElement.style.display = 'list-item'; // Показываем, если он был
+                        noReportsMessageElement.textContent = 'Отчеты пока не готовы или отсутствуют.';
+                    } else { // Если элемента не было, создаем
+                        const li = document.createElement('li');
+                        li.id = "no_reports_message";
+                        li.textContent = 'Отчеты пока не готовы или отсутствуют.';
+                        reportsListElement.appendChild(li);
+                    }
+                }
+
+                // Управление кнопкой MRIQC
+                const mriqcIsActive = data.status_mriqc && (data.status_mriqc.toLowerCase().includes('running') || data.status_mriqc.toLowerCase().includes('queued') || data.status_mriqc.toLowerCase().includes('requested'));
+                const mriqcIsDone = data.status_mriqc && data.status_mriqc.toLowerCase().includes('completed');
+                const mriqcIsError = data.status_mriqc && data.status_mriqc.toLowerCase().includes('error');
+
+                if (runMriqcButton) {
+                    runMriqcButton.disabled = !data.can_run_mriqc || mriqcIsActive || mriqcIsDone || mriqcIsError;
+                    if (mriqcIsActive) runMriqcButton.textContent = "MRIQC выполняется...";
+                    else if (mriqcIsDone) runMriqcButton.textContent = "MRIQC Завершен";
+                    else if (mriqcIsError) runMriqcButton.textContent = "MRIQC Ошибка";
+                    else if (data.can_run_mriqc) runMriqcButton.textContent = "Запустить MRIQC на сервере";
+                    else runMriqcButton.textContent = "MRIQC (недоступно)";
+                }
+
+
+                // Управление кнопкой Сегментации
+                const segIsActive = data.status_segmentation && (data.status_segmentation.toLowerCase().includes('running') || data.status_segmentation.toLowerCase().includes('queued') || data.status_segmentation.toLowerCase().includes('requested'));
+                const segIsDone = data.status_segmentation && data.status_segmentation.toLowerCase().includes('completed');
+                const segIsError = data.status_segmentation && data.status_segmentation.toLowerCase().includes('error');
+
+                if (runSegmentationButton) {
+                    runSegmentationButton.disabled = !data.can_run_segmentation || segIsActive || segIsDone || segIsError;
+                    if (segIsActive) runSegmentationButton.textContent = "Сегментация выполняется...";
+                    else if (segIsDone) runSegmentationButton.textContent = "Сегментация Завершена";
+                    else if (segIsError) runSegmentationButton.textContent = "Сегментация Ошибка";
+                    else if (data.can_run_segmentation) runSegmentationButton.textContent = "Запустить AI Сегментацию";
+                    else runSegmentationButton.textContent = "Сегментация (недоступно)";
+                }
+
+                // Условие остановки интервала
+                const pipelineFinal = data.status_pipeline && !data.status_pipeline.toLowerCase().includes('running') && !data.status_pipeline.toLowerCase().includes('queued');
+                let mriqcFinal = true; // По умолчанию считаем завершенным, если не был запрошен
+                if (data.mriqc_requested) {
+                    mriqcFinal = data.status_mriqc && !data.status_mriqc.toLowerCase().includes('running') && !data.status_mriqc.toLowerCase().includes('queued');
+                }
+                let segFinal = true; // По умолчанию считаем завершенным, если не был запрошен
+                if (data.segmentation_requested) {
+                    segFinal = data.status_segmentation && !data.status_segmentation.toLowerCase().includes('running') && !data.status_segmentation.toLowerCase().includes('queued');
+                }
+
+                if (pipelineFinal && mriqcFinal && segFinal && statusIntervalId) {
+                    clearInterval(statusIntervalId);
+                    statusIntervalId = null; // Сбрасываем ID интервала
+                    console.log("Опрос статуса остановлен, все задачи завершены или неактивны.");
+                }
+
+            } catch (error) {
+                console.error('Ошибка AJAX при получении статуса:', error.message);
+                updateStatusBadge(pipelineStatusElement, 'Ошибка связи');
+                updateStatusBadge(mriqcStatusElement, 'Ошибка связи');
+                updateStatusBadge(segmentationStatusElement, 'Ошибка связи');
+                if (statusIntervalId) clearInterval(statusIntervalId);
+                statusIntervalId = null;
+            }
+        }
+
+        async function triggerAction(buttonElement, messageElement, actionUrl, buttonTextStart, buttonTextRunning) {
+            if (!buttonElement || !messageElement) return;
+            buttonElement.disabled = true;
+            buttonElement.textContent = buttonTextRunning;
+            messageElement.textContent = "Отправка запроса...";
+            try {
+                const response = await fetch(actionUrl, { method: 'POST' });
+                const result = await response.json(); // Ожидаем JSON в любом случае
+                if (response.ok) {
+                    messageElement.textContent = result.message || "Запрос на обработку принят.";
+                    fetchStatus(); // Обновить статус немедленно
+                } else {
+                    messageElement.textContent = `Ошибка (${response.status}): ${result.error || response.statusText || 'Неизвестная ошибка сервера'}`;
+                    // Не разблокируем кнопку сразу, дадим fetchStatus обновить ее состояние
+                    fetchStatus();
+                }
+            } catch (error) {
+                console.error(`Ошибка запроса на ${actionUrl}:`, error);
+                messageElement.textContent = `Сетевая ошибка при запросе.`;
+                // Не разблокируем кнопку сразу, дадим fetchStatus обновить ее состояние
+                fetchStatus();
+            }
+        }
+
+        // Инициализация и периодический опрос
+        if (runId) {
+            fetchStatus();
+            statusIntervalId = setInterval(fetchStatus, 7000); // Увеличил интервал до 7с
+
+            if(runMriqcButton) {
+                runMriqcButton.addEventListener('click', () => {
+                    triggerAction(
+                        runMriqcButton, mriqcActionMessageElement,
+                        `/run_mriqc_remote/${runId}`,
+                        "Запустить MRIQC на сервере", "Запуск MRIQC..."
+                    );
+                });
+            }
+            if(runSegmentationButton) {
+                 runSegmentationButton.addEventListener('click', () => {
+                    triggerAction(
+                        runSegmentationButton, segmentationActionMessageElement,
+                        `/run_segmentation/${runId}`,
+                        "Запустить AI Сегментацию", "Запуск Сегментации..."
+                    );
+                });
+            }
+        } else {
+            console.error("runId не определен на странице processing.html");
+            logOutputElement.textContent = "Ошибка: ID запуска не определен. Обновление статуса невозможно.";
+        }
+    </script>
+</body>
+</html>
