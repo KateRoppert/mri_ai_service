@@ -375,4 +375,4 @@ def download_file_from_run(run_id: str, subpath: str):
 
 if __name__ == '__main__':
     flask_logger.info(f"Запуск Flask dev server (host 0.0.0.0, port 5000, debug={app.debug})...")
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=5001, debug=True, threaded=True)
