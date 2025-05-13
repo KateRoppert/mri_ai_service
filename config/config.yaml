@@ -15,6 +15,7 @@ paths:
     mriqc_interpret: "mriqc_interpretation"
     transforms: "transformations"
     preprocessed: "preprocessed_data"
+    segmentation_masks: "segmentation_masks"
     logs: "logs" # Директория для лог-файлов шагов пайплайна
 
 # Пути к исполняемым файлам (укажите полный путь или 'имя_команды', если она в PATH)
@@ -23,6 +24,7 @@ executables:
   dciodvfy: "/usr/bin/dciodvfy"
   bids_validator: "/usr/local/bin/bids-validator"
   mriqc: "/home/roppert/work/mri_ai_service/venv/bin/mriqc"
+  aiaa_server_url: "http://172.16.71.222:5000"
   # FSL BET обычно находится через PATH или FSLDIR, но можно указать явно, если нужно
   # fsl_bet: "/path/to/fsl/bin/bet"
 
@@ -65,3 +67,11 @@ steps:
       bet_fractional_intensity_threshold: 0.5 # Параметр -f для BET
       bet_robust: true # Параметр -R для BET
       # bet_options: "-B -f 0.4" # Можно передать строку с доп. опциями BET, если интерфейс Nipype не все поддерживает
+  segmentation:
+    enabled: True
+    model_name: "Unet"
+    modality_input_map: # Переименовал для ясности
+      t1: "T1w"       # Часть имени файла для T1 (например, _T1w_preproc)
+      t1c: "ce-gd_T1w"      # Часть имени файла для T1c (например, _T1c_preproc или _ce-gd_T1w_preproc)
+      t2: "T2w"       # Часть имени файла для T2
+      flair: "FLAIR" 
