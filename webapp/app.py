@@ -966,6 +966,64 @@ def trigger_mriqc_on_server(run_id: str):
     # Клиент должен будет опрашивать /api/status/<run_id> для получения обновлений
     return jsonify({"message": f"Запрос на запуск MRIQC на сервере для run_id '{run_id}' принят и поставлен в очередь."}), 202 # 202 Accepted
 
+@app.route('/trigger_mriqc_auto/<run_id>', methods=['POST'])
+def trigger_mriqc_auto_from_pipeline(run_id: str):
+    """
+    Эндпоинт для автоматического запуска MRIQC из run_pipeline.py.
+    Предполагается, что run_pipeline.py вызывает его, когда NIfTI файлы готовы
+    и конфигурация разрешает автоматический запуск.
+    """
+    flask_logger.info(f"Автоматический триггер MRIQC для run_id: {run_id} получен от пайплайна.")
+    
+    current_flask_app = app # Получаем текущий экземпляр Flask
+
+    with active_runs_lock:
+        run_data = active_runs.get(run_id)
+
+        if not run_data:
+            flask_logger.error(f"[{run_id}] Авто-триггер MRIQC: Run ID не найден.")
+            return jsonify({"error": f"Run ID '{run_id}' не найден."}), 404
+
+        # Проверяем, не активен ли уже поток MRIQC для этого запуска
+        current_mriqc_thread_obj = run_data.get('thread_mriqc_trigger')
+        if current_mriqc_thread_obj and current_mriqc_thread_obj.is_alive():
+            flask_logger.info(f"[{run_id}] Авто-триггер MRIQC: Задача MRIQC уже выполняется.")
+            return jsonify({"message": "Задача MRIQC уже выполняется для этого запуска."}), 200 # OK, уже запущено
+
+        # Проверка, если MRIQC уже был успешно завершен
+        mriqc_status = run_data.get('status_mriqc', 'Not Started')
+        if mriqc_status.startswith('MRIQC_Completed') or mriqc_status.startswith('MRIQC_Placeholder_Success'):
+            flask_logger.info(f"[{run_id}] Авто-триггер MRIQC: Задача MRIQC уже была успешно выполнена (статус: {mriqc_status}).")
+            return jsonify({"message": f"MRIQC уже был успешно выполнен для этого запуска (статус: {mriqc_status})."}), 200 # OK, уже сделано
+
+        # В этом эндпоинте мы доверяем, что run_pipeline.py вызвал его в правильный момент,
+        # то есть NIfTI файлы готовы. Флаг can_run_mriqc должен быть уже true,
+        # или будет установлен true в /api/status при следующей проверке.
+        # Если он еще false, execute_remote_mriqc_task может выйти, если проверка там строгая.
+        # Для надежности, можно здесь еще раз установить can_run_mriqc, если NIfTI есть.
+        # (логика проверки can_run_mriqc из /api/status может быть вынесена в отдельную функцию)
+
+        # Убедимся, что 'paths' и необходимые пути существуют в run_data
+        if not run_data.get('paths', {}).get('bids_nifti'):
+            flask_logger.error(f"[{run_id}] Авто-триггер MRIQC: Отсутствуют необходимые пути в run_data (например, bids_nifti).")
+            return jsonify({"error": "Внутренняя ошибка сервера: отсутствуют пути для запуска MRIQC."}), 500
+
+        # Если все хорошо, ставим в очередь и запускаем
+        run_data['mriqc_requested'] = True # Помечаем, что запуск был инициирован (хоть и автоматически)
+        run_data['status_mriqc'] = 'MRIQC_Queued_Auto' # Новый статус для автозапуска
+        run_data.setdefault('user_log',[]).append(f"[{datetime.now().strftime('%H:%M:%S')}] MRIQC: Автоматический запуск инициирован пайплайном.")
+        flask_logger.info(f"[{run_id}] MRIQC (авто) поставлен в очередь. Запуск потока execute_remote_mriqc_task.")
+
+        mriqc_thread = threading.Thread(
+            target=execute_remote_mriqc_task,
+            args=(current_flask_app, run_id,)
+        )
+        mriqc_thread.daemon = True
+        run_data['thread_mriqc_trigger'] = mriqc_thread
+        mriqc_thread.start()
+
+    return jsonify({"message": f"Автоматический запуск MRIQC для run_id '{run_id}' инициирован."}), 202
+
 # === РЕАЛИЗАЦИЯ запуска сегментации ===
 def run_segmentation_for_all_subjects_thread_target(
     run_id: str,
