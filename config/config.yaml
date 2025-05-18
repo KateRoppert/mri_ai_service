@@ -18,19 +18,19 @@ paths:
     segmentation_masks: "segmentation_masks"
     logs: "logs" # Директория для лог-файлов шагов пайплайна
 
-# Пути к исполняемым файлам (укажите полный путь или 'имя_команды', если она в PATH)
+# Пути к исполняемым файлам
 executables:
-  dcm2niix: "/home/roppert/abin/dcm2niix_lnx/dcm2niix"  # Предполагаем, что нужен для шага 4 (нужно проверить скрипт)
+  dcm2niix: "/home/roppert/abin/dcm2niix_lnx/dcm2niix"
   dciodvfy: "/usr/bin/dciodvfy"
   bids_validator: "/usr/local/bin/bids-validator"
-  mriqc: "/home/roppert/work/mri_ai_service/venv/bin/mriqc"
+  # Путь к локальному MRIQC, если он будет запускаться не на сервере
+  mriqc_local_exec: "/home/roppert/work/mri_ai_service/venv/bin/mriqc"
   aiaa_server_url: "http://172.16.71.222:5000"
-  # FSL BET обычно находится через PATH или FSLDIR, но можно указать явно, если нужно
   # fsl_bet: "/path/to/fsl/bin/bet"
 
 # Параметры для конкретных шагов пайплайна
 steps:
-  reorganize_folders: {} # Нет специфичных параметров пока
+  reorganize_folders: {}
   dicom_standard_check: {}
   extract_metadata: {}
   convert_dicom_to_nifti: {}
@@ -38,40 +38,52 @@ steps:
   quality_metrics:
     anisotropy_thresh: 3.0
   mriqc:
-    enabled: false              # true - запускать, false - пропустить
-    report_type: "both"        # participant, group, или both
-    n_procs: 2               
-    n_threads: 4             
-    mem_gb: 8                 
+    enabled: true                     # Общий переключатель для MRIQC (true - запускать, false - пропустить полностью)
+    run_on_server: true               # Если enabled=true: true - запускать на удаленном сервере, false - запускать локально
+    run_on_server_auto_trigger: true  # Если run_on_server=true: true - run_pipeline.py автоматически инициирует запуск на сервере,
+                                      # false - пользователь должен запустить вручную через веб-интерфейс.
+    report_type: "participant"               # participant, group, или both (передается на сервер)
+    n_procs: 1                        # Количество процессов (передается на сервер)
+    n_threads: 1                      # Количество потоков на процесс (передается на сервер)
+    mem_gb: 15                         # Ограничение по памяти в ГБ (передается на сервер)
   mriqc_interpretation:
-    enabled: false
+    # Этот флаг 'enabled' будет в основном влиять на локальный запуск.
+    # При запуске на сервере скрипт-обертка обычно запускает и quality, и interpretation вместе.
+    enabled: true
   preprocessing:
     keep_intermediate_files: false
     intensity_normalization:
-      method: "HistogramMatching" # Пока только один метод, но можно расширить
-      # Другие параметры для HistogramMatching, если нужны
+      method: "HistogramMatching"
     bias_field_correction:
-      method: "N4BiasFieldCorrection" # Пока только один метод
+      method: "N4BiasFieldCorrection"
       sitk_shrinkFactor: 4
-      # sitk_numberOfIterations: [50, 50, 50, 50] # Можно задать явно количество итераций для каждого уровня
-      # sitk_convergenceThreshold: 0.0
     registration:
-      method: "ANTsPy" # Пока только один метод
-      ants_transform_type: "SyN" # Тип трансформации для ANTs
-      # ants_metric: "MI" # Можно добавить параметры метрики схожести
-      # ants_iterations: "100x70x50x20" # Параметры итераций ANTs
-      # ants_regularization: "Gauss[3,0]"
-      # ants_smoothing_sigmas: "3x2x1x0vox"
+      method: "ANTsPy"
+      ants_transform_type: "SyN"
     skull_stripping:
-      method: "FSL_BET" # Пока только один метод
-      bet_fractional_intensity_threshold: 0.5 # Параметр -f для BET
-      bet_robust: true # Параметр -R для BET
-      # bet_options: "-B -f 0.4" # Можно передать строку с доп. опциями BET, если интерфейс Nipype не все поддерживает
+      method: "FSL_BET"
+      bet_fractional_intensity_threshold: 0.5
+      bet_robust: true
   segmentation:
-    enabled: True
+    enabled: true
     model_name: "Unet"
-    modality_input_map: # Переименовал для ясности
-      t1: "T1w"       # Часть имени файла для T1 (например, _T1w_preproc)
-      t1c: "ce-gd_T1w"      # Часть имени файла для T1c (например, _T1c_preproc или _ce-gd_T1w_preproc)
-      t2: "T2w"       # Часть имени файла для T2
-      flair: "FLAIR" 
+    modality_input_map:
+      t1: "T1w"
+      t1c: "ce-gd_T1w"
+      t2: "T2w"
+      flair: "FLAIR"
+
+# Параметры для удаленного запуска MRIQC на сервере
+server_mriqc:
+  ssh_user: "roppert"                                                            # Ваш пользователь на сервере (TUNKA)
+  ssh_host: "bigdata.nsu.ru"                                                     # Адрес сервера (TUNKA)
+  # ssh_key_path: "/home/roppert/.ssh/id_rsa_mriqc_server"                       # Опционально: путь к приватному SSH ключу, если не используется ssh-agent или стандартный ключ
+  remote_base_data_dir: "/media/storage/roppert/mriqc_pipeline_runs"             # Базовая директория на сервере, где будут создаваться подпапки для каждого run_id
+  remote_wrapper_script_path: "/media/storage/roppert/brain_tumour_project/run_mriqc_task_on_server.sh" # Путь к вашему скрипту-обертке на сервере
+  mriqc_executable_path_on_server: "mriqc"                                       # Имя команды 'mriqc' или полный путь к исполняемому файлу mriqc на сервере (это 10-й аргумент для remote_wrapper_script_path)
+
+  # Параметры мониторинга и очистки на сервере (для Flask приложения)
+  monitoring_interval_seconds: 60  # Как часто Flask будет проверять статус задачи на сервере (наличие .done/.error)
+  monitoring_timeout_hours: 24     # Максимальное время ожидания завершения MRIQC на сервере перед тем, как считать задачу зависшей
+  delete_remote_task_dir_on_success: true # Удалять ли временную директорию задачи на сервере после успешного завершения и копирования результатов
+  delete_remote_task_dir_on_error: false  # Удалять ли временную директорию задачи на сервере в случае ошибки (полезно для отладки, чтобы посмотреть логи и данные на сервере)
