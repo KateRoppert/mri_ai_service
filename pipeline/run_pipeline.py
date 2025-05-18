@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 import uuid
 import traceback
+import requests
 
 # --- Настройка основного логгера пайплайна ---
 logger = logging.getLogger("Pipeline")
@@ -291,6 +292,64 @@ def main():
             else:
                  logger.info(f"{USER_LOG_PREFIX} BIDS валидация не обнаружила критических ошибок.")
 
+    # --- Автоматический запуск MRIQC на сервере, если настроено ---
+    logger.info("--- Проверка необходимости автоматического запуска MRIQC на сервере ---")
+    mriqc_step_cfg = steps_config.get('mriqc', {}) # Получаем конфигурацию шага mriqc
+    
+    should_run_mriqc_generally = mriqc_step_cfg.get('enabled', False)
+    run_mriqc_on_server = mriqc_step_cfg.get('run_on_server', False)
+    auto_trigger_mriqc = mriqc_step_cfg.get('run_on_server_auto_trigger', False)
+
+    # Предполагаем, что Flask работает на порту 5001 локально
+    # Этот URL лучше бы вынести в конфигурацию, если он может меняться,
+    # но для простоты пока захардкодим.
+    FLASK_API_BASE_URL = "http://127.0.0.1:5001" # Убедитесь, что порт совпадает с портом вашего Flask-приложения
+
+    if should_run_mriqc_generally and run_mriqc_on_server and auto_trigger_mriqc:
+        if bids_nifti_dir.is_dir() and any(bids_nifti_dir.iterdir()): # Проверка, что папка NIfTI не пуста
+            logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} NIfTI файлы готовы. Инициирую автоматический запуск MRIQC на сервере...")
+            
+            trigger_url = f"{FLASK_API_BASE_URL}/trigger_mriqc_auto/{run_id_to_use}"
+            
+            try:
+                logger.debug(f"Отправка POST-запроса на: {trigger_url}")
+                response = requests.post(trigger_url, timeout=15) # Таймаут 15 секунд
+
+                if response.status_code == 202: # Ожидаем 202 Accepted от Flask
+                    logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Запрос на автоматический запуск MRIQC успешно отправлен на Flask. "
+                                f"Ответ: {response.status_code} - {response.json().get('message', '')}")
+                    logger.info(f"--- Запрос на авто-запуск MRIQC для {run_id_to_use} принят Flask API. Пайплайн продолжит локальную обработку. ---")
+                elif response.status_code == 200: # Flask может вернуть 200, если задача уже была запущена/выполнена
+                     logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Запрос на автоматический запуск MRIQC обработан Flask. "
+                                f"Возможно, задача уже была запущена/выполнена. Ответ: {response.status_code} - {response.json().get('message', '')}")
+                     logger.info(f"--- Запрос на авто-запуск MRIQC для {run_id_to_use} обработан Flask API (возможно, уже запущен). Пайплайн продолжит локальную обработку. ---")
+                else:
+                    logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА при отправке запроса на авто-запуск MRIQC. "
+                                 f"Статус: {response.status_code}, Ответ: {response.text}")
+                    logger.error(f"--- Ошибка от Flask API при попытке авто-запуска MRIQC для {run_id_to_use}. Статус: {response.status_code} ---")
+            
+            except requests.exceptions.ConnectionError as e_conn:
+                logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА: Не удалось подключиться к Flask API ({trigger_url}) для авто-запуска MRIQC.")
+                logger.error(f"--- Ошибка соединения с Flask API ({trigger_url}): {e_conn} ---")
+            except requests.exceptions.Timeout as e_timeout:
+                logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА: Таймаут при подключении к Flask API ({trigger_url}) для авто-запуска MRIQC.")
+                logger.error(f"--- Таймаут соединения с Flask API ({trigger_url}): {e_timeout} ---")
+            except Exception as e_req:
+                logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА: Непредвиденная ошибка при отправке запроса на авто-запуск MRIQC.")
+                logger.error(f"--- Непредвиденная ошибка при запросе к Flask API: {e_req} ---", exc_info=True)
+        else:
+            logger.warning(f"[{run_id_to_use}] {USER_LOG_PREFIX} Авто-запуск MRIQC на сервере настроен, но папка BIDS NIfTI ({bids_nifti_dir}) пуста или не существует. Пропуск триггера.")
+            logger.warning(f"--- Пропуск авто-запуска MRIQC: папка {bids_nifti_dir} пуста или не найдена. ---")
+    elif should_run_mriqc_generally and run_mriqc_on_server and not auto_trigger_mriqc:
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} MRIQC настроен для запуска на сервере, но автоматический триггер отключен. Запуск через веб-интерфейс.")
+        logger.info(f"--- Автоматический запуск MRIQC на сервере отключен в конфигурации. ---")
+    elif should_run_mriqc_generally and not run_mriqc_on_server:
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} MRIQC настроен для локального запуска (будет выполнен позже, если это Шаг 7).")
+        logger.info(f"--- MRIQC настроен для локального запуска (Шаг 7). ---")
+    else: # should_run_mriqc_generally is False
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} MRIQC отключен в конфигурации.")
+        logger.info(f"--- MRIQC полностью отключен в конфигурации. ---")
+
 
     # Шаг 6: quality_metrics.py
     step_name = "6_Fast_Quality_Metrics"
@@ -309,7 +368,8 @@ def main():
     # Шаг 7: mriqc_quality.py (Опциональный)
     step_name = "7_MRIQC_Analysis"
     mriqc_config = steps_config.get('mriqc', {})
-    if mriqc_config.get('enabled', False):
+    if mriqc_step_cfg.get('enabled', False) and not mriqc_step_cfg.get('run_on_server', False):
+        logger.info(f"--- Запуск ЛОКАЛЬНОГО MRIQC (Шаг 7) ---")
         step_script = scripts_dir / "mriqc_quality.py"
         step_log = pipeline_log_dir / "07_mriqc.log"
         mriqc_error_log_name = mriqc_config.get("error_log_filename", "mriqc_run_errors.log")
@@ -325,14 +385,20 @@ def main():
                 "--error_log", str(mriqc_error_log_path),
                 "--console_log_level", args.console_log_level ]
         if not run_step(cmd, step_name, step_log): sys.exit(1)
-    else:
-        logger.info(f"{USER_LOG_PREFIX} Пропущен шаг - {step_name} (отключен в конфигурации).")
-        logger.info(f"--- Шаг '{step_name}' пропущен (отключен). ---") # Для основного лога
+    elif mriqc_step_cfg.get('enabled', False) and mriqc_step_cfg.get('run_on_server', False):
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен локальный шаг - {step_name}, так как MRIQC настроен для запуска на сервере.")
+        logger.info(f"--- Шаг '{step_name}' (локальный MRIQC) пропущен, так как он запускается/запущен на сервере. ---")
+    else: # mriqc_step_cfg.get('enabled', False) is False
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен шаг - {step_name} (отключен в конфигурации).")
+        logger.info(f"--- Шаг '{step_name}' (локальный MRIQC) пропущен (отключен). ---")
 
     # Шаг 8: mriqc_interpretation.py (Опциональный)
     step_name = "8_MRIQC_Interpretation"
     mriqc_interpret_config = steps_config.get('mriqc_interpretation', {})
-    if mriqc_config.get('enabled', False) and mriqc_interpret_config.get('enabled', False):
+    if mriqc_step_cfg.get('enabled', False) and \
+       not mriqc_step_cfg.get('run_on_server', False) and \
+       mriqc_interpret_config.get('enabled', False):
+        logger.info(f"--- Запуск ЛОКАЛЬНОЙ интерпретации MRIQC (Шаг 8) ---") 
         if mriqc_output_dir.exists() and any(mriqc_output_dir.iterdir()):
             step_script = scripts_dir / "mriqc_interpretation.py"
             step_log = pipeline_log_dir / "08_mriqc_interpret.log"
@@ -345,10 +411,13 @@ def main():
         else:
             logger.warning(f"{USER_LOG_PREFIX} Пропущен шаг - {step_name}: папка результатов MRIQC не найдена или пуста.")
             logger.warning(f"--- Шаг '{step_name}' пропущен: {mriqc_output_dir} не найдена/пуста. ---")
+    elif mriqc_step_cfg.get('enabled', False) and mriqc_step_cfg.get('run_on_server', False):
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен локальный шаг - {step_name}, так как MRIQC (и его интерпретация) обрабатывается на сервере.")
+        logger.info(f"--- Шаг '{step_name}' (локальная интерпретация MRIQC) пропущен, обрабатывается на сервере. ---")
     else:
-        logger.info(f"{USER_LOG_PREFIX} Пропущен шаг - {step_name} (отключен в конфигурации).")
-        logger.info(f"--- Шаг '{step_name}' пропущен (отключен). ---")
-
+        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен шаг - {step_name} (отключен в конфигурации).")
+        logger.info(f"--- Шаг '{step_name}' (локальная интерпретация MRIQC) пропущен (отключен). ---")
+        
     # Шаг 9: preprocessing.py
     step_name = "9_Preprocessing"
     step_script = scripts_dir / "preprocessing.py"
