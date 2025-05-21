@@ -380,12 +380,18 @@ def execute_remote_mriqc_task(flask_app_instance, run_id: str):
             current_status_mriqc = 'MRIQC_Running_On_Server'
             with active_runs_lock: run_data['status_mriqc'] = current_status_mriqc
             logger_from_app.info(f"[{run_id}] (MRIQC_Thread) Статус MRIQC обновлен на: {current_status_mriqc}")
+
+            # НОВАЯ СТРОКА: Получаем флаг очистки mriqc_work_dir
+            cleanup_mriqc_work_dir_on_server_after_fix = server_config.get('cleanup_mriqc_work_dir_on_server_after_fix', False) # По умолчанию False, если не указано
+            cleanup_mriqc_work_dir_flag_str = "true" if cleanup_mriqc_work_dir_on_server_after_fix else "false"
+            logger_from_app.info(f"[{run_id}] (MRIQC_Thread) Флаг очистки mriqc_work_dir на сервере после исправления: {cleanup_mriqc_work_dir_flag_str}")
             
             wrapper_args = [
                 run_id, remote_bids_nifti_dir, remote_mriqc_output_dir,
                 remote_mriqc_interpretation_dir, remote_server_job_log_file,
                 str(report_type), str(n_procs), str(n_threads), str(mem_gb),
-                mriqc_executable_path_on_server
+                mriqc_executable_path_on_server,
+                cleanup_mriqc_work_dir_flag_str
             ]
             quoted_wrapper_args = [f"'{arg}'" for arg in wrapper_args]
             
@@ -468,6 +474,12 @@ def execute_remote_mriqc_task(flask_app_instance, run_id: str):
             # --- Конец цикла мониторинга ---
 
             if mriqc_task_succeeded:
+                logger_from_app.info(f"[{run_id}] (MRIQC_Thread) MRIQC на сервере успешно завершен (найден .done).")
+                # --- ВРЕМЕННАЯ ОСТАНОВКА ДЛЯ ПРОВЕРКИ СЕРВЕРА ---
+                # logger_from_app.info(f"[{run_id}] (MRIQC_Thread) ОСТАНОВКА ПЕРЕД КОПИРОВАНИЕМ РЕЗУЛЬТАТОВ. Проверьте содержимое {remote_mriqc_output_dir} на сервере.")
+                # time.sleep(300) # 5 минут, чтобы успеть посмотреть
+                # return # Временно выходим, чтобы не копировать
+
                 # --- 5. Копирование результатов обратно ---
                 current_status_mriqc = 'MRIQC_Copying_From_Server'
                 with active_runs_lock: run_data['status_mriqc'] = current_status_mriqc # Обновляем статус перед началом копирования

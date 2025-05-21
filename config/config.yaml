@@ -87,3 +87,4 @@ server_mriqc:
   monitoring_timeout_hours: 24     # Максимальное время ожидания завершения MRIQC на сервере перед тем, как считать задачу зависшей
   delete_remote_task_dir_on_success: true # Удалять ли временную директорию задачи на сервере после успешного завершения и копирования результатов
   delete_remote_task_dir_on_error: false  # Удалять ли временную директорию задачи на сервере в случае ошибки (полезно для отладки, чтобы посмотреть логи и данные на сервере)
+  cleanup_mriqc_work_dir_on_server_after_fix: true # true - очищать mriqc_work, false - не очищать
