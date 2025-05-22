@@ -12,6 +12,20 @@ __pycache__/
 # Данные и результаты обработки
 runs_data/
 tests/sample_data/
+tests/BA 
+tests/BA (Копия)/
+tests/sample_data_5/
+tests/BA_1.zip/
+tests/BA.zip/
+bids_data_dicom/
+bids_data_nifti/
+bids_quality_metrics/
+bids_validation/
+dciodvfy_reports/
+dicom_metadata/
+mriqc_output/
+preprocessed_data/
+transformations/
 
 # Шаблоны для предобработки
 mni_templates/
