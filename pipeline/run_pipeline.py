@@ -436,25 +436,18 @@ def main():
     segmentation_config = steps_config.get('segmentation', {}) # Параметры шага из конфига
     aiaa_server_url = executables_config.get('aiaa_server_url')   # URL сервера AIAA
 
-    # Проверяем, включен ли шаг и задан ли URL сервера
     if segmentation_config.get('enabled', False) and aiaa_server_url:
         logger.info(f"{USER_LOG_PREFIX} Запуск этапа сегментации...")
-        segmentation_script_path = scripts_dir / "segmentation.py" # Путь к скрипту сегментации
-        modality_map_config = segmentation_config.get('modality_input_map') # Карта для поиска модальностей
+        segmentation_script_path = scripts_dir / "segmentation.py" 
+        modality_map_config_from_pipeline = segmentation_config.get('modality_input_map') 
 
-        if not modality_map_config:
+        if not modality_map_config_from_pipeline:
             logger.error(
                 f"{USER_LOG_PREFIX} ОШИБКА - {step_name_segmentation_base}: "
                 f"Карта модальностей 'modality_input_map' не найдена в config -> steps -> segmentation. Пропуск сегментации."
             )
         else:
-            # --- Группировка предобработанных файлов по субъекту/сессии ---
-            # Словарь для хранения путей к файлам модальностей для каждой пары субъект-сессия
-            # Ключ: ('sub-XXX', 'ses-YYY'), Значение: {'t1': Path, 't1c': Path, ...}
             subject_session_modality_files = {}
-
-            # Ищем файлы в preprocessed_dir (результат Шага 9)
-            # Предполагаем, что preprocessed_dir сохраняет структуру sub-XXX/ses-YYY/anat/
             logger.debug(f"Поиск предобработанных файлов для сегментации в: {preprocessed_dir}")
             for subj_dir in preprocessed_dir.glob("sub-*"):
                 if not subj_dir.is_dir(): continue
@@ -462,115 +455,115 @@ def main():
                     if not ses_dir.is_dir(): continue
                     anat_dir = ses_dir / "anat"
                     if not anat_dir.is_dir(): continue
-
                     current_subj_ses_key = (subj_dir.name, ses_dir.name)
                     if current_subj_ses_key not in subject_session_modality_files:
                         subject_session_modality_files[current_subj_ses_key] = {}
+                    
+                    # Ключи, которые ожидает segmentation.py (t1, t1c, t2, flair)
+                    expected_script_mod_keys = ['t1', 't1c', 't2', 'flair']
+                    for script_mod_key in expected_script_mod_keys:
+                        # Ищем соответствующий идентификатор из конфига пайплайна
+                        # (например, для script_mod_key 't1c', ищем 'ce-gd_T1w' в modality_map_config_from_pipeline)
+                        mod_identifier_str = modality_map_config_from_pipeline.get(script_mod_key)
+                        if not mod_identifier_str:
+                            logger.warning(f"Для {current_subj_ses_key}: идентификатор для ключа '{script_mod_key}' не найден в modality_input_map конфига. Эта модальность будет пропущена для segmentation.py.")
+                            continue
 
-                    # Ищем файлы для каждой модальности, указанной в modality_input_map
-                    for mod_key_internal, mod_identifier_str in modality_map_config.items():
-                        # mod_key_internal: 't1', 't1c', 't2', 'flair'
-                        # mod_identifier_str: 'T1w', 'ce-gd_T1w', 'T2w', 'FLAIR'
-                        # Формируем ожидаемое имя файла (или его часть)
-                        # Имя файла может быть: {subj_id}_{ses_id}_{mod_identifier_str}.nii.gz
-                        # или {subj_id}_{ses_id}_{mod_identifier_str}_какой-то_суффикс_preproc.nii.gz
-                        # Используем glob для более гибкого поиска, если имена не точные
-                        
-                        # Простой поиск по идентификатору в имени файла
                         found_mod_file = None
-                        for n_file in anat_dir.glob(f"*{mod_identifier_str}*.nii*"): # Ищет и .nii и .nii.gz
+                        for n_file in anat_dir.glob(f"*{mod_identifier_str}*.nii*"): 
                             if n_file.is_file():
-                                # Дополнительная проверка, чтобы T1w не путался с ce-gd_T1w
-                                if mod_key_internal == 't1' and modality_map_config.get('t1c') in n_file.name:
-                                    continue # Это скорее всего T1c, пропускаем для T1
+                                if script_mod_key == 't1': # Особая проверка для T1, чтобы не спутать с T1c
+                                    t1c_identifier = modality_map_config_from_pipeline.get('t1c')
+                                    if t1c_identifier and t1c_identifier in n_file.name:
+                                        continue 
                                 found_mod_file = n_file
-                                break # Нашли первый подходящий
+                                break 
                         
                         if found_mod_file:
-                            if mod_key_internal in subject_session_modality_files[current_subj_ses_key]:
-                                logger.warning(
-                                    f"Для {subj_dir.name}/{ses_dir.name} найдено несколько файлов для модальности '{mod_key_internal}'. "
-                                    f"Используется: {found_mod_file.name}"
-                                )
-                            else:
-                                subject_session_modality_files[current_subj_ses_key][mod_key_internal] = found_mod_file
-                                logger.debug(f"  Найден файл для {subj_dir.name}/{ses_dir.name}: {mod_key_internal} -> {found_mod_file.name}")
-                        # else: # Логировать отсутствие не обязательно здесь, проверим позже
-                            # logger.debug(f"  Файл для модальности '{mod_key_internal}' (идент: '{mod_identifier_str}') не найден в {anat_dir}")
-
+                            subject_session_modality_files[current_subj_ses_key][script_mod_key] = found_mod_file
+                            logger.debug(f"  Найден файл для {subj_dir.name}/{ses_dir.name}: {script_mod_key} -> {found_mod_file.name}")
+                        else:
+                            logger.info(f"  Файл для модальности '{script_mod_key}' (идент: '{mod_identifier_str}') не найден в {anat_dir} для {subj_dir.name}/{ses_dir.name}. Будет передан как отсутствующий.")
+                            # Оставляем отсутствующий ключ в subject_session_modality_files[current_subj_ses_key]
+                            # или явно subject_session_modality_files[current_subj_ses_key][script_mod_key] = None
+                            # Но удобнее, если его просто не будет, а segmentation.py ожидает args.input_t1 и т.д.
+                            # которые будут None, если аргумент не передан.
 
             if not subject_session_modality_files:
                 logger.warning(f"{USER_LOG_PREFIX} {step_name_segmentation_base}: Не найдено сгруппированных по sub/ses файлов в {preprocessed_dir}.")
             
             segmentation_errors_count = 0
-            # --- Цикл по найденным наборам субъект/сессия ---
-            for (subj_id, ses_id), modalities_map in subject_session_modality_files.items():
+            for (subj_id, ses_id), found_modalities_map in subject_session_modality_files.items():
                 logger.info(f"--- Подготовка к сегментации для {subj_id}/{ses_id} ---")
                 
-                # Проверяем наличие всех 4-х необходимых модальностей
-                required_modalities_for_script = ['t1', 't1c', 't2', 'flair']
-                input_files_for_segmentation_cmd = {}
-                all_modalities_present = True
-                for req_mod in required_modalities_for_script:
-                    if req_mod not in modalities_map:
-                        logger.warning(
-                            f"Для {subj_id}/{ses_id} отсутствует необходимая модальность '{req_mod}'. "
-                            f"Пропуск сегментации для этого набора."
-                        )
-                        all_modalities_present = False
-                        break
-                    input_files_for_segmentation_cmd[f"--input_{req_mod}"] = str(modalities_map[req_mod])
-                
-                if not all_modalities_present:
-                    segmentation_errors_count += 1
-                    continue # К следующему субъекту/сессии
-
-                # Формируем пути для выходной маски и индивидуального лога
                 client_id_for_server = f"{subj_id}_{ses_id}"
-                # Имя выходной маски (например, на основе T1 файла)
-                base_name_for_output = modalities_map['t1'].name.replace(".nii.gz", "").replace(".nii", "")
-                # Убираем BIDS суффикс модальности, если он там есть
-                t1_identifier = modality_map_config.get('t1', 'T1w') # Получаем идентификатор T1 из конфига
-                base_name_for_output = base_name_for_output.replace(f"_{t1_identifier}", "") # Удаляем, например, _T1w
                 
-                output_mask_filename = f"{base_name_for_output}_segmask.nii.gz" # sub-001_ses-001_segmask.nii.gz
-                # Сохраняем маску в соответствующую подпапку внутри segmentation_output_root_dir
+                # Формируем пути для выходной маски и индивидуального лога
+                # Пытаемся взять имя на основе T1, если он есть, иначе первый доступный или дефолт.
+                base_name_source_file = None
+                if 't1' in found_modalities_map:
+                    base_name_source_file = found_modalities_map['t1']
+                elif found_modalities_map: # Если хоть какие-то модальности есть
+                    base_name_source_file = next(iter(found_modalities_map.values()))
+                
+                if base_name_source_file:
+                    base_name_for_output = base_name_source_file.name.replace(".nii.gz", "").replace(".nii", "")
+                    t1_identifier_from_config = modality_map_config_from_pipeline.get('t1', 'T1w') # Идентификатор T1 из конфига
+                    # Удаляем основной идентификатор модальности (например, _T1w), чтобы имя было чище
+                    base_name_for_output = base_name_for_output.replace(f"_{t1_identifier_from_config}", "")
+                else: # Если ни одного файла не нашлось (хотя это маловероятно, если current_subj_ses_key существует)
+                    base_name_for_output = f"{subj_id}_{ses_id}" # Дефолтное имя
+                    logger.warning(f"Для {client_id_for_server} не найдено ни одного файла для формирования базового имени, используется дефолт.")
+
+                output_mask_filename = f"{base_name_for_output}_segmask.nii.gz"
                 output_mask_subfolder = segmentation_output_root_dir / subj_id / ses_id / "anat"
                 output_mask_subfolder.mkdir(parents=True, exist_ok=True)
                 output_mask_file_path = output_mask_subfolder / output_mask_filename
 
                 seg_log_filename = f"{base_name_for_output}_segmentation.log"
                 individual_seg_log_path = segmentation_individual_logs_dir / seg_log_filename
-                # segmentation_individual_logs_dir уже создана выше
 
                 # Формируем команду для запуска segmentation.py
+                # Теперь передаем аргументы, только если файл найден.
+                # segmentation.py должен быть готов к тому, что некоторые аргументы --input_* могут отсутствовать.
                 cmd_segmentation = [
                     python_executable, str(segmentation_script_path),
                     "--output_mask", str(output_mask_file_path),
-                    "--config", str(config_path), # Основной конфиг для URL сервера и имени модели
+                    "--config", str(config_path),
                     "--client_id", client_id_for_server,
-                    "--console_log_level", args.console_log_level # Уровень для консоли этого скрипта
-                    # Пути к 4 модальностям добавляются из словаря
+                    "--console_log_level", args.console_log_level
                 ]
-                for arg_name, file_path_str in input_files_for_segmentation_cmd.items():
-                    cmd_segmentation.append(arg_name)
-                    cmd_segmentation.append(file_path_str)
                 
-                # Запускаем сегментацию для текущего набора файлов
+                # Добавляем аргументы для найденных модальностей
+                if found_modalities_map.get('t1'):
+                    cmd_segmentation.extend(["--input_t1", str(found_modalities_map['t1'])])
+                if found_modalities_map.get('t1c'):
+                    cmd_segmentation.extend(["--input_t1ce", str(found_modalities_map['t1c'])])
+                if found_modalities_map.get('t2'):
+                    cmd_segmentation.extend(["--input_t2", str(found_modalities_map['t2'])])
+                if found_modalities_map.get('flair'):
+                    cmd_segmentation.extend(["--input_flair", str(found_modalities_map['flair'])])
+
+                # Проверяем, есть ли хотя бы один входной файл для segmentation.py
+                # (segmentation.py сам должен это проверить и выйти, если ни одного нет, но можно и здесь)
+                if not any(key in found_modalities_map for key in ['t1', 't1c', 't2', 'flair']):
+                    logger.error(f"{USER_LOG_PREFIX} ОШИБКА - {step_name_segmentation_base} для {client_id_for_server}: "
+                                 f"Не найдено ни одного из необходимых файлов модальностей (T1, T1c, T2, FLAIR). Пропуск сегментации.")
+                    segmentation_errors_count += 1
+                    continue
+
                 step_name_current_seg = f"{step_name_segmentation_base} для {client_id_for_server}"
                 if not run_step(cmd_segmentation, step_name_current_seg, individual_seg_log_path):
                     segmentation_errors_count += 1
                     logger.error(f"{USER_LOG_PREFIX} Ошибка сегментации для: {client_id_for_server}. См. лог: {individual_seg_log_path.name}")
-                # Если нужно, можно удалить временные 4D файлы, если они создавались
             
-            # Итог по сегментации
             if segmentation_errors_count > 0:
                 logger.warning(f"{USER_LOG_PREFIX} Завершено с {segmentation_errors_count} ошибками на этапе сегментации.")
             else:
-                logger.info(f"{USER_LOG_PREFIX} Все наборы файлов успешно переданы на сегментацию (если были найдены все модальности).")
+                logger.info(f"{USER_LOG_PREFIX} Все наборы файлов (с хотя бы одной модальностью) успешно переданы на сегментацию.")
     else:
         logger.info(f"{USER_LOG_PREFIX} Пропущен шаг - {step_name_segmentation_base} (отключен или не настроен URL сервера).")
-        logger.info(f"--- Шаг '{step_name_segmentation_base}' пропущен. ---") # Для основного лога
+        logger.info(f"--- Шаг '{step_name_segmentation_base}' пропущен. ---")
 
 
     # --- Завершение пайплайна ---
