@@ -79,7 +79,7 @@ except Exception as e:
     # Для рабочего сервера здесь должен быть sys.exit(1) или аналогичная остановка
 
 app.config['ALLOWED_EXTENSIONS'] = {'zip'}
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
 app.config['SECRET_KEY'] = os.urandom(24)
 app.config['PIPELINE_SCRIPTS_DIR'] = Path(__file__).parent.parent / "scripts" # Путь к папке scripts
 
@@ -723,6 +723,14 @@ def upload_file():
     except Exception as e:
         flask_logger.error(f"Ошибка подготовки данных для {run_id}: {e}", exc_info=True)
         flash(f"Ошибка сервера при подготовке данных: {e}", "error"); return redirect(url_for('index'))
+    
+    # удаляем архив после успешной распаковки
+    if input_archive_dir.exists(): # Проверяем, что папка еще существует
+            try:
+                shutil.rmtree(input_archive_dir)
+                flask_logger.info(f"Папка с исходным архивом {input_archive_dir} успешно удалена.")
+            except Exception as e_rm_archive:
+                flask_logger.error(f"Не удалось удалить папку с архивом {input_archive_dir}: {e_rm_archive}", exc_info=True)
 
     effective_input_data_dir = input_raw_data_dir
     items_in_raw = list(input_raw_data_dir.iterdir())
