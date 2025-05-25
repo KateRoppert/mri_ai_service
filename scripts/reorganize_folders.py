@@ -1,332 +1,70 @@
-# import os
-# import shutil
-# import pydicom
-# import argparse
-# import logging
-# import sys
-# from collections import defaultdict
-
-# # --- Глобальная настройка логгера ---
-# logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
-# formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-# def setup_logging(log_file_path):
-#     """Настраивает вывод логов в консоль (INFO) и файл (DEBUG)."""
-#     if logger.hasHandlers():
-#         logger.handlers.clear()
-
-#     # Обработчик для консоли
-#     ch = logging.StreamHandler(sys.stdout)
-#     ch.setLevel(logging.INFO)
-#     ch.setFormatter(formatter)
-#     logger.addHandler(ch)
-
-#     # Обработчик для файла
-#     try:
-#         log_dir = os.path.dirname(log_file_path)
-#         if log_dir:
-#             os.makedirs(log_dir, exist_ok=True)
-#         fh = logging.FileHandler(log_file_path)
-#         fh.setLevel(logging.DEBUG)
-#         fh.setFormatter(formatter)
-#         logger.addHandler(fh)
-#         logger.debug(f"Логирование в файл настроено: {log_file_path}")
-#     except Exception as e:
-#         logger.error(f"Не удалось настроить логирование в файл {log_file_path}: {e}", exc_info=False)
-
-# def is_dicom_file(file_path):
-#     """Проверяет, является ли файл валидным DICOM-файлом"""
-#     try:
-#         pydicom.dcmread(file_path, stop_before_pixels=True)
-#         logger.debug(f"Файл {file_path} опознан как DICOM.")
-#         return True
-#     except pydicom.errors.InvalidDicomError:
-#         logger.debug(f"Файл {file_path} не является валидным DICOM.")
-#         return False
-#     except Exception as e:
-#         logger.warning(f"Ошибка при проверке файла {file_path} на DICOM: {e}")
-#         return False # Считаем его не-DICOM при любой ошибке чтения
-
-# def determine_modality(ds, file_path):
-#     """Автоматически определяет модальность используя комбинацию метаданных DICOM и анализа пути"""
-#     # Анализ DICOM тегов
-#     series_desc = ds.get('SeriesDescription', '').lower()
-#     protocol = ds.get('ProtocolName', '').lower()
-#     logger.debug(f"Определение модальности для {file_path}: SeriesDesc='{series_desc}', Protocol='{protocol}'")
-
-#     # Ключевые слова для модальностей (из исходного скрипта)
-#     modality_keywords = {
-#         't1c': ['t1c', 't1+c', 't1-ce', 't1contrast', 't1gd', 'contrast'],
-#         't1': ['t1', 't1w', 't1-weighted', 't1weighted', 'spgr', 'mprage'],
-#         't2fl': ['t2fl', 't2-flair', 'flair', 't2flair'],
-#         't2': ['t2', 't2w', 't2-weighted', 't2weighted', 'tse']
-#     }
-
-#     # Проверка тегов DICOM
-#     for modality, keys in modality_keywords.items():
-#         # проверяет наличие ЛЮБОГО ключа в SeriesDescription ИЛИ ProtocolName
-#         if any(key in series_desc for key in keys) or any(key in protocol for key in keys):
-#              logger.debug(f"Модальность '{modality}' определена по тегам DICOM.")
-#              return modality
-
-#     # Анализ пути к файлу (если по тегам не нашли)
-#     path_parts = os.path.normpath(file_path).split(os.sep)
-#     for part in reversed(path_parts):
-#         part_lower = part.lower()
-#         for modality, keys in modality_keywords.items():
-#             if any(key in part_lower for key in keys):
-#                 logger.debug(f"Модальность '{modality}' определена по пути к файлу ('{part_lower}').")
-#                 return modality
-
-#     # Анализ параметров сканирования
-#     try:
-#         tr = float(ds.get('RepetitionTime', 0))
-#         te = float(ds.get('EchoTime', 0))
-#         logger.debug(f"Параметры сканирования: TR={tr}, TE={te}")
-#         if 300 < tr < 800 and te < 30:
-#              logger.debug("Модальность 't1' определена по TR/TE.")
-#              return 't1'
-#         elif 2000 < tr < 5000 and te > 80:
-#              logger.debug("Модальность 't2' определена по TR/TE.")
-#              return 't2'
-#     except Exception as e:
-#         logger.debug(f"Не удалось проанализировать параметры сканирования TR/TE: {e}")
-#         pass
-
-#     logger.warning(f"Не удалось определить модальность для файла: {file_path}")
-#     return 'unknown'
-
-# def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom'):
-#     """Организует DICOM файлы в формате BIDS."""
-#     logger.info(f"Начало организации данных из '{input_dir}' в '{output_dir}'.")
-
-#     # Проверка входной директории
-#     if not os.path.isdir(input_dir):
-#         logger.error(f"Входная директория не найдена: {input_dir}")
-#         # Выбрасываем ошибку, чтобы ее поймал основной блок
-#         raise FileNotFoundError(f"Входная директория не найдена: {input_dir}")
-
-#     # Создаем корневую выходную директорию
-#     try:
-#         os.makedirs(output_dir, exist_ok=True)
-#         logger.debug(f"Выходная директория создана или уже существует: {output_dir}")
-#     except OSError as e:
-#         logger.error(f"Не удалось создать выходную директорию {output_dir}: {e}")
-#         raise # Передаем ошибку выше
-
-#     # Обрабатываем пациентов (первый уровень вложенности)
-#     patient_folders = sorted([f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))])
-#     if not patient_folders:
-#         logger.warning(f"Во входной директории '{input_dir}' не найдено подпапок (пациентов).")
-#         return # Завершаем, если нет пациентов
-
-#     for patient_idx, patient_folder in enumerate(patient_folders, 1):
-#         patient_path = os.path.join(input_dir, patient_folder)
-#         sub_id = f"sub-{patient_idx:03d}"
-#         sub_path = os.path.join(output_dir, sub_id) # Папка субъекта в output_dir
-#         logger.info(f"Обработка пациента: {patient_folder} -> {sub_id}")
-
-#         # Обрабатываем сессии (второй уровень вложенности)
-#         session_folders = sorted([f for f in os.listdir(patient_path) if os.path.isdir(os.path.join(patient_path, f))])
-#         if not session_folders:
-#             logger.warning(f"  В папке пациента '{patient_folder}' не найдено подпапок (сессий).")
-#             continue # К следующему пациенту
-
-#         for session_idx, session_folder in enumerate(session_folders, 1):
-#             session_path = os.path.join(patient_path, session_folder)
-#             ses_id = f"ses-{session_idx:03d}"
-#             ses_bids_path = os.path.join(sub_path, ses_id, 'anat')
-#             logger.info(f"  Обработка сессии: {session_folder} -> {ses_id}")
-
-#             # Собираем все DICOM-файлы в сессии
-#             dcm_files = []
-#             logger.debug(f"  Поиск DICOM файлов в {session_path}...")
-#             for root, _, files in os.walk(session_path):
-#                 for file in files:
-#                     file_path = os.path.join(root, file)
-#                     if is_dicom_file(file_path):
-#                         dcm_files.append(file_path)
-
-#             if not dcm_files:
-#                 logger.warning(f"  В папке сессии '{session_folder}' не найдено DICOM файлов.")
-#                 continue # К следующей сессии
-#             logger.info(f"  Найдено {len(dcm_files)} DICOM файлов.")
-
-#             # Группируем файлы по модальности
-#             modality_groups = defaultdict(list)
-#             files_with_unknown_modality = 0
-#             files_with_read_error = 0
-
-#             for file_path in dcm_files:
-#                 try:
-#                     ds = pydicom.dcmread(file_path, stop_before_pixels=True)
-#                     modality = determine_modality(ds, file_path) # 't1', 't1c', 't2', 't2fl' или 'unknown'
-
-#                     if modality == 'unknown':
-#                         # Логгирование происходит внутри determine_modality
-#                         files_with_unknown_modality += 1
-#                         continue # Не копируем неизвестные
-
-#                     modality_groups[modality].append(file_path)
-#                     logger.debug(f"  Файл {os.path.basename(file_path)} отнесен к модальности '{modality}'.")
-
-#                 except Exception as e:
-#                     # Ловим ошибки чтения DICOM или определения модальности
-#                     logger.error(f"  Ошибка обработки файла {file_path}: {e}", exc_info=True)
-#                     files_with_read_error += 1
-#                     continue # Пропускаем файл с ошибкой
-
-#             if files_with_unknown_modality > 0:
-#                 logger.warning(f"  Не удалось определить модальность для {files_with_unknown_modality} файлов.")
-#             if files_with_read_error > 0:
-#                  logger.error(f"  Произошли ошибки при чтении/обработке {files_with_read_error} файлов.")
-
-
-#             if not modality_groups:
-#                 logger.warning(f"  Нет файлов с известной модальностью для копирования в сессии {ses_id}.")
-#                 continue
-
-#             # Копируем файлы в BIDS-структуру
-#             logger.info(f"  Копирование файлов...")
-#             for modality, files_to_copy in modality_groups.items():
-#                 # Создаем путь с папкой 'anat' и подпапкой модальности
-#                 modality_path = os.path.join(ses_bids_path, modality)
-#                 try:
-#                     os.makedirs(modality_path, exist_ok=True)
-#                     logger.debug(f"  Создана/проверена папка модальности: {modality_path}")
-#                 except OSError as e:
-#                     logger.error(f"    Не удалось создать папку для модальности {modality}: {e}. Пропуск.")
-#                     continue # Пропускаем эту модальность
-
-#                 logger.debug(f"  Копирование {len(files_to_copy)} файлов для '{modality}'...")
-#                 for idx, src_file in enumerate(files_to_copy, 1):
-#                     # Имя файла как в оригинале: sub-XXX_ses-YYY_modality_ZZZ.dcm
-#                     dst_filename = f"{sub_id}_{ses_id}_{modality}_{idx:03d}.dcm"
-#                     dst_file = os.path.join(modality_path, dst_filename)
-#                     try:
-#                         shutil.copy(src_file, dst_file)
-#                         logger.debug(f"    Скопирован: {os.path.basename(src_file)} -> {dst_filename}")
-#                     except Exception as e:
-#                         logger.error(f"    Не удалось скопировать {src_file} в {dst_file}: {e}")
-
-#     logger.info("Организация данных завершена!")
-
-# if __name__ == '__main__':
-#     # Настройка парсера аргументов командной строки
-#     parser = argparse.ArgumentParser(
-#         description='Организует DICOM файлы из входной директории в BIDS-подобную структуру.',
-#         formatter_class=argparse.ArgumentDefaultsHelpFormatter
-#         )
-#     parser.add_argument(
-#         '--input_dir',
-#         required=True,
-#         help='Входная директория с сырыми данными (структура: patient/session/...).'
-#         )
-#     parser.add_argument(
-#         '--output_dir',
-#         default='bids_data_dicom',
-#         help='Корневая выходная директория для сохранения BIDS структуры.'
-#         )
-#     parser.add_argument(
-#         '--log_file',
-#         default=None,
-#         help='Путь к файлу для записи логов. Если не указан, будет создан файл "reorganize_folders.log" внутри --output_dir.'
-#         )
-
-#     args = parser.parse_args()
-
-#     # Определение пути к лог-файлу
-#     log_file_path = args.log_file
-#     if log_file_path is None:
-#         output_dir_path = args.output_dir
-#         log_filename = 'reorganize_folders.log'
-#         try:
-#             # Создаем output_dir заранее, если надо
-#             if output_dir_path and not os.path.exists(output_dir_path):
-#                  os.makedirs(output_dir_path, exist_ok=True)
-#             log_file_path = os.path.join(output_dir_path or '.', log_filename)
-#         except OSError as e:
-#              log_file_path = log_filename # Пишем в текущую папку при ошибке
-#              print(f"Предупреждение: Не удалось использовать {output_dir_path} для лог-файла. Лог будет записан в {log_file_path}. Ошибка: {e}")
-
-#     # Настройка логирования
-#     setup_logging(log_file_path)
-
-#     # Основной блок выполнения
-#     try:
-#         logger.info("="*50)
-#         logger.info(f"Запуск reorganize_folders.py")
-#         logger.info(f"  Входная директория: {os.path.abspath(args.input_dir)}")
-#         logger.info(f"  Выходная директория: {os.path.abspath(args.output_dir)}")
-#         logger.info(f"  Лог-файл: {os.path.abspath(log_file_path)}")
-#         logger.info("="*50)
-
-#         # Вызов основной функции с аргументами из CLI
-#         organize_dicom_to_bids(args.input_dir, args.output_dir)
-
-#         logger.info("Скрипт успешно завершил работу.")
-#         sys.exit(0) # Успешный выход
-
-#     except FileNotFoundError as e:
-#         logger.error(f"Критическая ошибка: {e}")
-#         sys.exit(1) # Выход с кодом ошибки
-#     except OSError as e:
-#         logger.error(f"Критическая ошибка файловой системы: {e}", exc_info=True)
-#         sys.exit(1)
-#     except Exception as e:
-#         # Ловим все остальные непредвиденные ошибки
-#         logger.exception(f"Непредвиденная критическая ошибка: {e}")
-#         sys.exit(1)
-
 import os
 import shutil
 import pydicom
-import pydicom.dataelem # Нужно для isinstance
+import pydicom.dataelem # Для isinstance DataElement
 import argparse
 import logging
 import sys
 from collections import defaultdict
+from datetime import datetime # Для сортировки сессий
 
 # --- Глобальная настройка логгера ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG) 
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+logger.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 def setup_logging(log_file_path):
+    """Настраивает вывод логов в консоль (INFO) и файл (DEBUG)."""
     if logger.hasHandlers():
         logger.handlers.clear()
+
+    # Обработчик для консоли
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(formatter)
     logger.addHandler(ch)
+
+    # Обработчик для файла
     try:
         log_dir = os.path.dirname(log_file_path)
-        if log_dir:
+        if log_dir and not os.path.exists(log_dir): # Создаем директорию, если ее нет
             os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(log_file_path)
+        fh = logging.FileHandler(log_file_path, mode='w') # 'w' для перезаписи лога при каждом запуске
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
         logger.debug(f"Логирование в файл настроено: {log_file_path}")
     except Exception as e:
-        logger.error(f"Не удалось настроить логирование в файл {log_file_path}: {e}", exc_info=False)
+        # Если не удалось настроить файловый логгер, выводим ошибку в консоль
+        # и продолжаем только с консольным логгером.
+        logger.removeHandler(ch) # Удаляем предыдущий консольный, чтобы не дублировать
+        ch_err = logging.StreamHandler(sys.stdout)
+        ch_err.setLevel(logging.ERROR) # Показываем только ошибки в этом случае
+        ch_err.setFormatter(formatter)
+        logger.addHandler(ch_err)
+        logger.error(f"Не удалось настроить логирование в файл {log_file_path}: {e}. Логирование будет только в консоль.", exc_info=False)
+
 
 def is_dicom_file(file_path):
+    """Проверяет, является ли файл валидным DICOM-файлом"""
     try:
+        # stop_before_pixels=True значительно ускоряет чтение, т.к. нам не нужны пиксельные данные
         pydicom.dcmread(file_path, stop_before_pixels=True)
         return True
     except pydicom.errors.InvalidDicomError:
+        logger.debug(f"Файл {file_path} не является валидным DICOM.")
         return False
-    except Exception as e:
+    except Exception as e: # Ловим другие возможные ошибки при чтении файла
         logger.warning(f"Ошибка при проверке файла {file_path} на DICOM: {e}")
         return False
 
 def get_dicom_value(ds, tag_tuple_or_keyword, default=None):
     """
-    Безопасно извлекает значение тега.
-    Если ds.get() неожиданно возвращает DataElement, извлекает .value.
-    Для строк возвращает lower(), для списков тоже.
+    Безопасно извлекает значение тега из DICOM датасета.
+    - Если ds.get() возвращает DataElement, извлекает .value.
+    - Для строк возвращает их в нижнем регистре.
+    - Для MultiValue (списков DICOM) возвращает список строк в нижнем регистре или оригинальных значений.
+    - Для числовых и других типов возвращает значение как есть.
     """
     try:
         val = ds.get(tag_tuple_or_keyword, default)
@@ -334,43 +72,51 @@ def get_dicom_value(ds, tag_tuple_or_keyword, default=None):
         if val is default: # Тега нет, или ds.get() вернул переданный default
             return default
 
-        # Ключевое исправление: если ds.get() вернул DataElement, извлекаем .value
+        # Если ds.get() вернул DataElement (хотя обычно не должен для .get)
         if isinstance(val, pydicom.dataelem.DataElement):
-            # Это не должно происходить согласно документации pydicom для ds.get(),
-            # но ошибка указывает, что это возможно.
-            logger.warning(
-                f"Tag {tag_tuple_or_keyword}: ds.get() unexpectedly returned a DataElement. "
-                f"Extracting .value. Original DataElement: {val}"
+            logger.debug(
+                f"Tag {tag_tuple_or_keyword}: ds.get() вернул DataElement. Извлечение .value. DataElement: {val}"
             )
             val = val.value
-            if val is None: # Если .value пустое
-                return default # Возвращаем исходный default
+            if val is None:
+                return default
 
-        if val is None: # После извлечения .value, оно могло стать None
+        if val is None:
             return default
 
         if isinstance(val, str):
-            return val.lower()
+            return val.strip().lower() # Удаляем пробелы по краям и приводим к нижнему регистру
         if isinstance(val, (pydicom.multival.MultiValue, list)):
             processed_list = []
             for v_item in val:
                 if isinstance(v_item, str):
-                    processed_list.append(v_item.lower())
-                else:
+                    processed_list.append(v_item.strip().lower())
+                elif v_item is not None: # Пропускаем None значения в списке
                     processed_list.append(v_item)
             return processed_list
-        # Для чисел (int, float, DSfloat, IS и т.д.)
-        return val
+        return val # Для чисел (DSfloat, IS, etc.) и других типов
     except Exception as e:
-        logger.error(f"Исключение в get_dicom_value для {tag_tuple_or_keyword}: {e}", exc_info=True)
+        logger.error(f"Исключение в get_dicom_value для тега {tag_tuple_or_keyword} в файле (Series: {ds.get('SeriesInstanceUID', 'N/A')}): {e}", exc_info=False)
         return default
 
+def safe_float(value, tag_name_for_log="value"):
+    """Безопасно конвертирует значение в float."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        logger.debug(f"  Не удалось конвертировать {tag_name_for_log}='{value}' (тип: {type(value)}) в float.")
+        return None
 
 def find_keyword_in_text(text_to_search, keywords_list):
-    if not text_to_search:
+    """Ищет любое из ключевых слов в тексте. Возвращает первое найденное или None."""
+    if not text_to_search or not keywords_list:
         return None
+    # Приводим text_to_search к строке и нижнему регистру один раз
+    text_to_search_lower = str(text_to_search).lower()
     for kw in keywords_list:
-        if kw in text_to_search:
+        if kw.lower() in text_to_search_lower: # Ключевые слова тоже приводим к lower для надежности
             return kw
     return None
 
@@ -609,147 +355,260 @@ def determine_modality(ds, file_path):
     return 'unknown'
 
 
-def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom'):
-    logger.info(f"Начало организации данных из '{input_dir}' в '{output_dir}'.")
+
+def sort_dicom_files_in_series(dicom_files_paths):
+    """Сортирует список путей к DICOM файлам по InstanceNumber."""
+    sorted_files = []
+    for f_path in dicom_files_paths:
+        try:
+            ds_slice = pydicom.dcmread(f_path, stop_before_pixels=True, specific_tags=[(0x0020,0x0013)]) # Читаем только InstanceNumber
+            instance_number = get_dicom_value(ds_slice, (0x0020,0x0013))
+            if instance_number is not None:
+                try:
+                    instance_number = int(instance_number)
+                except ValueError:
+                    logger.warning(f"Не удалось конвертировать InstanceNumber '{instance_number}' в int для файла {f_path}. Используем имя файла для сортировки этого элемента.")
+                    instance_number = f_path # Fallback для этого файла
+            else: # Если InstanceNumber отсутствует
+                logger.warning(f"InstanceNumber отсутствует в файле {f_path}. Используем имя файла для сортировки этого элемента.")
+                instance_number = f_path # Fallback для этого файла
+            sorted_files.append((instance_number, f_path))
+        except Exception as e:
+            logger.error(f"Ошибка чтения InstanceNumber из файла {f_path}: {e}. Файл будет в конце или отсортирован по имени.")
+            sorted_files.append((float('inf'), f_path)) # Помещаем файлы с ошибками в конец
+
+    # Сортируем: сначала по числовому InstanceNumber, затем по пути файла (если InstanceNumber был строкой/одинаковый)
+    sorted_files.sort(key=lambda x: (isinstance(x[0], str), x[0]))
+    return [f_path for _, f_path in sorted_files]
+
+
+def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom_universal', action_type='copy'):
+    """Организует DICOM файлы из любой структуры в BIDS на основе DICOM тегов."""
+    logger.info(f"Начало организации данных из '{input_dir}' в '{output_dir}'. Действие: {action_type.upper()}")
+
     if not os.path.isdir(input_dir):
         logger.error(f"Входная директория не найдена: {input_dir}")
         raise FileNotFoundError(f"Входная директория не найдена: {input_dir}")
+
     try:
         os.makedirs(output_dir, exist_ok=True)
     except OSError as e:
-        logger.error(f"Не удалось создать выходную директорию {output_dir}: {e}")
+        logger.error(f"Не удалось создать корневую выходную директорию {output_dir}: {e}")
         raise
 
-    patient_folders = sorted([f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))])
-    if not patient_folders:
-        logger.warning(f"Во входной директории '{input_dir}' не найдено подпапок (пациентов).")
+    # --- Фаза 1: Глобальное сканирование и сбор информации ---
+    logger.info("Фаза 1: Сканирование DICOM файлов и сбор метаданных...")
+    # Структура: patient_orig_id -> study_orig_uid -> series_orig_uid -> {info}
+    collected_data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    
+    dicom_file_count = 0
+    processed_file_count = 0
+
+    for root, _, files in os.walk(input_dir):
+        for file_name in files:
+            file_path = os.path.join(root, file_name)
+            dicom_file_count += 1
+            if dicom_file_count % 500 == 0:
+                logger.info(f"  Просканировано файлов: {dicom_file_count}...")
+
+            if is_dicom_file(file_path):
+                try:
+                    ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+                    
+                    pat_id = get_dicom_value(ds, (0x0010, 0x0020), "UNKNOWN_PATIENT_ID")
+                    study_uid = get_dicom_value(ds, (0x0020, 0x000D), "UNKNOWN_STUDY_UID")
+                    series_uid = get_dicom_value(ds, (0x0020, 0x000E), "UNKNOWN_SERIES_UID")
+
+                    if any(val.startswith("UNKNOWN_") for val in [pat_id, study_uid, series_uid]):
+                        logger.warning(f"Пропущен файл {file_path}: отсутствует PatientID, StudyUID или SeriesUID.")
+                        continue
+                    
+                    # Сохраняем информацию о серии
+                    series_data = collected_data[pat_id][study_uid][series_uid]
+                    if 'files' not in series_data:
+                        series_data['files'] = []
+                        series_data['first_ds'] = ds # Сохраняем первый датасет для определения модальности
+                        
+                        study_date_str = get_dicom_value(ds, (0x0008,0x0020), "00000000")
+                        study_time_str = get_dicom_value(ds, (0x0008,0x0030), "000000.000000").split('.')[0] # Берем только HHMMSS
+                        try:
+                            series_data['study_datetime'] = datetime.strptime(f"{study_date_str}{study_time_str}", "%Y%m%d%H%M%S")
+                        except ValueError:
+                            logger.warning(f"Некорректная дата/время ({study_date_str}/{study_time_str}) для {study_uid}. Используется начало эпохи.")
+                            series_data['study_datetime'] = datetime.min
+
+                        series_num_val = get_dicom_value(ds, (0x0020,0x0011))
+                        try:
+                            series_data['series_number_int'] = int(series_num_val) if series_num_val is not None else float('inf')
+                        except ValueError:
+                            series_data['series_number_int'] = float('inf') # Если не число, будет последним при сортировке
+                            logger.warning(f"SeriesNumber '{series_num_val}' для серии {series_uid} не является числом.")
+                    
+                    series_data['files'].append(file_path)
+                    processed_file_count +=1
+
+                except Exception as e:
+                    logger.error(f"Ошибка обработки DICOM файла {file_path} на этапе сбора: {e}", exc_info=False)
+    
+    logger.info(f"Фаза 1 завершена. Всего просканировано файлов: {dicom_file_count}. Обработано DICOM файлов: {processed_file_count}.")
+    if not collected_data:
+        logger.warning("Не найдено валидных DICOM данных для организации.")
         return
 
-    for patient_idx, patient_folder in enumerate(patient_folders, 1):
-        patient_path = os.path.join(input_dir, patient_folder)
-        sub_id = f"sub-{patient_idx:03d}"
-        sub_path = os.path.join(output_dir, sub_id)
-        logger.info(f"Обработка пациента: {patient_folder} -> {sub_id}")
+    # --- Фаза 2: Формирование BIDS структуры и копирование файлов ---
+    logger.info("Фаза 2: Формирование BIDS структуры и копирование файлов...")
+    
+    # Создание BIDS ID для пациентов
+    sorted_original_patient_ids = sorted(list(collected_data.keys()))
+    patient_bids_map = {orig_id: f"sub-{i+1:03d}" for i, orig_id in enumerate(sorted_original_patient_ids)}
 
-        session_folders = sorted([f for f in os.listdir(patient_path) if os.path.isdir(os.path.join(patient_path, f))])
-        if not session_folders:
-            logger.warning(f"  В папке пациента '{patient_folder}' не найдено подпапок (сессий).")
-            continue
+    for orig_pat_id, studies_data in collected_data.items():
+        bids_sub_id = patient_bids_map[orig_pat_id]
+        logger.info(f"Обработка пациента: {orig_pat_id} -> {bids_sub_id}")
 
-        for session_idx, session_folder in enumerate(session_folders, 1):
-            session_path_full = os.path.join(patient_path, session_folder)
-            ses_id = f"ses-{session_idx:03d}"
-            ses_bids_path = os.path.join(sub_path, ses_id, 'anat') 
-            logger.info(f"  Обработка сессии: {session_folder} -> {ses_id}")
+        # Создание BIDS ID для сессий (сортировка по дате/времени)
+        sorted_original_study_uids = sorted(
+            studies_data.keys(),
+            # key=lambda suid: studies_data[suid].get(next(iter(studies_data[suid])), {}).get('study_datetime', datetime.min)
+            # Ключ для сортировки сессий: берем study_datetime из первой серии этой сессии
+            key=lambda suid: studies_data[suid][next(iter(studies_data[suid]))]['study_datetime']
 
-            dcm_files_in_session = []
-            for root, _, files in os.walk(session_path_full):
-                for file in files:
-                    file_path_full = os.path.join(root, file)
-                    if is_dicom_file(file_path_full): 
-                        dcm_files_in_session.append(file_path_full)
+        )
+        session_bids_map = {orig_id: f"ses-{i+1:03d}" for i, orig_id in enumerate(sorted_original_study_uids)}
+
+        for orig_study_uid, series_collection in studies_data.items():
+            bids_ses_id = session_bids_map[orig_study_uid]
+            logger.info(f"  Обработка сессии: {orig_study_uid} -> {bids_ses_id}")
+
+            bids_anat_path = os.path.join(output_dir, bids_sub_id, bids_ses_id, 'anat')
+
+            # Группировка серий по модальности для определения run-номеров
+            modality_to_series_runs = defaultdict(list) # {'t1w': [(series_num_int, series_uid), ...]}
             
-            if not dcm_files_in_session:
-                logger.warning(f"  В папке сессии '{session_folder}' ({session_path_full}) не найдено DICOM файлов.")
-                continue
-            logger.info(f"  Найдено {len(dcm_files_in_session)} DICOM файлов в сессии.")
-
-            modality_groups = defaultdict(list)
-            files_with_unknown_modality = 0
-            files_with_read_error = 0
-            processed_series_for_modality_decision = {}
-
-            for file_path_item in dcm_files_in_session:
-                try:
-                    ds = pydicom.dcmread(file_path_item, stop_before_pixels=True)
-                    series_uid = ds.get("SeriesInstanceUID", None)
-                    modality = 'unknown'
-                    
-                    if series_uid and series_uid in processed_series_for_modality_decision:
-                        modality = processed_series_for_modality_decision[series_uid]
-                        # logger.debug(f"  Используется ранее определенная модальность '{modality}' для серии {series_uid} (файл {os.path.basename(file_path_item)}).")
-                    else:
-                        modality = determine_modality(ds, file_path_item)
-                        if series_uid and modality != 'unknown':
-                            processed_series_for_modality_decision[series_uid] = modality
-
-                    if modality == 'unknown':
-                        files_with_unknown_modality +=1
-                        continue 
-                    modality_groups[modality].append(file_path_item)
-                except Exception as e:
-                    # Включаем exc_info=True для полного трейсбека
-                    logger.error(f"  Ошибка обработки файла {file_path_item}: {e}", exc_info=True) 
-                    files_with_read_error += 1
+            for orig_series_uid, series_info in series_collection.items():
+                first_ds_for_modality = series_info['first_ds']
+                # Используем первый файл серии для логгинга в determine_modality и для fallback по пути
+                modality_label = determine_modality(first_ds_for_modality, series_info['files'][0]) 
+                
+                if modality_label == 'unknown':
+                    logger.warning(f"    Пропуск серии {orig_series_uid}: не удалось определить модальность.")
                     continue
+                
+                modality_to_series_runs[modality_label].append(
+                    (series_info['series_number_int'], orig_series_uid)
+                )
             
-            if files_with_unknown_modality > 0:
-                 logger.warning(f"  Не удалось определить модальность для {files_with_unknown_modality} файлов в сессии {ses_id} ({session_folder}).")
-            if files_with_read_error > 0:
-                 logger.error(f"  Произошли ошибки при чтении/обработке {files_with_read_error} файлов в сессии {ses_id} ({session_folder}).")
-
-            if not modality_groups:
-                logger.warning(f"  Нет файлов с известной модальностью для копирования в сессии {ses_id} ({session_folder}).")
+            if not modality_to_series_runs:
+                logger.warning(f"    Нет серий с известной модальностью для сессии {bids_ses_id}.")
                 continue
 
-            logger.info(f"  Копирование файлов для сессии {ses_id} ({session_folder})...")
-            for modality_key, files_to_copy_list in modality_groups.items():
-                modality_target_dir = os.path.join(ses_bids_path, modality_key) 
+            # Копирование файлов с присвоением run-номеров
+            for modality_label, run_candidates in modality_to_series_runs.items():
+                # Сортируем серии внутри одной модальности по их SeriesNumber
+                sorted_run_candidates = sorted(run_candidates, key=lambda x: x[0])
+                
+                bids_modality_dir = os.path.join(bids_anat_path, modality_label)
                 try:
-                    os.makedirs(modality_target_dir, exist_ok=True)
+                    os.makedirs(bids_modality_dir, exist_ok=True)
                 except OSError as e:
-                    logger.error(f"    Не удалось создать папку {modality_target_dir}: {e}. Пропуск модальности {modality_key}.")
+                    logger.error(f"    Не удалось создать директорию {bids_modality_dir}: {e}. Пропуск модальности {modality_label}.")
                     continue
 
-                # logger.debug(f"  Копирование {len(files_to_copy_list)} файлов для '{modality_key}' в {modality_target_dir}...")
-                for idx, src_file_path in enumerate(files_to_copy_list, 1):
-                    dst_filename = f"{sub_id}_{ses_id}_{modality_key}_{idx:03d}.dcm"
-                    dst_file_path = os.path.join(modality_target_dir, dst_filename)
-                    try:
-                        shutil.copy(src_file_path, dst_file_path)
-                    except Exception as e:
-                        logger.error(f"    Не удалось скопировать {src_file_path} в {dst_file_path}: {e}")
-    logger.info("Организация данных завершена!")
+                for run_idx, (_series_num_val, orig_series_uid_for_run) in enumerate(sorted_run_candidates, 1):
+                    files_to_copy = series_collection[orig_series_uid_for_run]['files']
+                    
+                    # Сортируем файлы внутри серии по InstanceNumber
+                    sorted_files_for_run = sort_dicom_files_in_series(files_to_copy)
+
+                    logger.info(f"    Копирование {len(sorted_files_for_run)} файлов для {modality_label}"
+                                f"{f'_run-{run_idx:02d}' if len(sorted_run_candidates) > 1 else ''} (Серия UID: {orig_series_uid_for_run})")
+
+                    for slice_idx, src_file_path in enumerate(sorted_files_for_run, 1):
+                        if len(sorted_run_candidates) > 1: # Если больше одной серии этой модальности
+                            bids_filename = f"{bids_sub_id}_{bids_ses_id}_run-{run_idx:02d}_{modality_label}_{slice_idx:03d}.dcm"
+                        else:
+                            bids_filename = f"{bids_sub_id}_{bids_ses_id}_{modality_label}_{slice_idx:03d}.dcm"
+                        
+                        dst_file_path = os.path.join(bids_modality_dir, bids_filename)
+                        try:
+                            if action_type == 'move':
+                                shutil.move(src_file_path, dst_file_path)
+                                # logger.debug(f"      Перемещен: ...")
+                            else: # По умолчанию 'copy'
+                                shutil.copy(src_file_path, dst_file_path)
+                                # logger.debug(f"      Скопирован: ...")
+                        except Exception as e:
+                            logger.error(f"      Не удалось {action_type} {src_file_path} в {dst_file_path}: {e}")
+    
+    logger.info("Организация данных в BIDS формат завершена!")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Организует DICOM файлы из входной директории в BIDS-подобную структуру на основе DICOM тегов.',
+        description='Организует DICOM файлы из входной директории в BIDS-структуру на основе DICOM тегов.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument('--input_dir', required=True, help='Входная директория.')
-    parser.add_argument('--output_dir', default='bids_data_dicom_fixed', help='Выходная директория.')
-    parser.add_argument('--log_file', default=None, help='Файл логов.')
+    parser.add_argument(
+        '--input_dir',
+        required=True,
+        help='Входная директория с DICOM файлами (любой вложенности).'
+    )
+    parser.add_argument(
+        '--output_dir',
+        default='bids_data_universal', # Изменено имя по умолчанию
+        help='Корневая выходная директория для сохранения BIDS структуры.'
+    )
+    parser.add_argument(
+        '--log_file',
+        default=None,
+        help='Путь к файлу для записи логов. Если не указан, будет создан файл "dicom_to_bids.log" внутри --output_dir.'
+    )
+    parser.add_argument(
+        '--action', 
+        type=str,
+        default='copy',
+        choices=['copy', 'move'],
+        help='Действие с файлами: "copy" для копирования, "move" для перемещения.'
+    )
+
     args = parser.parse_args()
 
-    log_file_path = args.log_file
-    if log_file_path is None:
-        output_dir_path_for_log = args.output_dir
-        log_filename = 'reorganize_folders_fixed.log' 
-        try:
-            if output_dir_path_for_log and not os.path.exists(output_dir_path_for_log):
-                 os.makedirs(output_dir_path_for_log, exist_ok=True)
-            log_file_path = os.path.join(output_dir_path_for_log or '.', log_filename)
-        except OSError as e:
-             log_file_path = log_filename 
-             print(f"Предупреждение: Не удалось использовать {output_dir_path_for_log} для лог-файла. Лог будет записан в {log_file_path}. Ошибка: {e}")
-    setup_logging(log_file_path)
-    
+    log_file_path_arg = args.log_file
+    if log_file_path_arg is None:
+        # Создаем output_dir заранее, если его нет, чтобы положить туда лог
+        # Это делается также в setup_logging, но здесь для определения пути
+        if args.output_dir and not os.path.exists(args.output_dir):
+            try:
+                os.makedirs(args.output_dir, exist_ok=True)
+            except OSError as e:
+                print(f"Предупреждение: Не удалось создать выходную директорию {args.output_dir} для лог-файла. Ошибка: {e}")
+                # Лог будет в текущей директории, если output_dir создать не удалось
+                log_file_path_arg = 'dicom_to_bids.log'
+
+        if log_file_path_arg is None: # Если все еще None (т.е. output_dir был создан или существовал)
+             log_file_path_arg = os.path.join(args.output_dir or '.', 'dicom_to_bids.log')
+
+    setup_logging(log_file_path_arg) # Настройка логгирования
+
     try:
-        logger.info("="*50)
-        logger.info(f"Запуск скрипта (исправленная версия)")
+        logger.info("="*60)
+        logger.info(f"Запуск скрипта DICOM в BIDS конвертера")
         logger.info(f"  Входная директория: {os.path.abspath(args.input_dir)}")
         logger.info(f"  Выходная директория: {os.path.abspath(args.output_dir)}")
-        logger.info(f"  Лог-файл: {os.path.abspath(log_file_path)}")
-        logger.info("="*50)
-        organize_dicom_to_bids(args.input_dir, args.output_dir)
+        logger.info(f"  Лог-файл: {os.path.abspath(log_file_path_arg)}")
+        logger.info("="*60)
+
+        organize_dicom_to_bids(args.input_dir, args.output_dir, action_type=args.action)
+
         logger.info("Скрипт успешно завершил работу.")
         sys.exit(0)
+
     except FileNotFoundError as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"Критическая ошибка: Файл или директория не найдены. {e}")
         sys.exit(1)
     except OSError as e:
         logger.error(f"Критическая ошибка файловой системы: {e}", exc_info=True)
         sys.exit(1)
     except Exception as e:
-        logger.exception(f"Непредвиденная критическая ошибка")
+        logger.exception(f"Непредвиденная критическая ошибка:") # exc_info=True по умолчанию для logger.exception
         sys.exit(1)
