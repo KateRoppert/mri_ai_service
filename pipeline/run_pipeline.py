@@ -11,6 +11,8 @@ from datetime import datetime
 import uuid
 import traceback
 import requests
+import zipfile
+import shutil 
 
 # --- Настройка основного логгера пайплайна ---
 logger = logging.getLogger("Pipeline")
@@ -121,9 +123,82 @@ def main():
 
     # --- 2. Определение ID запуска и ключевых путей ---
     run_id_to_use = args.run_id if args.run_id else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    # --- НАЧАЛО НОВОЙ ЛОГИКИ ДЛЯ ОБРАБОТКИ АРХИВА ---
+    input_path_arg = args.input_data_dir # Путь, переданный через CLI
+    config_raw_input_path_str = config.get('paths', {}).get('raw_input_dir')
+    
+    actual_input_for_pipeline = None # Это будет итоговый путь к распакованным данным
+    created_temp_extraction_dir = None # Если мы создали папку для распаковки
+
+    # Определяем базовую директорию для запуска (нужна для создания input_raw_data)
+    # Это должно быть run_output_dir, который определяется чуть ниже.
+    # Сначала определим output_base_dir_from_cli_or_config
     try:
         output_base_dir_from_cli_or_config = Path(args.output_base_dir or config['paths']['output_base_dir']).resolve()
-        raw_input_dir = Path(args.input_data_dir or config['paths']['raw_input_dir']).resolve()
+    except KeyError as e:
+        print(f"[CRITICAL ERROR] Missing key 'paths.output_base_dir' in {config_path}: {e}", file=sys.stderr)
+        logger.critical(f"Missing key 'paths.output_base_dir' in {config_path}: {e}")
+        sys.exit(1)
+
+    # Теперь определяем run_output_dir
+    if output_base_dir_from_cli_or_config.name == run_id_to_use:
+        run_output_dir = output_base_dir_from_cli_or_config
+    else:
+        run_output_dir = output_base_dir_from_cli_or_config / run_id_to_use
+    
+    # Папка, куда будем распаковывать, если это архив (аналогично app.py)
+    # Эта папка будет внутри run_output_dir
+    extraction_target_dir_name = "input_raw_data" # Как в app.py
+    extraction_path = run_output_dir / extraction_target_dir_name
+
+    if input_path_arg: # Если --input_data_dir был передан
+        input_path_resolved = Path(input_path_arg).resolve()
+        if input_path_resolved.is_file() and input_path_resolved.name.lower().endswith('.zip'):
+            logger.info(f"Обнаружен ZIP-архив через --input_data_dir: {input_path_resolved}")
+            try:
+                extraction_path.mkdir(parents=True, exist_ok=True) # Создаем input_raw_data
+                logger.info(f"Распаковка архива в: {extraction_path}")
+                with zipfile.ZipFile(input_path_resolved, 'r') as zip_ref:
+                    zip_ref.extractall(extraction_path)
+                logger.info(f"Архив {input_path_resolved.name} успешно распакован в {extraction_path}.")
+                actual_input_for_pipeline = extraction_path
+                created_temp_extraction_dir = extraction_path # Запоминаем для возможной очистки (если вы решите ее делать)
+            except zipfile.BadZipFile:
+                logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Файл {input_path_resolved} не ZIP-архив или поврежден.")
+                sys.exit(1)
+            except Exception as e:
+                logger.critical(f"{USER_LOG_PREFIX} ОШИБКА при распаковке {input_path_resolved}: {e}", exc_info=True)
+                sys.exit(1)
+        elif input_path_resolved.is_dir():
+            logger.info(f"Используется директория из --input_data_dir: {input_path_resolved}")
+            actual_input_for_pipeline = input_path_resolved
+        else:
+            logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Путь --input_data_dir '{input_path_arg}' не файл ZIP и не директория, или не существует.")
+            sys.exit(1)
+    elif config_raw_input_path_str: # Если --input_data_dir не передан, берем из конфига
+        logger.info(f"Используется директория из config 'paths.raw_input_dir': {config_raw_input_path_str}")
+        actual_input_for_pipeline = Path(config_raw_input_path_str).resolve()
+        # Здесь мы предполагаем, что путь из конфига - это всегда директория, а не архив.
+        # Если из конфига тоже может прийти архив, логику нужно расширить.
+    else:
+        logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Не указан --input_data_dir и отсутствует 'paths.raw_input_dir' в конфиге.")
+        sys.exit(1)
+
+    # Теперь actual_input_for_pipeline содержит путь к папке с распакованными данными
+    # Это аналог effective_input_data_dir из app.py
+    # Нужно также учесть вложенную папку, как в app.py:
+    items_in_actual_input = list(actual_input_for_pipeline.iterdir())
+    if len(items_in_actual_input) == 1 and items_in_actual_input[0].is_dir():
+        logger.info(f"Обнаружена единственная вложенная директория: {items_in_actual_input[0]}. Используем ее как входные данные.")
+        actual_input_for_pipeline = items_in_actual_input[0]
+    
+    raw_input_dir = actual_input_for_pipeline # Это переменная, которая используется дальше в пайплайне
+    # --- КОНЕЦ НОВОЙ ЛОГИКИ ДЛЯ ОБРАБОТКИ АРХИВА ---
+
+    try:
+        #output_base_dir_from_cli_or_config = Path(args.output_base_dir or config['paths']['output_base_dir']).resolve()
+        #raw_input_dir = Path(args.input_data_dir or config['paths']['raw_input_dir']).resolve()
         template_path = Path(config['paths']['template_path']).resolve()
         subdirs_config = config['paths']['subdirs']
         executables_config = config.get('executables', {})
