@@ -95,6 +95,21 @@ def run_step(cmd: list, step_name: str, step_log_path: Path):
         logger.exception(e)
         return False
 
+def is_dir_empty_recursive(dir_path: Path) -> bool:
+    """
+    Рекурсивно проверяет, пуста ли директория (т.е. не содержит файлов
+    ни на одном уровне вложенности, только, возможно, пустые поддиректории).
+    """
+    if not dir_path.is_dir():
+        return True # Если это не директория, считаем "пустой" в контексте удаления
+
+    for item in dir_path.iterdir():
+        if item.is_file():
+            return False # Найден файл, директория не пуста
+        if item.is_dir():
+            if not is_dir_empty_recursive(item): # Рекурсивный вызов для поддиректории
+                return False # Поддиректория не пуста
+    return True # Если прошли все элементы и не нашли файлов
 
 def main():
     """Основная функция запуска пайплайна."""
@@ -298,12 +313,37 @@ def main():
     step_name = "1_Reorganize_to_BIDS_DICOM"
     step_script = scripts_dir / "reorganize_folders.py"
     step_log = pipeline_log_dir / "01_reorganize_folders.log"
+    
+    # Получаем настройки для шага reorganize_folders
+    reorganize_step_cfg = steps_config.get('reorganize_folders', {})
+    dicom_to_bids_action = reorganize_step_cfg.get('action', 'copy').lower() # Берем 'action' из конфига
+    if dicom_to_bids_action not in ['copy', 'move']:
+        logger.warning(f"Некорректное значение для 'steps.reorganize_folders.action': {dicom_to_bids_action}. Используется 'copy'.")
+        dicom_to_bids_action = 'copy'
+    logger.info(f"Действие для шага '{step_name}': {dicom_to_bids_action.upper()}")
+
     cmd = [ python_executable, str(step_script),
-            "--input_dir", str(raw_input_dir),
+            "--input_dir", str(raw_input_dir), 
             "--output_dir", str(bids_dicom_dir),
-            #"--console_log_level", args.console_log_level 
+            "--action", dicom_to_bids_action # <<< Передаем полученное значение
+            # "--log_file" будет добавлен функцией run_step
             ]
     if not run_step(cmd, step_name, step_log): sys.exit(1)
+
+    # --- Опциональная очистка raw_input_dir если было перемещение ---
+    if dicom_to_bids_action == 'move':
+        logger.info(f"Действие для reorganize_folders было 'move'. Попытка очистки исходной директории: {raw_input_dir}")
+        try:
+            if raw_input_dir.exists() and raw_input_dir.is_dir():
+                if is_dir_empty_recursive(raw_input_dir): # <<< ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
+                    shutil.rmtree(raw_input_dir)
+                    logger.info(f"Исходная директория {raw_input_dir} (и все пустые подпапки) успешно удалена после перемещения.")
+                else:
+                    logger.warning(f"Исходная директория {raw_input_dir} содержит файлы или непустые подпапки после перемещения. Очистка не произведена.")
+            # else:
+                # logger.info(f"Исходная директория {raw_input_dir} уже не существует или не является директорией.")
+        except Exception as e_clean:
+            logger.error(f"Ошибка при попытке очистки {raw_input_dir}: {e_clean}")
 
     # Шаг 2: dicom_standard_check.py
     step_name = "2_DICOM_Standard_Check"
