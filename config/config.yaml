@@ -30,7 +30,8 @@ executables:
 
 # Параметры для конкретных шагов пайплайна
 steps:
-  reorganize_folders: {}
+  reorganize_folders:
+    action: "move"  # Возможные значения: "copy" (по умолчанию), "move" 
   dicom_standard_check: {}
   extract_metadata: {}
   convert_dicom_to_nifti: {}
