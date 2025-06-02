@@ -39,7 +39,7 @@ steps:
   quality_metrics:
     anisotropy_thresh: 3.0
   mriqc:
-    enabled: true                     # Общий переключатель для MRIQC (true - запускать, false - пропустить полностью)
+    enabled: false                     # Общий переключатель для MRIQC (true - запускать, false - пропустить полностью)
     run_on_server: true               # Если enabled=true: true - запускать на удаленном сервере, false - запускать локально
     run_on_server_auto_trigger: true  # Если run_on_server=true: true - run_pipeline.py автоматически инициирует запуск на сервере,
                                       # false - пользователь должен запустить вручную через веб-интерфейс.
@@ -50,12 +50,14 @@ steps:
   mriqc_interpretation:
     # Этот флаг 'enabled' будет в основном влиять на локальный запуск.
     # При запуске на сервере скрипт-обертка обычно запускает и quality, и interpretation вместе.
-    enabled: true
+    enabled: false
   preprocessing:
     keep_intermediate_files: false
     intensity_normalization:
+      enabled: false 
       method: "HistogramMatching"
     bias_field_correction:
+      enabled: false 
       method: "N4BiasFieldCorrection"
       sitk_shrinkFactor: 4
     registration:
@@ -66,7 +68,7 @@ steps:
       bet_fractional_intensity_threshold: 0.5
       bet_robust: true
   segmentation:
-    enabled: true
+    enabled: true 
     model_name: "Unet"
     modality_input_map:
       t1: "T1w"
