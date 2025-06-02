@@ -159,6 +159,12 @@ def original_bias_field_correction(
         sitk.Image: Логарифм поля смещения.
     """
     step_name = "N4 Bias Field Correction"
+
+    # enabled = params.get('enabled', 'true')
+    # if not enabled:
+    #     logger.info("Запуск коррекции поля смещения отключен в конфигурации.")
+    #     return  
+    
     logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
 
     # Чтение входного изображения
@@ -227,6 +233,12 @@ def original_intensity_normalization(
         params (dict): Словарь с параметрами шага (для логирования).
     """
     step_name = "Intensity Normalization (Histogram Matching)"
+
+    enabled = params.get('enabled', 'true')
+    if not enabled:
+        logger.info("Запуск нормализации интенсивности отключен в конфигурации.")
+        return 
+    
     logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
     logger.debug(f"    Используемый шаблон: {template_img_path_str}")
     logger.debug(f"    Параметры из конфига для этого шага: {params}") # Логируем полученные параметры
@@ -659,7 +671,9 @@ def run_preprocessing_pipeline(
             )
             overall_processing_params["steps_parameters"]["1_intensity_normalization"] = params
             if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка нормализации интенсивности.")
-            current_step_input_path = step_output_path
+            if os.path.exists(step_output_path):
+                logger.info("Путь с нормализованными файлами существует")
+                current_step_input_path = step_output_path
 
             # Шаг 2: Коррекция поля смещения
             step_output_path = temp_processing_dir / f"{nifti_file_stem}_norm_biascorr.nii.gz"
@@ -668,6 +682,9 @@ def run_preprocessing_pipeline(
             )
             overall_processing_params["steps_parameters"]["2_bias_field_correction"] = params
             if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка коррекции поля смещения.")
+            # if os.path.exists(step_output_path):
+            #     logger.info("Путь с корректированными файлами существует")
+            #     current_step_input_path = step_output_path
             current_step_input_path = step_output_path
 
             # Шаг 3: Регистрация
