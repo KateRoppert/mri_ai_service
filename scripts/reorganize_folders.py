@@ -121,14 +121,18 @@ def find_keyword_in_text(text_to_search, keywords_list):
     return None
 
 def determine_modality(ds, file_path):
+    # Extract DICOM values
     modality_tag_val = get_dicom_value(ds, (0x0008, 0x0060), "")
     series_desc_val = get_dicom_value(ds, (0x0008, 0x103E), "")
     protocol_name_val = get_dicom_value(ds, (0x0018, 0x1030), "")
+    contrast_agent_val = get_dicom_value(ds, (0x0018, 0x0010), "")
     
+    # Convert to strings
     series_desc_str = " ".join(series_desc_val) if isinstance(series_desc_val, list) else str(series_desc_val or "")
     protocol_name_str = " ".join(protocol_name_val) if isinstance(protocol_name_val, list) else str(protocol_name_val or "")
-    combined_text = f"{series_desc_str} {protocol_name_str}"
-
+    contrast_agent_str = " ".join(contrast_agent_val) if isinstance(contrast_agent_val, list) else str(contrast_agent_val or "")
+    
+    # Get sequence/technical parameters
     scan_seq_val = get_dicom_value(ds, (0x0018, 0x0020), [])
     seq_var_val = get_dicom_value(ds, (0x0018, 0x0021), [])
     image_type_val = get_dicom_value(ds, (0x0008, 0x0008), [])
@@ -137,67 +141,32 @@ def determine_modality(ds, file_path):
     te_val = get_dicom_value(ds, (0x0018, 0x0081))
     ti_val = get_dicom_value(ds, (0x0018, 0x0082))
     
-    contrast_agent_val = get_dicom_value(ds, (0x0018, 0x0010), "")
-
+    # Logging
     logger.debug(f"Определение модальности для {os.path.basename(file_path)}:")
     logger.debug(f"  DICOM Tags:")
     logger.debug(f"    Modality (0008,0060): '{modality_tag_val}'")
     logger.debug(f"    SeriesDescription (0008,103E): '{series_desc_str}'")
     logger.debug(f"    ProtocolName (0018,1030): '{protocol_name_str}'")
+    logger.debug(f"    ContrastBolusAgent (0018,0010): '{contrast_agent_str}'")
     logger.debug(f"    ScanningSequence (0018,0020): {scan_seq_val}")
     logger.debug(f"    SequenceVariant (0018,0021): {seq_var_val}")
     logger.debug(f"    ImageType (0008,0008): {image_type_val}")
     logger.debug(f"    RepetitionTime (0018,0080): {tr_val} (type: {type(tr_val)})")
     logger.debug(f"    EchoTime (0018,0081): {te_val} (type: {type(te_val)})")
     logger.debug(f"    InversionTime (0018,0082): {ti_val} (type: {type(ti_val)})")
-    logger.debug(f"    ContrastBolusAgent (0018,0010): '{contrast_agent_val}'")
-
+    
     if modality_tag_val and modality_tag_val != 'mr':
         logger.info(f"  Тег Modality (0008,0060) для {os.path.basename(file_path)} имеет значение '{modality_tag_val}', а не 'mr'. Продолжаем анализ по другим тегам.")
     elif not modality_tag_val:
         logger.info(f"  Тег Modality (0008,0060) для {os.path.basename(file_path)} пуст или отсутствует. Продолжаем анализ по другим тегам.")
-
+    
+    # Define keywords
     flair_kws = ['flair', 't2fl', 'fluid attenuated inversion recovery', 'ir_fse', 'darkfluid']
     t1_kws = ['t1', 't1w', 't1 weighted', 'spgr', 'mprage', 'tfl', 'bravo']
     t1c_kws = ['t1c', 't1+c', 't1-ce', 't1contrast', 't1 gd', 'contrast', 'gad', 'postcontrast', 'ce-t1', 't1 post', 'gd t1', 'mdc', 'with contrast', '+gd', 'post gd']
     t2_kws = ['t2', 't2w', 't2 weighted', 'tse', 'fse', 't2 tse', 't2 fse', 'haste']
-
-    # 1. Определение T2-FLAIR (t2fl)
-    if ti_val is not None:
-        try:
-            ti_float = float(ti_val)
-            if ti_float > 1500:
-                reason = f"по TI (0018,0082) = {ti_float}"
-                tr_float, te_float = None, None
-                if tr_val is not None:
-                    try: tr_float = float(tr_val)
-                    except (ValueError, TypeError): pass
-                if te_val is not None:
-                    try: te_float = float(te_val)
-                    except (ValueError, TypeError): pass
-
-                if tr_float is not None and te_float is not None:
-                    if tr_float > 4000 and te_float > 70:
-                        reason += f" и классическим TR/TE (TR={tr_float}, TE={te_float})"
-                    else:
-                        reason += f" (TR={tr_float}, TE={te_float} не классические для FLAIR, но TI решающий)"
-                logger.debug(f"Модальность 't2fl' определена {reason}.")
-                return 't2fl'
-        except (ValueError, TypeError) as e_conv: # Ловим и TypeError
-            logger.debug(f"  Не удалось конвертировать TI (0018,0082)='{ti_val}' (тип: {type(ti_val)}) в float: {e_conv}")
-
-    # ... (остальная логика с аналогичными исправлениями для float(tr_val) и float(te_val)) ...
-    # Пример для TR/TE в T1:
-    # if tr_val is not None and te_val is not None:
-    #     try:
-    #         tr_float = float(tr_val)
-    #         te_float = float(te_val)
-    #         if tr_float < 1200 and te_float < 30:
-    #             # ...
-    #     except (ValueError, TypeError) as e_conv:
-    #         logger.debug(f"  Не удалось конвертировать TR/TE ('{tr_val}', '{te_val}') в float: {e_conv}")
-
-    # Чтобы не повторять try-except для float() много раз, можно сделать вспомогательную функцию
+    
+    # Helper function for safe float conversion
     def safe_float(value, tag_name_for_log="value"):
         if value is None:
             return None
@@ -206,13 +175,86 @@ def determine_modality(ds, file_path):
         except (ValueError, TypeError) as e_conv:
             logger.debug(f"  Не удалось конвертировать {tag_name_for_log}='{value}' (тип: {type(value)}) в float: {e_conv}")
             return None
-
-    # Используем safe_float в логике:
+    
+    # Convert numerical values
     ti_float = safe_float(ti_val, "TI (0018,0082)")
     tr_float = safe_float(tr_val, "TR (0018,0080)")
     te_float = safe_float(te_val, "TE (0018,0081)")
-
-    # 1. Определение T2-FLAIR (t2fl)
+    
+    # PRIORITY 1: Check protocol_name + contrast_agent for keywords
+    logger.debug("  ПРИОРИТЕТ 1: Анализ ProtocolName и ContrastAgent")
+    protocol_contrast_text = f"{protocol_name_str} {contrast_agent_str}".strip()
+    
+    # Check for contrast first (T1C detection)
+    has_contrast_agent = contrast_agent_str and contrast_agent_str.lower() not in ["", "none", "no"]
+    matched_t1c_kw_priority1 = find_keyword_in_text(protocol_contrast_text, t1c_kws)
+    
+    if has_contrast_agent or matched_t1c_kw_priority1:
+        logger.debug(f"    Найден контраст: agent='{contrast_agent_str}', keyword='{matched_t1c_kw_priority1}'")
+        # Check if it's also T1-like in protocol
+        matched_t1_kw_priority1 = find_keyword_in_text(protocol_name_str, t1_kws)
+        if matched_t1_kw_priority1:
+            logger.debug(f"Модальность 't1c' определена по ProtocolName: контраст + T1 keyword '{matched_t1_kw_priority1}'.")
+            return 't1c'
+    
+    # Check for FLAIR in protocol
+    matched_flair_kw_priority1 = find_keyword_in_text(protocol_name_str, flair_kws)
+    if matched_flair_kw_priority1:
+        logger.debug(f"Модальность 't2fl' определена по ProtocolName: keyword '{matched_flair_kw_priority1}'.")
+        return 't2fl'
+    
+    # Check for T1 in protocol (non-contrast)
+    matched_t1_kw_priority1 = find_keyword_in_text(protocol_name_str, t1_kws)
+    if matched_t1_kw_priority1 and not has_contrast_agent and not matched_t1c_kw_priority1:
+        logger.debug(f"Модальность 't1' определена по ProtocolName: keyword '{matched_t1_kw_priority1}'.")
+        return 't1'
+    
+    # Check for T2 in protocol
+    matched_t2_kw_priority1 = find_keyword_in_text(protocol_name_str, t2_kws)
+    if matched_t2_kw_priority1:
+        logger.debug(f"Модальность 't2' определена по ProtocolName: keyword '{matched_t2_kw_priority1}'.")
+        return 't2'
+    
+    # PRIORITY 2: Check series_description for keywords
+    logger.debug("  ПРИОРИТЕТ 2: Анализ SeriesDescription")
+    
+    # Check for contrast in series description
+    matched_t1c_kw_priority2 = find_keyword_in_text(series_desc_str, t1c_kws)
+    if matched_t1c_kw_priority2:
+        logger.debug(f"    Найден контраст в SeriesDescription: keyword '{matched_t1c_kw_priority2}'")
+        # Check if it's also T1-like in series description
+        matched_t1_kw_priority2 = find_keyword_in_text(series_desc_str, t1_kws)
+        if matched_t1_kw_priority2:
+            logger.debug(f"Модальность 't1c' определена по SeriesDescription: контраст + T1 keyword '{matched_t1_kw_priority2}'.")
+            return 't1c'
+        # If contrast keyword found but no T1 keyword, still consider it T1C if no FLAIR
+        matched_flair_kw_priority2 = find_keyword_in_text(series_desc_str, flair_kws)
+        if not matched_flair_kw_priority2:
+            logger.debug(f"Модальность 't1c' определена по SeriesDescription: контраст keyword '{matched_t1c_kw_priority2}' без FLAIR.")
+            return 't1c'
+    
+    # Check for FLAIR in series description
+    matched_flair_kw_priority2 = find_keyword_in_text(series_desc_str, flair_kws)
+    if matched_flair_kw_priority2:
+        logger.debug(f"Модальность 't2fl' определена по SeriesDescription: keyword '{matched_flair_kw_priority2}'.")
+        return 't2fl'
+    
+    # Check for T1 in series description (non-contrast)
+    matched_t1_kw_priority2 = find_keyword_in_text(series_desc_str, t1_kws)
+    if matched_t1_kw_priority2 and not has_contrast_agent and not matched_t1c_kw_priority2:
+        logger.debug(f"Модальность 't1' определена по SeriesDescription: keyword '{matched_t1_kw_priority2}'.")
+        return 't1'
+    
+    # Check for T2 in series description
+    matched_t2_kw_priority2 = find_keyword_in_text(series_desc_str, t2_kws)
+    if matched_t2_kw_priority2:
+        logger.debug(f"Модальность 't2' определена по SeriesDescription: keyword '{matched_t2_kw_priority2}'.")
+        return 't2'
+    
+    # PRIORITY 3: Use numerical values and technical parameters as fallback
+    logger.debug("  ПРИОРИТЕТ 3: Анализ численных параметров")
+    
+    # 1. FLAIR detection by TI value (high TI indicates inversion recovery)
     if ti_float is not None and ti_float > 1500:
         reason = f"по TI (0018,0082) = {ti_float}"
         if tr_float is not None and te_float is not None:
@@ -222,138 +264,88 @@ def determine_modality(ds, file_path):
                 reason += f" (TR={tr_float}, TE={te_float} не классические для FLAIR, но TI решающий)"
         logger.debug(f"Модальность 't2fl' определена {reason}.")
         return 't2fl'
-
-    matched_flair_kw = find_keyword_in_text(combined_text, flair_kws)
-    if matched_flair_kw:
-        is_ir_scan_seq = any(val == 'ir' for val in scan_seq_val)
-        is_ir_img_type = any(val == 'ir' for val in image_type_val)
-        reason_kw = f"по ключевому слову '{matched_flair_kw}' в SeriesDescription/ProtocolName"
-        
-        if tr_float is not None and te_float is not None and tr_float > 4000 and te_float > 70:
-            logger.debug(f"Модальность 't2fl' определена {reason_kw} и классическим TR/TE (TR={tr_float}, TE={te_float}).")
-            return 't2fl'
-        if is_ir_scan_seq:
-            logger.debug(f"Модальность 't2fl' определена {reason_kw} и ScanningSequence (0018,0020) содержит 'ir'.")
-            return 't2fl'
-        if is_ir_img_type:
-            logger.debug(f"Модальность 't2fl' определена {reason_kw} и ImageType (0008,0008) содержит 'ir'.")
-            return 't2fl'
-        
-    # 2. Определение T1-contrast (t1c)
-    contrast_reason_parts = []
-    if contrast_agent_val and contrast_agent_val != "none": 
-        contrast_reason_parts.append(f"ContrastBolusAgent (0018,0010)='{contrast_agent_val}'")
     
-    matched_t1c_kw = find_keyword_in_text(combined_text, t1c_kws)
-    if matched_t1c_kw:
-        contrast_reason_parts.append(f"ключевому слову контраста '{matched_t1c_kw}' в SeriesDescription/ProtocolName")
-
-    if contrast_reason_parts:
-        full_contrast_reason = " и ".join(contrast_reason_parts)
+    # 2. T1C detection by contrast agent (if not detected by keywords)
+    if has_contrast_agent:
+        logger.debug(f"    Найден контрастный агент: '{contrast_agent_str}'")
+        # Confirm T1-like characteristics
         t1_confirmation_reason = ""
         if tr_float is not None and te_float is not None and tr_float < 1200 and te_float < 30:
             t1_confirmation_reason = f"TR/TE (TR={tr_float}, TE={te_float})"
-        
-        if not t1_confirmation_reason:
-            if any(val == 'sp' for val in seq_var_val):
-                t1_confirmation_reason = "SequenceVariant (0018,0021) содержит 'sp'"
-            elif any(val == 'mp' for val in seq_var_val):
-                 t1_confirmation_reason = "SequenceVariant (0018,0021) содержит 'mp'"
-        
-        if not t1_confirmation_reason:
-            matched_t1_kw_for_t1c = find_keyword_in_text(combined_text, t1_kws)
-            if matched_t1_kw_for_t1c:
-                 t1_confirmation_reason = f"ключевому слову T1 '{matched_t1_kw_for_t1c}'"
+        elif any(val == 'sp' for val in seq_var_val):
+            t1_confirmation_reason = "SequenceVariant содержит 'sp'"
+        elif any(val == 'mp' for val in seq_var_val):
+            t1_confirmation_reason = "SequenceVariant содержит 'mp'"
         
         if t1_confirmation_reason:
-            if not matched_flair_kw:
-                logger.debug(f"Модальность 't1c' определена по {full_contrast_reason}, подтверждено как T1-подобное по {t1_confirmation_reason}.")
-                return 't1c'
-            else:
-                logger.debug(f"  Потенциальный T1c (по {full_contrast_reason}), но также найден FLAIR keyword '{matched_flair_kw}'. Приоритет FLAIR, если TI высокий или нет других признаков T1.")
-
-    # 3. Определение T1-weighted (t1) (без контраста, не FLAIR)
+            logger.debug(f"Модальность 't1c' определена по ContrastAgent='{contrast_agent_str}', подтверждено как T1 по {t1_confirmation_reason}.")
+            return 't1c'
+    
+    # 3. T1 detection by technical parameters
+    # MPRAGE detection
     if any(val == 'mp' for val in seq_var_val):
-        if ti_float is not None and 700 < ti_float < 1300: 
-            if not contrast_reason_parts:
-                logger.debug(f"Модальность 't1' определена как MPRAGE по SequenceVariant (0018,0021) содержит 'mp' и TI (0018,0082)={ti_float}.")
+        if ti_float is not None and 700 < ti_float < 1300:
+            if not has_contrast_agent:
+                logger.debug(f"Модальность 't1' определена как MPRAGE по SequenceVariant='mp' и TI={ti_float}.")
                 return 't1'
     
+    # SPGR detection
     if any(val == 'sp' for val in seq_var_val):
-        reason_sp = "SequenceVariant (0018,0021) содержит 'sp' (SPGR/FLASH)"
-        if not contrast_reason_parts:
+        reason_sp = "SequenceVariant содержит 'sp' (SPGR/FLASH)"
+        if not has_contrast_agent:
             if tr_float is not None and te_float is not None and tr_float < 1200 and te_float < 30:
                 logger.debug(f"Модальность 't1' определена {reason_sp} и TR/TE (TR={tr_float}, TE={te_float}).")
                 return 't1'
-            else: 
-                matched_t1_kw_for_sp = find_keyword_in_text(combined_text, t1_kws)
-                if matched_t1_kw_for_sp:
-                    logger.debug(f"Модальность 't1' определена {reason_sp} и ключевому слову T1 '{matched_t1_kw_for_sp}'.")
-                    return 't1'
     
+    # General T1 by TR/TE
     if tr_float is not None and te_float is not None and tr_float < 1000 and te_float < 30:
-        if not contrast_reason_parts: 
-            logger.debug(f"Модальность 't1' определена по TR (0018,0080)={tr_float} и TE (0018,0081)={te_float}.")
+        if not has_contrast_agent:
+            logger.debug(f"Модальность 't1' определена по TR={tr_float} и TE={te_float}.")
             return 't1'
-
-    matched_t1_kw = find_keyword_in_text(combined_text, t1_kws)
-    if matched_t1_kw:
-        if not matched_flair_kw and not contrast_reason_parts:
-            logger.debug(f"Модальность 't1' определена по ключевому слову '{matched_t1_kw}' в SeriesDescription/ProtocolName.")
-            return 't1'
-
-    # 4. Определение T2-weighted (t2) (не FLAIR)
+    
+    # 4. T2 detection by technical parameters
+    # TSE/FSE detection
     if any(val == 'se' for val in scan_seq_val) and any(val == 'sk' for val in seq_var_val):
-        reason_tse = "ScanningSequence (0018,0020) содержит 'se' и SequenceVariant (0018,0021) содержит 'sk' (TSE/FSE)"
+        reason_tse = "ScanningSequence содержит 'se' и SequenceVariant содержит 'sk' (TSE/FSE)"
         if tr_float is not None and te_float is not None and tr_float > 2000 and te_float > 70:
-            if not matched_flair_kw: 
-                logger.debug(f"Модальность 't2' определена {reason_tse} и TR/TE (TR={tr_float}, TE={te_float}).")
-                return 't2'
-        else: 
-            matched_t2_kw_for_tse = find_keyword_in_text(combined_text, t2_kws)
-            if matched_t2_kw_for_tse and not matched_flair_kw:
-                logger.debug(f"Модальность 't2' определена {reason_tse} и ключевому слову T2 '{matched_t2_kw_for_tse}'.")
-                return 't2'
-                
-    if tr_float is not None and te_float is not None and tr_float > 2000 and te_float > 70:
-        if not matched_flair_kw: 
-            logger.debug(f"Модальность 't2' определена по TR (0018,0080)={tr_float} и TE (0018,0081)={te_float}.")
+            logger.debug(f"Модальность 't2' определена {reason_tse} и TR/TE (TR={tr_float}, TE={te_float}).")
             return 't2'
     
-    matched_t2_kw = find_keyword_in_text(combined_text, t2_kws)
-    if matched_t2_kw:
-        if not matched_flair_kw:
-            logger.debug(f"Модальность 't2' определена по ключевому слову '{matched_t2_kw}' в SeriesDescription/ProtocolName.")
+    # General T2 by TR/TE
+    if tr_float is not None and te_float is not None and tr_float > 2000 and te_float > 70:
+        # Make sure it's not FLAIR (FLAIR also has long TR/TE but has high TI)
+        if ti_float is None or ti_float < 1500:
+            logger.debug(f"Модальность 't2' определена по TR={tr_float} и TE={te_float}.")
             return 't2'
-
-    if matched_flair_kw: # Fallback для FLAIR по ключевому слову
-        logger.debug(f"Модальность 't2fl' определена (как fallback) по ключевому слову '{matched_flair_kw}' в SeriesDescription/ProtocolName, т.к. другие модальности не подошли.")
-        return 't2fl'
-             
+    
+    # FALLBACK: Check file path for keywords
+    logger.debug("  FALLBACK: Анализ пути файла")
     path_parts = os.path.normpath(file_path).split(os.sep)
-    logger.debug(f"  Анализ пути файла для определения модальности: {file_path}")
     for part in reversed(path_parts):
-        part_lower = part.lower() 
+        part_lower = part.lower()
+        
         kw_path = find_keyword_in_text(part_lower, t1c_kws)
         if kw_path:
-            logger.debug(f"Модальность 't1c' определена по пути к файлу: часть '{part_lower}' содержит ключевое слово '{kw_path}'.")
+            logger.debug(f"Модальность 't1c' определена по пути: '{part_lower}' содержит '{kw_path}'.")
             return 't1c'
+        
         kw_path = find_keyword_in_text(part_lower, flair_kws)
         if kw_path:
-            logger.debug(f"Модальность 't2fl' определена по пути к файлу: часть '{part_lower}' содержит ключевое слово '{kw_path}'.")
+            logger.debug(f"Модальность 't2fl' определена по пути: '{part_lower}' содержит '{kw_path}'.")
             return 't2fl'
-        kw_path = find_keyword_in_text(part_lower, t1_kws) 
+        
+        kw_path = find_keyword_in_text(part_lower, t1_kws)
         if kw_path:
-            logger.debug(f"Модальность 't1' определена по пути к файлу: часть '{part_lower}' содержит ключевое слово '{kw_path}'.")
+            logger.debug(f"Модальность 't1' определена по пути: '{part_lower}' содержит '{kw_path}'.")
             return 't1'
-        kw_path = find_keyword_in_text(part_lower, t2_kws) 
+        
+        kw_path = find_keyword_in_text(part_lower, t2_kws)
         if kw_path:
-            logger.debug(f"Модальность 't2' определена по пути к файлу: часть '{part_lower}' содержит ключевое слово '{kw_path}'.")
+            logger.debug(f"Модальность 't2' определена по пути: '{part_lower}' содержит '{kw_path}'.")
             return 't2'
-
+    
     logger.warning(f"Не удалось определить модальность для файла: {os.path.basename(file_path)} (путь: {file_path}) с использованием всех правил.")
     return 'unknown'
-
 
 
 def sort_dicom_files_in_series(dicom_files_paths):
