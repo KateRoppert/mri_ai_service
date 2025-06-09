@@ -8,6 +8,29 @@ import sys
 from collections import defaultdict
 from datetime import datetime # Для сортировки сессий
 
+# --- Ключевые слова для снимков 2021-2022 года сканирования---
+base_keywords_2021 = {
+    't1c': {
+        'required': ['ce', 't1'],
+        'forbidden': ['mpr'],
+        'prefer_order': ['tfe', 'tse']
+    },
+    't1': {
+        'required': ['t1'],
+        'forbidden': ['ce', 'mpr'],
+        'prefer_order': ['tfe', 'tse']
+    },
+    't2fl': {
+        'required': ['flair'],
+        'forbidden': ['mpr'],
+    },
+    't2': {
+        'required': ['t2'],
+        'forbidden': ['mpr'],
+        'prefer_order': ['axi', 'sag', 'cor']
+    }
+}
+
 # --- Глобальная настройка логгера ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -74,9 +97,6 @@ def get_dicom_value(ds, tag_tuple_or_keyword, default=None):
 
         # Если ds.get() вернул DataElement (хотя обычно не должен для .get)
         if isinstance(val, pydicom.dataelem.DataElement):
-            logger.debug(
-                f"Tag {tag_tuple_or_keyword}: ds.get() вернул DataElement. Извлечение .value. DataElement: {val}"
-            )
             val = val.value
             if val is None:
                 return default
@@ -126,6 +146,13 @@ def determine_modality(ds, file_path):
     series_desc_val = get_dicom_value(ds, (0x0008, 0x103E), "")
     protocol_name_val = get_dicom_value(ds, (0x0018, 0x1030), "")
     contrast_agent_val = get_dicom_value(ds, (0x0018, 0x0010), "")
+    study_date_val = get_dicom_value(ds, (0x0008, 0x0020), "")
+    study_year = None
+    if isinstance(study_date_val, str) and len(study_date_val) >= 4:
+        try:
+            study_year = int(study_date_val[:4])
+        except ValueError:
+            pass
     
     # Convert to strings
     series_desc_str = " ".join(series_desc_val) if isinstance(series_desc_val, list) else str(series_desc_val or "")
@@ -144,6 +171,7 @@ def determine_modality(ds, file_path):
     # Logging
     logger.debug(f"Определение модальности для {os.path.basename(file_path)}:")
     logger.debug(f"  DICOM Tags:")
+    logger.debug(f"    StudyDate (0008,0020): '{study_date_val}'")
     logger.debug(f"    Modality (0008,0060): '{modality_tag_val}'")
     logger.debug(f"    SeriesDescription (0008,103E): '{series_desc_str}'")
     logger.debug(f"    ProtocolName (0018,1030): '{protocol_name_str}'")
@@ -165,21 +193,57 @@ def determine_modality(ds, file_path):
     t1_kws = ['t1', 't1w', 't1 weighted', 'spgr', 'mprage', 'tfl', 'bravo']
     t1c_kws = ['t1c', 't1+c', 't1-ce', 't1contrast', 't1 gd', 'contrast', 'gad', 'postcontrast', 'ce-t1', 't1 post', 'gd t1', 'mdc', 'with contrast', '+gd', 'post gd']
     t2_kws = ['t2', 't2w', 't2 weighted', 'tse', 'fse', 't2 tse', 't2 fse', 'haste']
+
+
+    # Вспомогательная функция для поиска ключевых слов по протоколу сканирования
+    def keyword_match(text, required=[], forbidden=[], prefer_order=None):
+        text_l = text.lower()
+        if any(fw in text_l for fw in forbidden):
+            return False
+        if not all(rw in text_l for rw in required):
+            return False
+        # if prefer_order:
+        #     for pref in prefer_order:
+        #         if pref in text_l:
+        #             return True
+        #     return False
+        # return True
     
-    # Helper function for safe float conversion
-    def safe_float(value, tag_name_for_log="value"):
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (ValueError, TypeError) as e_conv:
-            logger.debug(f"  Не удалось конвертировать {tag_name_for_log}='{value}' (тип: {type(value)}) в float: {e_conv}")
-            return None
+    # # Helper function for safe float conversion
+    # def safe_float(value, tag_name_for_log="value"):
+    #     if value is None:
+    #         return None
+    #     try:
+    #         return float(value)
+    #     except (ValueError, TypeError) as e_conv:
+    #         logger.debug(f"  Не удалось конвертировать {tag_name_for_log}='{value}' (тип: {type(value)}) в float: {e_conv}")
+    #         return None
     
     # Convert numerical values
     ti_float = safe_float(ti_val, "TI (0018,0082)")
     tr_float = safe_float(tr_val, "TR (0018,0080)")
     te_float = safe_float(te_val, "TE (0018,0081)")
+
+    # Если год 2021-2022 — запускаем спецлогику
+    if study_year == 2021 or study_year == 2022:
+        logger.debug("Определён проткол сканирования 2021-2022 года.")
+        # Определим модальность по строгим условиям
+        if keyword_match(protocol_name_str, **base_keywords_2021['t1c']):
+            logger.debug("Спецлогика 2021-2022: выбран 't1c'")
+            return 't1c'
+        elif keyword_match(protocol_name_str, **base_keywords_2021['t1']):
+            logger.debug("Спецлогика 2021-2022: выбран 't1'")
+            return 't1'
+        elif keyword_match(protocol_name_str, **base_keywords_2021['t2fl']):
+            logger.debug("Спецлогика 2021-2022: выбран 't2fl'")
+            return 't2fl'
+        elif keyword_match(protocol_name_str, **base_keywords_2021['t2']):
+            logger.debug("Спецлогика 2021-2022: выбран 't2'")
+            return 't2'
+
+        # Если ничего не подошло — продолжаем стандартный алгоритм ниже
+        logger.debug(f"Файл не соответствует правилам 2021-2022 года — будет проигнорирован.")
+        return 'unknown' 
     
     # PRIORITY 1: Check protocol_name + contrast_agent for keywords
     logger.debug("  ПРИОРИТЕТ 1: Анализ ProtocolName и ContrastAgent")
@@ -486,9 +550,17 @@ def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom_universal', ac
                     logger.warning(f"    Пропуск серии {orig_series_uid}: не удалось определить модальность.")
                     continue
                 
-                modality_to_series_runs[modality_label].append(
-                    (series_info['series_number_int'], orig_series_uid)
-                )
+                # modality_to_series_runs[modality_label].append(
+                #     (series_info['series_number_int'], orig_series_uid)
+                # )
+
+                # ИЗМЕНЕНО
+                modality_to_series_runs[modality_label].append({
+                    "series_number": series_info['series_number_int'],
+                    "series_uid": orig_series_uid,
+                    "protocol_name": get_dicom_value(first_ds_for_modality, (0x0018, 0x1030), "").lower(),
+                    "series_desc": get_dicom_value(first_ds_for_modality, (0x0008, 0x103e), "").lower(),
+                })
             
             if not modality_to_series_runs:
                 logger.warning(f"    Нет серий с известной модальностью для сессии {bids_ses_id}.")
@@ -496,8 +568,31 @@ def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom_universal', ac
 
             # Копирование файлов с присвоением run-номеров
             for modality_label, run_candidates in modality_to_series_runs.items():
-                # Сортируем серии внутри одной модальности по их SeriesNumber
-                sorted_run_candidates = sorted(run_candidates, key=lambda x: x[0])
+
+                # ДОБАВЛЕНО Попробуем применить prefer_order
+                prefer_order = base_keywords_2021.get(modality_label, {}).get("prefer_order")
+
+                # По умолчанию — сортируем по SeriesNumber
+                sorted_candidates = sorted(run_candidates, key=lambda x: x['series_number'])
+
+                # ------------ДОБАВЛЕНО
+                if prefer_order:
+                    for preferred in prefer_order:
+                        for candidate in sorted_candidates:
+                            if preferred in candidate['protocol_name'] or preferred in candidate['series_desc']:
+                                sorted_candidates = [candidate]
+                                break
+                        else:
+                            continue  # не нашли этот приоритет — смотрим следующий
+                        break
+                    else:
+                        logger.warning(f"    Для модальности {modality_label} не удалось найти серию по приоритету. Используем первую попавшуюся.")
+                        sorted_candidates = [sorted_candidates[0]]
+                else:
+                    # Если нет предпочтений — просто берём первую по SeriesNumber
+                    sorted_candidates = [sorted_candidates[0]]
+
+                # ---------КОНЕЦ ДОБАВЛЕННОГО БЛОКА
                 
                 bids_modality_dir = os.path.join(bids_anat_path, modality_label)
                 try:
@@ -506,17 +601,23 @@ def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom_universal', ac
                     logger.error(f"    Не удалось создать директорию {bids_modality_dir}: {e}. Пропуск модальности {modality_label}.")
                     continue
 
-                for run_idx, (_series_num_val, orig_series_uid_for_run) in enumerate(sorted_run_candidates, 1):
+                # for run_idx, (_series_num_val, orig_series_uid_for_run) in enumerate(sorted_run_candidates, 1):
+
+                # ------------ИЗМЕНЕНО
+                for run_idx, selected_candidate in enumerate(sorted_candidates, 1):
+
+                    orig_series_uid_for_run = selected_candidate['series_uid']
+
                     files_to_copy = series_collection[orig_series_uid_for_run]['files']
                     
                     # Сортируем файлы внутри серии по InstanceNumber
                     sorted_files_for_run = sort_dicom_files_in_series(files_to_copy)
 
                     logger.info(f"    Копирование {len(sorted_files_for_run)} файлов для {modality_label}"
-                                f"{f'_run-{run_idx:02d}' if len(sorted_run_candidates) > 1 else ''} (Серия UID: {orig_series_uid_for_run})")
+                                f"{f'_run-{run_idx:02d}' if len(sorted_candidates) > 1 else ''} (Серия UID: {orig_series_uid_for_run})")
 
                     for slice_idx, src_file_path in enumerate(sorted_files_for_run, 1):
-                        if len(sorted_run_candidates) > 1: # Если больше одной серии этой модальности
+                        if len(sorted_candidates) > 1: # Если больше одной серии этой модальности
                             bids_filename = f"{bids_sub_id}_{bids_ses_id}_run-{run_idx:02d}_{modality_label}_{slice_idx:03d}.dcm"
                         else:
                             bids_filename = f"{bids_sub_id}_{bids_ses_id}_{modality_label}_{slice_idx:03d}.dcm"
