@@ -160,11 +160,11 @@ def original_bias_field_correction(
     """
     step_name = "N4 Bias Field Correction"
 
-    # enabled = params.get('enabled', 'true')
-    # if not enabled:
-    #     logger.info("Запуск коррекции поля смещения отключен в конфигурации.")
-    #     return  
-    
+    enabled = str(params.get('enabled', 'true')).lower() in ['true', '1', 'yes']
+    if not enabled:
+        logger.info("  N4 Bias Field Correction: шаг отключён в конфигурации.")
+        return None
+
     logger.info(f"  {step_name}: {Path(input_img_path_str).name} -> {Path(out_path_str).name}")
 
     # Чтение входного изображения
@@ -485,6 +485,12 @@ def run_bias_field_correction_and_save(
         log_bias_field_sitk = original_bias_field_correction(
             str(current_input_path), str(step_output_path), step_params # Передаем параметры
         )
+
+        if log_bias_field_sitk is None:
+            logger.info(f"  Шаг {step_name} пропущен согласно конфигурации.")
+            save_parameters(run_params, transform_dir / f"{step_name}_params.json")
+            return run_params, True
+        
         # Сохраняем поля смещения
         sitk.WriteImage(log_bias_field_sitk, str(log_bias_field_path))
         run_params["output_log_bias_field_path"] = str(log_bias_field_path.resolve())
@@ -682,11 +688,10 @@ def run_preprocessing_pipeline(
             )
             overall_processing_params["steps_parameters"]["2_bias_field_correction"] = params
             if not success: all_steps_succeeded = False; raise RuntimeError("Ошибка коррекции поля смещения.")
-            # if os.path.exists(step_output_path):
-            #     logger.info("Путь с корректированными файлами существует")
-            #     current_step_input_path = step_output_path
-            current_step_input_path = step_output_path
-
+            if os.path.exists(step_output_path):
+                logger.info("Путь с корректированными файлами существует")
+                current_step_input_path = step_output_path
+            
             # Шаг 3: Регистрация
             step_output_path = temp_processing_dir / f"{nifti_file_stem}_norm_biascorr_reg.nii.gz"
             ants_tfm_prefix = f"{nifti_file_stem}_reg"
