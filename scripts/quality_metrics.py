@@ -1,6 +1,6 @@
 import os
 import nibabel as nib
-import numpy as np # Убедитесь, что numpy импортирован как np
+import numpy as np
 from scipy.stats import entropy
 from pathlib import Path
 import argparse
