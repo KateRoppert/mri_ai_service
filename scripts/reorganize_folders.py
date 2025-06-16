@@ -1,707 +1,814 @@
 import os
 import shutil
 import pydicom
-import pydicom.dataelem # Для isinstance DataElement
+import pydicom.dataelem
 import argparse
 import logging
 import sys
 from collections import defaultdict
-from datetime import datetime # Для сортировки сессий
+from datetime import datetime
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Union, Any
+from functools import wraps
 
-# --- Ключевые слова для снимков 2021-2022 года сканирования---
-base_keywords_2021 = {
+
+# --- Data Classes ---
+@dataclass
+class SeriesInfo:
+    uid: str
+    files: List[str]
+    series_number: int
+    study_datetime: datetime
+    first_dataset: pydicom.Dataset
+    protocol_name: str = ""
+    series_desc: str = ""
+
+
+@dataclass
+class StudyInfo:
+    uid: str
+    series: Dict[str, SeriesInfo]
+    study_datetime: datetime
+
+
+@dataclass
+class PatientData:
+    original_id: str
+    studies: Dict[str, StudyInfo]
+
+
+# --- Configuration ---
+MODALITY_KEYWORDS = {
     't1c': {
-        'required': ['ce', 't1'],
+        'keywords': ['ce', 't1', 'contrast', 'gad', 'postcontrast', 't1c', 't1+c', 't1-ce', 
+                    't1contrast', 't1 gd', 'ce-t1', 't1 post', 'gd t1', 'mdc', 'with contrast', '+gd', 'post gd'],
         'forbidden': ['mpr'],
-        'prefer_order': ['tfe', 'tse']
+        'priority_order': ['tfe', 'tse']
     },
     't1': {
-        'required': ['t1'],
-        'forbidden': ['ce', 'mpr'],
-        'prefer_order': ['tfe', 'tse']
+        'keywords': ['t1', 't1w', 't1 weighted', 'spgr', 'mprage', 'tfl', 'bravo'],
+        'forbidden': ['ce', 'mpr', 'contrast'],
+        'priority_order': ['tfe', 'tse']
     },
     't2fl': {
-        'required': ['flair'],
+        'keywords': ['flair', 't2fl', 'fluid attenuated inversion recovery', 'ir_fse', 'darkfluid'],
         'forbidden': ['mpr'],
+        'priority_order': []
     },
     't2': {
-        'required': ['t2'],
+        'keywords': ['t2', 't2w', 't2 weighted', 'tse', 'fse', 't2 tse', 't2 fse', 'haste'],
         'forbidden': ['mpr'],
-        'prefer_order': ['axi', 'sag', 'cor']
+        'priority_order': ['axi', 'sag', 'cor']
     }
 }
 
-# --- Глобальная настройка логгера ---
+TECHNICAL_PARAMS = {
+    't2fl': {'ti_min': 1500, 'tr_min': 4000, 'te_min': 70},
+    't1': {'tr_max': 1000, 'te_max': 30},
+    't1c': {'tr_max': 1200, 'te_max': 30},
+    't2': {'tr_min': 2000, 'te_min': 70}
+}
+
+# 2021-2022 specific keywords
+LEGACY_KEYWORDS_2021_2022 = {
+    't1c': {'required': ['ce', 't1'], 'forbidden': ['mpr'], 'prefer_order': ['tfe', 'tse']},
+    't1': {'required': ['t1'], 'forbidden': ['ce', 'mpr'], 'prefer_order': ['tfe', 'tse']},
+    't2fl': {'required': ['flair'], 'forbidden': ['mpr']},
+    't2': {'required': ['t2'], 'forbidden': ['mpr'], 'prefer_order': ['axi', 'sag', 'cor']}
+}
+
+
+# --- Custom Exceptions ---
+class DicomProcessingError(Exception):
+    """Custom exception for DICOM processing errors."""
+    pass
+
+
+# --- Global Logger Setup ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-def setup_logging(log_file_path):
-    """Настраивает вывод логов в консоль (INFO) и файл (DEBUG)."""
+
+# --- Error Handling Decorator ---
+def handle_dicom_error(func):
+    """Decorator for consistent DICOM error handling."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {e}")
+            return None
+    return wrapper
+
+
+# --- Utility Functions ---
+def setup_logging(log_file_path: str):
+    """Set up logging to console (INFO) and file (DEBUG)."""
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    # Обработчик для консоли
+    # Console handler
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    # Обработчик для файла
+    # File handler
     try:
         log_dir = os.path.dirname(log_file_path)
-        if log_dir and not os.path.exists(log_dir): # Создаем директорию, если ее нет
+        if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(log_file_path, mode='w') # 'w' для перезаписи лога при каждом запуске
+        fh = logging.FileHandler(log_file_path, mode='w')
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
-        logger.debug(f"Логирование в файл настроено: {log_file_path}")
+        logger.debug(f"File logging configured: {log_file_path}")
     except Exception as e:
-        # Если не удалось настроить файловый логгер, выводим ошибку в консоль
-        # и продолжаем только с консольным логгером.
-        logger.removeHandler(ch) # Удаляем предыдущий консольный, чтобы не дублировать
-        ch_err = logging.StreamHandler(sys.stdout)
-        ch_err.setLevel(logging.ERROR) # Показываем только ошибки в этом случае
-        ch_err.setFormatter(formatter)
-        logger.addHandler(ch_err)
-        logger.error(f"Не удалось настроить логирование в файл {log_file_path}: {e}. Логирование будет только в консоль.", exc_info=False)
+        logger.error(f"Failed to configure file logging {log_file_path}: {e}")
 
 
-def is_dicom_file(file_path):
-    """Проверяет, является ли файл валидным DICOM-файлом"""
-    try:
-        # stop_before_pixels=True значительно ускоряет чтение, т.к. нам не нужны пиксельные данные
-        pydicom.dcmread(file_path, stop_before_pixels=True)
-        return True
-    except pydicom.errors.InvalidDicomError:
-        logger.debug(f"Файл {file_path} не является валидным DICOM.")
-        return False
-    except Exception as e: # Ловим другие возможные ошибки при чтении файла
-        logger.warning(f"Ошибка при проверке файла {file_path} на DICOM: {e}")
-        return False
+def normalize_dicom_text(value: Any) -> str:
+    """Convert DICOM value to normalized lowercase string."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, pydicom.multival.MultiValue)):
+        return " ".join(str(v).strip().lower() for v in value if v is not None)
+    return str(value).strip().lower()
 
-def get_dicom_value(ds, tag_tuple_or_keyword, default=None):
-    """
-    Безопасно извлекает значение тега из DICOM датасета.
-    - Если ds.get() возвращает DataElement, извлекает .value.
-    - Для строк возвращает их в нижнем регистре.
-    - Для MultiValue (списков DICOM) возвращает список строк в нижнем регистре или оригинальных значений.
-    - Для числовых и других типов возвращает значение как есть.
-    """
-    try:
-        val = ds.get(tag_tuple_or_keyword, default)
 
-        if val is default: # Тега нет, или ds.get() вернул переданный default
-            return default
-
-        # Если ds.get() вернул DataElement (хотя обычно не должен для .get)
-        if isinstance(val, pydicom.dataelem.DataElement):
-            val = val.value
-            if val is None:
-                return default
-
-        if val is None:
-            return default
-
-        if isinstance(val, str):
-            return val.strip().lower() # Удаляем пробелы по краям и приводим к нижнему регистру
-        if isinstance(val, (pydicom.multival.MultiValue, list)):
-            processed_list = []
-            for v_item in val:
-                if isinstance(v_item, str):
-                    processed_list.append(v_item.strip().lower())
-                elif v_item is not None: # Пропускаем None значения в списке
-                    processed_list.append(v_item)
-            return processed_list
-        return val # Для чисел (DSfloat, IS, etc.) и других типов
-    except Exception as e:
-        logger.error(f"Исключение в get_dicom_value для тега {tag_tuple_or_keyword} в файле (Series: {ds.get('SeriesInstanceUID', 'N/A')}): {e}", exc_info=False)
-        return default
-
-def safe_float(value, tag_name_for_log="value"):
-    """Безопасно конвертирует значение в float."""
+def safe_float(value: Any, tag_name: str = "value") -> Optional[float]:
+    """Safely convert value to float."""
     if value is None:
         return None
     try:
         return float(value)
     except (ValueError, TypeError):
-        logger.debug(f"  Не удалось конвертировать {tag_name_for_log}='{value}' (тип: {type(value)}) в float.")
+        logger.debug(f"Cannot convert {tag_name}='{value}' (type: {type(value)}) to float.")
         return None
 
-def find_keyword_in_text(text_to_search, keywords_list):
-    """Ищет любое из ключевых слов в тексте. Возвращает первое найденное или None."""
-    if not text_to_search or not keywords_list:
-        return None
-    # Приводим text_to_search к строке и нижнему регистру один раз
-    text_to_search_lower = str(text_to_search).lower()
-    for kw in keywords_list:
-        if kw.lower() in text_to_search_lower: # Ключевые слова тоже приводим к lower для надежности
-            return kw
-    return None
 
-def determine_modality(ds, file_path):
-    # Extract DICOM values
-    modality_tag_val = get_dicom_value(ds, (0x0008, 0x0060), "")
-    series_desc_val = get_dicom_value(ds, (0x0008, 0x103E), "")
-    protocol_name_val = get_dicom_value(ds, (0x0018, 0x1030), "")
-    contrast_agent_val = get_dicom_value(ds, (0x0018, 0x0010), "")
-    study_date_val = get_dicom_value(ds, (0x0008, 0x0020), "")
-    study_year = None
-    if isinstance(study_date_val, str) and len(study_date_val) >= 4:
-        try:
-            study_year = int(study_date_val[:4])
-        except ValueError:
-            pass
-    
-    # Convert to strings
-    series_desc_str = " ".join(series_desc_val) if isinstance(series_desc_val, list) else str(series_desc_val or "")
-    protocol_name_str = " ".join(protocol_name_val) if isinstance(protocol_name_val, list) else str(protocol_name_val or "")
-    contrast_agent_str = " ".join(contrast_agent_val) if isinstance(contrast_agent_val, list) else str(contrast_agent_val or "")
-    
-    # Get sequence/technical parameters
-    scan_seq_val = get_dicom_value(ds, (0x0018, 0x0020), [])
-    seq_var_val = get_dicom_value(ds, (0x0018, 0x0021), [])
-    image_type_val = get_dicom_value(ds, (0x0008, 0x0008), [])
-    
-    tr_val = get_dicom_value(ds, (0x0018, 0x0080))
-    te_val = get_dicom_value(ds, (0x0018, 0x0081))
-    ti_val = get_dicom_value(ds, (0x0018, 0x0082))
-    
-    # Logging
-    logger.debug(f"Определение модальности для {os.path.basename(file_path)}:")
-    logger.debug(f"  DICOM Tags:")
-    logger.debug(f"    StudyDate (0008,0020): '{study_date_val}'")
-    logger.debug(f"    Modality (0008,0060): '{modality_tag_val}'")
-    logger.debug(f"    SeriesDescription (0008,103E): '{series_desc_str}'")
-    logger.debug(f"    ProtocolName (0018,1030): '{protocol_name_str}'")
-    logger.debug(f"    ContrastBolusAgent (0018,0010): '{contrast_agent_str}'")
-    logger.debug(f"    ScanningSequence (0018,0020): {scan_seq_val}")
-    logger.debug(f"    SequenceVariant (0018,0021): {seq_var_val}")
-    logger.debug(f"    ImageType (0008,0008): {image_type_val}")
-    logger.debug(f"    RepetitionTime (0018,0080): {tr_val} (type: {type(tr_val)})")
-    logger.debug(f"    EchoTime (0018,0081): {te_val} (type: {type(te_val)})")
-    logger.debug(f"    InversionTime (0018,0082): {ti_val} (type: {type(ti_val)})")
-    
-    if modality_tag_val and modality_tag_val != 'mr':
-        logger.info(f"  Тег Modality (0008,0060) для {os.path.basename(file_path)} имеет значение '{modality_tag_val}', а не 'mr'. Продолжаем анализ по другим тегам.")
-    elif not modality_tag_val:
-        logger.info(f"  Тег Modality (0008,0060) для {os.path.basename(file_path)} пуст или отсутствует. Продолжаем анализ по другим тегам.")
-    
-    # Define keywords
-    flair_kws = ['flair', 't2fl', 'fluid attenuated inversion recovery', 'ir_fse', 'darkfluid']
-    t1_kws = ['t1', 't1w', 't1 weighted', 'spgr', 'mprage', 'tfl', 'bravo']
-    t1c_kws = ['t1c', 't1+c', 't1-ce', 't1contrast', 't1 gd', 'contrast', 'gad', 'postcontrast', 'ce-t1', 't1 post', 'gd t1', 'mdc', 'with contrast', '+gd', 'post gd']
-    t2_kws = ['t2', 't2w', 't2 weighted', 'tse', 'fse', 't2 tse', 't2 fse', 'haste']
-
-
-    # Вспомогательная функция для поиска ключевых слов по протоколу сканирования
-    def keyword_match(text, required=[], forbidden=[], prefer_order=None):
-        text_l = text.lower()
-        if any(fw in text_l for fw in forbidden):
-            return False
-        if not all(rw in text_l for rw in required):
-            return False
-        # if prefer_order:
-        #     for pref in prefer_order:
-        #         if pref in text_l:
-        #             return True
-        #     return False
-        # return True
-    
-    # # Helper function for safe float conversion
-    # def safe_float(value, tag_name_for_log="value"):
-    #     if value is None:
-    #         return None
-    #     try:
-    #         return float(value)
-    #     except (ValueError, TypeError) as e_conv:
-    #         logger.debug(f"  Не удалось конвертировать {tag_name_for_log}='{value}' (тип: {type(value)}) в float: {e_conv}")
-    #         return None
-    
-    # Convert numerical values
-    ti_float = safe_float(ti_val, "TI (0018,0082)")
-    tr_float = safe_float(tr_val, "TR (0018,0080)")
-    te_float = safe_float(te_val, "TE (0018,0081)")
-
-    # Если год 2021-2022 — запускаем спецлогику
-    if study_year == 2021 or study_year == 2022:
-        logger.debug("Определён проткол сканирования 2021-2022 года.")
-        # Определим модальность по строгим условиям
-        if keyword_match(protocol_name_str, **base_keywords_2021['t1c']):
-            logger.debug("Спецлогика 2021-2022: выбран 't1c'")
-            return 't1c'
-        elif keyword_match(protocol_name_str, **base_keywords_2021['t1']):
-            logger.debug("Спецлогика 2021-2022: выбран 't1'")
-            return 't1'
-        elif keyword_match(protocol_name_str, **base_keywords_2021['t2fl']):
-            logger.debug("Спецлогика 2021-2022: выбран 't2fl'")
-            return 't2fl'
-        elif keyword_match(protocol_name_str, **base_keywords_2021['t2']):
-            logger.debug("Спецлогика 2021-2022: выбран 't2'")
-            return 't2'
-
-        # Если ничего не подошло — продолжаем стандартный алгоритм ниже
-        logger.debug(f"Файл не соответствует правилам 2021-2022 года — будет проигнорирован.")
-        return 'unknown' 
-    
-    # PRIORITY 1: Check protocol_name + contrast_agent for keywords
-    logger.debug("  ПРИОРИТЕТ 1: Анализ ProtocolName и ContrastAgent")
-    protocol_contrast_text = f"{protocol_name_str} {contrast_agent_str}".strip()
-    
-    # Check for contrast first (T1C detection)
-    has_contrast_agent = contrast_agent_str and contrast_agent_str.lower() not in ["", "none", "no"]
-    matched_t1c_kw_priority1 = find_keyword_in_text(protocol_contrast_text, t1c_kws)
-    
-    if has_contrast_agent or matched_t1c_kw_priority1:
-        logger.debug(f"    Найден контраст: agent='{contrast_agent_str}', keyword='{matched_t1c_kw_priority1}'")
-        # Check if it's also T1-like in protocol
-        matched_t1_kw_priority1 = find_keyword_in_text(protocol_name_str, t1_kws)
-        if matched_t1_kw_priority1:
-            logger.debug(f"Модальность 't1c' определена по ProtocolName: контраст + T1 keyword '{matched_t1_kw_priority1}'.")
-            return 't1c'
-    
-    # Check for FLAIR in protocol
-    matched_flair_kw_priority1 = find_keyword_in_text(protocol_name_str, flair_kws)
-    if matched_flair_kw_priority1:
-        logger.debug(f"Модальность 't2fl' определена по ProtocolName: keyword '{matched_flair_kw_priority1}'.")
-        return 't2fl'
-    
-    # Check for T1 in protocol (non-contrast)
-    matched_t1_kw_priority1 = find_keyword_in_text(protocol_name_str, t1_kws)
-    if matched_t1_kw_priority1 and not has_contrast_agent and not matched_t1c_kw_priority1:
-        logger.debug(f"Модальность 't1' определена по ProtocolName: keyword '{matched_t1_kw_priority1}'.")
-        return 't1'
-    
-    # Check for T2 in protocol
-    matched_t2_kw_priority1 = find_keyword_in_text(protocol_name_str, t2_kws)
-    if matched_t2_kw_priority1:
-        logger.debug(f"Модальность 't2' определена по ProtocolName: keyword '{matched_t2_kw_priority1}'.")
-        return 't2'
-    
-    # PRIORITY 2: Check series_description for keywords
-    logger.debug("  ПРИОРИТЕТ 2: Анализ SeriesDescription")
-    
-    # Check for contrast in series description
-    matched_t1c_kw_priority2 = find_keyword_in_text(series_desc_str, t1c_kws)
-    if matched_t1c_kw_priority2:
-        logger.debug(f"    Найден контраст в SeriesDescription: keyword '{matched_t1c_kw_priority2}'")
-        # Check if it's also T1-like in series description
-        matched_t1_kw_priority2 = find_keyword_in_text(series_desc_str, t1_kws)
-        if matched_t1_kw_priority2:
-            logger.debug(f"Модальность 't1c' определена по SeriesDescription: контраст + T1 keyword '{matched_t1_kw_priority2}'.")
-            return 't1c'
-        # If contrast keyword found but no T1 keyword, still consider it T1C if no FLAIR
-        matched_flair_kw_priority2 = find_keyword_in_text(series_desc_str, flair_kws)
-        if not matched_flair_kw_priority2:
-            logger.debug(f"Модальность 't1c' определена по SeriesDescription: контраст keyword '{matched_t1c_kw_priority2}' без FLAIR.")
-            return 't1c'
-    
-    # Check for FLAIR in series description
-    matched_flair_kw_priority2 = find_keyword_in_text(series_desc_str, flair_kws)
-    if matched_flair_kw_priority2:
-        logger.debug(f"Модальность 't2fl' определена по SeriesDescription: keyword '{matched_flair_kw_priority2}'.")
-        return 't2fl'
-    
-    # Check for T1 in series description (non-contrast)
-    matched_t1_kw_priority2 = find_keyword_in_text(series_desc_str, t1_kws)
-    if matched_t1_kw_priority2 and not has_contrast_agent and not matched_t1c_kw_priority2:
-        logger.debug(f"Модальность 't1' определена по SeriesDescription: keyword '{matched_t1_kw_priority2}'.")
-        return 't1'
-    
-    # Check for T2 in series description
-    matched_t2_kw_priority2 = find_keyword_in_text(series_desc_str, t2_kws)
-    if matched_t2_kw_priority2:
-        logger.debug(f"Модальность 't2' определена по SeriesDescription: keyword '{matched_t2_kw_priority2}'.")
-        return 't2'
-    
-    # PRIORITY 3: Use numerical values and technical parameters as fallback
-    logger.debug("  ПРИОРИТЕТ 3: Анализ численных параметров")
-    
-    # 1. FLAIR detection by TI value (high TI indicates inversion recovery)
-    if ti_float is not None and ti_float > 1500:
-        reason = f"по TI (0018,0082) = {ti_float}"
-        if tr_float is not None and te_float is not None:
-            if tr_float > 4000 and te_float > 70:
-                reason += f" и классическим TR/TE (TR={tr_float}, TE={te_float})"
-            else:
-                reason += f" (TR={tr_float}, TE={te_float} не классические для FLAIR, но TI решающий)"
-        logger.debug(f"Модальность 't2fl' определена {reason}.")
-        return 't2fl'
-    
-    # 2. T1C detection by contrast agent (if not detected by keywords)
-    if has_contrast_agent:
-        logger.debug(f"    Найден контрастный агент: '{contrast_agent_str}'")
-        # Confirm T1-like characteristics
-        t1_confirmation_reason = ""
-        if tr_float is not None and te_float is not None and tr_float < 1200 and te_float < 30:
-            t1_confirmation_reason = f"TR/TE (TR={tr_float}, TE={te_float})"
-        elif any(val == 'sp' for val in seq_var_val):
-            t1_confirmation_reason = "SequenceVariant содержит 'sp'"
-        elif any(val == 'mp' for val in seq_var_val):
-            t1_confirmation_reason = "SequenceVariant содержит 'mp'"
-        
-        if t1_confirmation_reason:
-            logger.debug(f"Модальность 't1c' определена по ContrastAgent='{contrast_agent_str}', подтверждено как T1 по {t1_confirmation_reason}.")
-            return 't1c'
-    
-    # 3. T1 detection by technical parameters
-    # MPRAGE detection
-    if any(val == 'mp' for val in seq_var_val):
-        if ti_float is not None and 700 < ti_float < 1300:
-            if not has_contrast_agent:
-                logger.debug(f"Модальность 't1' определена как MPRAGE по SequenceVariant='mp' и TI={ti_float}.")
-                return 't1'
-    
-    # SPGR detection
-    if any(val == 'sp' for val in seq_var_val):
-        reason_sp = "SequenceVariant содержит 'sp' (SPGR/FLASH)"
-        if not has_contrast_agent:
-            if tr_float is not None and te_float is not None and tr_float < 1200 and te_float < 30:
-                logger.debug(f"Модальность 't1' определена {reason_sp} и TR/TE (TR={tr_float}, TE={te_float}).")
-                return 't1'
-    
-    # General T1 by TR/TE
-    if tr_float is not None and te_float is not None and tr_float < 1000 and te_float < 30:
-        if not has_contrast_agent:
-            logger.debug(f"Модальность 't1' определена по TR={tr_float} и TE={te_float}.")
-            return 't1'
-    
-    # 4. T2 detection by technical parameters
-    # TSE/FSE detection
-    if any(val == 'se' for val in scan_seq_val) and any(val == 'sk' for val in seq_var_val):
-        reason_tse = "ScanningSequence содержит 'se' и SequenceVariant содержит 'sk' (TSE/FSE)"
-        if tr_float is not None and te_float is not None and tr_float > 2000 and te_float > 70:
-            logger.debug(f"Модальность 't2' определена {reason_tse} и TR/TE (TR={tr_float}, TE={te_float}).")
-            return 't2'
-    
-    # General T2 by TR/TE
-    if tr_float is not None and te_float is not None and tr_float > 2000 and te_float > 70:
-        # Make sure it's not FLAIR (FLAIR also has long TR/TE but has high TI)
-        if ti_float is None or ti_float < 1500:
-            logger.debug(f"Модальность 't2' определена по TR={tr_float} и TE={te_float}.")
-            return 't2'
-    
-    # FALLBACK: Check file path for keywords
-    logger.debug("  FALLBACK: Анализ пути файла")
-    path_parts = os.path.normpath(file_path).split(os.sep)
-    for part in reversed(path_parts):
-        part_lower = part.lower()
-        
-        kw_path = find_keyword_in_text(part_lower, t1c_kws)
-        if kw_path:
-            logger.debug(f"Модальность 't1c' определена по пути: '{part_lower}' содержит '{kw_path}'.")
-            return 't1c'
-        
-        kw_path = find_keyword_in_text(part_lower, flair_kws)
-        if kw_path:
-            logger.debug(f"Модальность 't2fl' определена по пути: '{part_lower}' содержит '{kw_path}'.")
-            return 't2fl'
-        
-        kw_path = find_keyword_in_text(part_lower, t1_kws)
-        if kw_path:
-            logger.debug(f"Модальность 't1' определена по пути: '{part_lower}' содержит '{kw_path}'.")
-            return 't1'
-        
-        kw_path = find_keyword_in_text(part_lower, t2_kws)
-        if kw_path:
-            logger.debug(f"Модальность 't2' определена по пути: '{part_lower}' содержит '{kw_path}'.")
-            return 't2'
-    
-    logger.warning(f"Не удалось определить модальность для файла: {os.path.basename(file_path)} (путь: {file_path}) с использованием всех правил.")
-    return 'unknown'
-
-
-def sort_dicom_files_in_series(dicom_files_paths):
-    """Сортирует список путей к DICOM файлам по InstanceNumber."""
-    sorted_files = []
-    for f_path in dicom_files_paths:
-        try:
-            ds_slice = pydicom.dcmread(f_path, stop_before_pixels=True, specific_tags=[(0x0020,0x0013)]) # Читаем только InstanceNumber
-            instance_number = get_dicom_value(ds_slice, (0x0020,0x0013))
-            if instance_number is not None:
-                try:
-                    instance_number = int(instance_number)
-                except ValueError:
-                    logger.warning(f"Не удалось конвертировать InstanceNumber '{instance_number}' в int для файла {f_path}. Используем имя файла для сортировки этого элемента.")
-                    instance_number = f_path # Fallback для этого файла
-            else: # Если InstanceNumber отсутствует
-                logger.warning(f"InstanceNumber отсутствует в файле {f_path}. Используем имя файла для сортировки этого элемента.")
-                instance_number = f_path # Fallback для этого файла
-            sorted_files.append((instance_number, f_path))
-        except Exception as e:
-            logger.error(f"Ошибка чтения InstanceNumber из файла {f_path}: {e}. Файл будет в конце или отсортирован по имени.")
-            sorted_files.append((float('inf'), f_path)) # Помещаем файлы с ошибками в конец
-
-    # Сортируем: сначала по числовому InstanceNumber, затем по пути файла (если InstanceNumber был строкой/одинаковый)
-    sorted_files.sort(key=lambda x: (isinstance(x[0], str), x[0]))
-    return [f_path for _, f_path in sorted_files]
-
-
-def organize_dicom_to_bids(input_dir, output_dir='bids_data_dicom_universal', action_type='copy'):
-    """Организует DICOM файлы из любой структуры в BIDS на основе DICOM тегов."""
-    logger.info(f"Начало организации данных из '{input_dir}' в '{output_dir}'. Действие: {action_type.upper()}")
-
-    if not os.path.isdir(input_dir):
-        logger.error(f"Входная директория не найдена: {input_dir}")
-        raise FileNotFoundError(f"Входная директория не найдена: {input_dir}")
-
+def get_dicom_value(ds: pydicom.Dataset, tag: Union[tuple, str], default: Any = None) -> Any:
+    """Safely extract value from DICOM dataset."""
     try:
-        os.makedirs(output_dir, exist_ok=True)
-    except OSError as e:
-        logger.error(f"Не удалось создать корневую выходную директорию {output_dir}: {e}")
-        raise
+        val = ds.get(tag, default)
+        if val is default:
+            return default
+        
+        if isinstance(val, pydicom.dataelem.DataElement):
+            val = val.value
+            if val is None:
+                return default
+        
+        if val is None:
+            return default
+            
+        if isinstance(val, str):
+            return val.strip().lower()
+        if isinstance(val, (pydicom.multival.MultiValue, list)):
+            return [v.strip().lower() if isinstance(v, str) else v for v in val if v is not None]
+        return val
+    except Exception as e:
+        logger.error(f"Exception in get_dicom_value for tag {tag}: {e}")
+        return default
 
-    # --- Фаза 1: Глобальное сканирование и сбор информации ---
-    logger.info("Фаза 1: Сканирование DICOM файлов и сбор метаданных...")
-    # Структура: patient_orig_id -> study_orig_uid -> series_orig_uid -> {info}
-    collected_data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+
+@handle_dicom_error
+def safe_read_dicom(file_path: str, specific_tags: Optional[List] = None) -> Optional[pydicom.Dataset]:
+    """Safely read DICOM file with error handling."""
+    return pydicom.dcmread(file_path, stop_before_pixels=True, specific_tags=specific_tags)
+
+
+def is_dicom_file(file_path: str) -> bool:
+    """Check if file is a valid DICOM file."""
+    try:
+        pydicom.dcmread(file_path, stop_before_pixels=True)
+        return True
+    except pydicom.errors.InvalidDicomError:
+        logger.debug(f"File {file_path} is not a valid DICOM.")
+        return False
+    except Exception as e:
+        logger.warning(f"Error checking DICOM file {file_path}: {e}")
+        return False
+
+
+# --- DICOM Scanner Class ---
+class DicomScanner:
+    """Handles scanning and collecting DICOM files."""
     
-    dicom_file_count = 0
-    processed_file_count = 0
-
-    for root, _, files in os.walk(input_dir):
-        for file_name in files:
-            file_path = os.path.join(root, file_name)
-            dicom_file_count += 1
-            if dicom_file_count % 500 == 0:
-                logger.info(f"  Просканировано файлов: {dicom_file_count}...")
-
-            if is_dicom_file(file_path):
-                try:
-                    ds = pydicom.dcmread(file_path, stop_before_pixels=True)
-                    
-                    pat_id = get_dicom_value(ds, (0x0010, 0x0020), "UNKNOWN_PATIENT_ID")
-                    study_uid = get_dicom_value(ds, (0x0020, 0x000D), "UNKNOWN_STUDY_UID")
-                    series_uid = get_dicom_value(ds, (0x0020, 0x000E), "UNKNOWN_SERIES_UID")
-
-                    if any(val.startswith("UNKNOWN_") for val in [pat_id, study_uid, series_uid]):
-                        logger.warning(f"Пропущен файл {file_path}: отсутствует PatientID, StudyUID или SeriesUID.")
+    def scan_directory(self, input_dir: str) -> Dict[str, PatientData]:
+        """Scan directory and collect DICOM metadata."""
+        logger.info("Phase 1: Scanning DICOM files and collecting metadata...")
+        
+        collected_data = {}
+        dicom_file_count = 0
+        processed_file_count = 0
+        
+        for root, _, files in os.walk(input_dir):
+            for file_name in files:
+                file_path = os.path.join(root, file_name)
+                dicom_file_count += 1
+                
+                if dicom_file_count % 500 == 0:
+                    logger.info(f"  Scanned files: {dicom_file_count}...")
+                
+                if is_dicom_file(file_path):
+                    ds = safe_read_dicom(file_path)
+                    if ds is None:
                         continue
-                    
-                    # Сохраняем информацию о серии
-                    series_data = collected_data[pat_id][study_uid][series_uid]
-                    if 'files' not in series_data:
-                        series_data['files'] = []
-                        series_data['first_ds'] = ds # Сохраняем первый датасет для определения модальности
                         
-                        study_date_str = get_dicom_value(ds, (0x0008,0x0020), "00000000")
-                        study_time_str = get_dicom_value(ds, (0x0008,0x0030), "000000.000000").split('.')[0] # Берем только HHMMSS
-                        try:
-                            series_data['study_datetime'] = datetime.strptime(f"{study_date_str}{study_time_str}", "%Y%m%d%H%M%S")
-                        except ValueError:
-                            logger.warning(f"Некорректная дата/время ({study_date_str}/{study_time_str}) для {study_uid}. Используется начало эпохи.")
-                            series_data['study_datetime'] = datetime.min
-
-                        series_num_val = get_dicom_value(ds, (0x0020,0x0011))
-                        try:
-                            series_data['series_number_int'] = int(series_num_val) if series_num_val is not None else float('inf')
-                        except ValueError:
-                            series_data['series_number_int'] = float('inf') # Если не число, будет последним при сортировке
-                            logger.warning(f"SeriesNumber '{series_num_val}' для серии {series_uid} не является числом.")
-                    
-                    series_data['files'].append(file_path)
-                    processed_file_count +=1
-
-                except Exception as e:
-                    logger.error(f"Ошибка обработки DICOM файла {file_path} на этапе сбора: {e}", exc_info=False)
-    
-    logger.info(f"Фаза 1 завершена. Всего просканировано файлов: {dicom_file_count}. Обработано DICOM файлов: {processed_file_count}.")
-    if not collected_data:
-        logger.warning("Не найдено валидных DICOM данных для организации.")
-        return
-
-    # --- Фаза 2: Формирование BIDS структуры и копирование файлов ---
-    logger.info("Фаза 2: Формирование BIDS структуры и копирование файлов...")
-    
-    # Создание BIDS ID для пациентов
-    sorted_original_patient_ids = sorted(list(collected_data.keys()))
-    patient_bids_map = {orig_id: f"sub-{i+1:03d}" for i, orig_id in enumerate(sorted_original_patient_ids)}
-
-    for orig_pat_id, studies_data in collected_data.items():
-        bids_sub_id = patient_bids_map[orig_pat_id]
-        logger.info(f"Обработка пациента: {orig_pat_id} -> {bids_sub_id}")
-
-        # Создание BIDS ID для сессий (сортировка по дате/времени)
-        sorted_original_study_uids = sorted(
-            studies_data.keys(),
-            # key=lambda suid: studies_data[suid].get(next(iter(studies_data[suid])), {}).get('study_datetime', datetime.min)
-            # Ключ для сортировки сессий: берем study_datetime из первой серии этой сессии
-            key=lambda suid: studies_data[suid][next(iter(studies_data[suid]))]['study_datetime']
-
-        )
-        session_bids_map = {orig_id: f"ses-{i+1:03d}" for i, orig_id in enumerate(sorted_original_study_uids)}
-
-        for orig_study_uid, series_collection in studies_data.items():
-            bids_ses_id = session_bids_map[orig_study_uid]
-            logger.info(f"  Обработка сессии: {orig_study_uid} -> {bids_ses_id}")
-
-            bids_anat_path = os.path.join(output_dir, bids_sub_id, bids_ses_id, 'anat')
-
-            # Группировка серий по модальности для определения run-номеров
-            modality_to_series_runs = defaultdict(list) # {'t1w': [(series_num_int, series_uid), ...]}
-            
-            for orig_series_uid, series_info in series_collection.items():
-                first_ds_for_modality = series_info['first_ds']
-                # Используем первый файл серии для логгинга в determine_modality и для fallback по пути
-                modality_label = determine_modality(first_ds_for_modality, series_info['files'][0]) 
-                
-                if modality_label == 'unknown':
-                    logger.warning(f"    Пропуск серии {orig_series_uid}: не удалось определить модальность.")
-                    continue
-                
-                # modality_to_series_runs[modality_label].append(
-                #     (series_info['series_number_int'], orig_series_uid)
-                # )
-
-                # ИЗМЕНЕНО
-                modality_to_series_runs[modality_label].append({
-                    "series_number": series_info['series_number_int'],
-                    "series_uid": orig_series_uid,
-                    "protocol_name": get_dicom_value(first_ds_for_modality, (0x0018, 0x1030), "").lower(),
-                    "series_desc": get_dicom_value(first_ds_for_modality, (0x0008, 0x103e), "").lower(),
-                })
-            
-            if not modality_to_series_runs:
-                logger.warning(f"    Нет серий с известной модальностью для сессии {bids_ses_id}.")
-                continue
-
-            # Копирование файлов с присвоением run-номеров
-            for modality_label, run_candidates in modality_to_series_runs.items():
-
-                # ДОБАВЛЕНО Попробуем применить prefer_order
-                prefer_order = base_keywords_2021.get(modality_label, {}).get("prefer_order")
-
-                # По умолчанию — сортируем по SeriesNumber
-                sorted_candidates = sorted(run_candidates, key=lambda x: x['series_number'])
-
-                # ------------ДОБАВЛЕНО
-                if prefer_order:
-                    for preferred in prefer_order:
-                        for candidate in sorted_candidates:
-                            if preferred in candidate['protocol_name'] or preferred in candidate['series_desc']:
-                                sorted_candidates = [candidate]
-                                break
-                        else:
-                            continue  # не нашли этот приоритет — смотрим следующий
-                        break
-                    else:
-                        logger.warning(f"    Для модальности {modality_label} не удалось найти серию по приоритету. Используем первую попавшуюся.")
-                        sorted_candidates = [sorted_candidates[0]]
-                else:
-                    # Если нет предпочтений — просто берём первую по SeriesNumber
-                    sorted_candidates = [sorted_candidates[0]]
-
-                # ---------КОНЕЦ ДОБАВЛЕННОГО БЛОКА
-                
-                bids_modality_dir = os.path.join(bids_anat_path, modality_label)
-                try:
-                    os.makedirs(bids_modality_dir, exist_ok=True)
-                except OSError as e:
-                    logger.error(f"    Не удалось создать директорию {bids_modality_dir}: {e}. Пропуск модальности {modality_label}.")
-                    continue
-
-                # for run_idx, (_series_num_val, orig_series_uid_for_run) in enumerate(sorted_run_candidates, 1):
-
-                # ------------ИЗМЕНЕНО
-                for run_idx, selected_candidate in enumerate(sorted_candidates, 1):
-
-                    orig_series_uid_for_run = selected_candidate['series_uid']
-
-                    files_to_copy = series_collection[orig_series_uid_for_run]['files']
-                    
-                    # Сортируем файлы внутри серии по InstanceNumber
-                    sorted_files_for_run = sort_dicom_files_in_series(files_to_copy)
-
-                    logger.info(f"    Копирование {len(sorted_files_for_run)} файлов для {modality_label}"
-                                f"{f'_run-{run_idx:02d}' if len(sorted_candidates) > 1 else ''} (Серия UID: {orig_series_uid_for_run})")
-
-                    for slice_idx, src_file_path in enumerate(sorted_files_for_run, 1):
-                        if len(sorted_candidates) > 1: # Если больше одной серии этой модальности
-                            bids_filename = f"{bids_sub_id}_{bids_ses_id}_run-{run_idx:02d}_{modality_label}_{slice_idx:03d}.dcm"
-                        else:
-                            bids_filename = f"{bids_sub_id}_{bids_ses_id}_{modality_label}_{slice_idx:03d}.dcm"
+                    series_info = self._extract_series_info(ds, file_path)
+                    if series_info is None:
+                        continue
                         
-                        dst_file_path = os.path.join(bids_modality_dir, bids_filename)
-                        try:
-                            if action_type == 'move':
-                                shutil.move(src_file_path, dst_file_path)
-                                # logger.debug(f"      Перемещен: ...")
-                            else: # По умолчанию 'copy'
-                                shutil.copy(src_file_path, dst_file_path)
-                                # logger.debug(f"      Скопирован: ...")
-                        except Exception as e:
-                            logger.error(f"      Не удалось {action_type} {src_file_path} в {dst_file_path}: {e}")
+                    self._add_to_collected_data(collected_data, series_info, file_path)
+                    processed_file_count += 1
+        
+        logger.info(f"Phase 1 completed. Total files scanned: {dicom_file_count}. DICOM files processed: {processed_file_count}.")
+        return collected_data
     
-    logger.info("Организация данных в BIDS формат завершена!")
+    def _extract_series_info(self, ds: pydicom.Dataset, file_path: str) -> Optional[Dict]:
+        """Extract series information from DICOM dataset."""
+        pat_id = get_dicom_value(ds, (0x0010, 0x0020), "UNKNOWN_PATIENT_ID")
+        study_uid = get_dicom_value(ds, (0x0020, 0x000D), "UNKNOWN_STUDY_UID")
+        series_uid = get_dicom_value(ds, (0x0020, 0x000E), "UNKNOWN_SERIES_UID")
+        
+        if any(val.startswith("UNKNOWN_") for val in [pat_id, study_uid, series_uid]):
+            logger.warning(f"Skipped file {file_path}: missing PatientID, StudyUID or SeriesUID.")
+            return None
+        
+        study_date_str = get_dicom_value(ds, (0x0008, 0x0020), "00000000")
+        study_time_str = get_dicom_value(ds, (0x0008, 0x0030), "000000.000000").split('.')[0]
+        
+        try:
+            study_datetime = datetime.strptime(f"{study_date_str}{study_time_str}", "%Y%m%d%H%M%S")
+        except ValueError:
+            logger.warning(f"Invalid date/time ({study_date_str}/{study_time_str}) for {study_uid}.")
+            study_datetime = datetime.min
+        
+        series_num_val = get_dicom_value(ds, (0x0020, 0x0011))
+        try:
+            series_number = int(series_num_val) if series_num_val is not None else float('inf')
+        except ValueError:
+            series_number = float('inf')
+            logger.warning(f"SeriesNumber '{series_num_val}' for series {series_uid} is not a number.")
+        
+        return {
+            'pat_id': pat_id,
+            'study_uid': study_uid,
+            'series_uid': series_uid,
+            'study_datetime': study_datetime,
+            'series_number': series_number,
+            'dataset': ds,
+            'protocol_name': normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1030), "")),
+            'series_desc': normalize_dicom_text(get_dicom_value(ds, (0x0008, 0x103E), ""))
+        }
+    
+    def _add_to_collected_data(self, collected_data: Dict, series_info: Dict, file_path: str):
+        """Add series information to collected data structure."""
+        pat_id = series_info['pat_id']
+        study_uid = series_info['study_uid']
+        series_uid = series_info['series_uid']
+        
+        # Initialize patient data if not exists
+        if pat_id not in collected_data:
+            collected_data[pat_id] = PatientData(original_id=pat_id, studies={})
+        
+        # Initialize study data if not exists
+        if study_uid not in collected_data[pat_id].studies:
+            collected_data[pat_id].studies[study_uid] = StudyInfo(
+                uid=study_uid,
+                series={},
+                study_datetime=series_info['study_datetime']
+            )
+        
+        # Initialize series data if not exists
+        if series_uid not in collected_data[pat_id].studies[study_uid].series:
+            collected_data[pat_id].studies[study_uid].series[series_uid] = SeriesInfo(
+                uid=series_uid,
+                files=[],
+                series_number=series_info['series_number'],
+                study_datetime=series_info['study_datetime'],
+                first_dataset=series_info['dataset'],
+                protocol_name=series_info['protocol_name'],
+                series_desc=series_info['series_desc']
+            )
+        
+        # Add file to series
+        collected_data[pat_id].studies[study_uid].series[series_uid].files.append(file_path)
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='Организует DICOM файлы из входной директории в BIDS-структуру на основе DICOM тегов.',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument(
-        '--input_dir',
-        required=True,
-        help='Входная директория с DICOM файлами (любой вложенности).'
-    )
-    parser.add_argument(
-        '--output_dir',
-        default='bids_data_universal', # Изменено имя по умолчанию
-        help='Корневая выходная директория для сохранения BIDS структуры.'
-    )
-    parser.add_argument(
-        '--log_file',
-        default=None,
-        help='Путь к файлу для записи логов. Если не указан, будет создан файл "dicom_to_bids.log" внутри --output_dir.'
-    )
-    parser.add_argument(
-        '--action', 
-        type=str,
-        default='copy',
-        choices=['copy', 'move'],
-        help='Действие с файлами: "copy" для копирования, "move" для перемещения.'
-    )
-
-    args = parser.parse_args()
-
-    log_file_path_arg = args.log_file
-    if log_file_path_arg is None:
-        # Создаем output_dir заранее, если его нет, чтобы положить туда лог
-        # Это делается также в setup_logging, но здесь для определения пути
-        if args.output_dir and not os.path.exists(args.output_dir):
+# --- Modality Detector Class ---
+class ModalityDetector:
+    """Handles modality detection logic."""
+    
+    def __init__(self):
+        self.keywords = MODALITY_KEYWORDS
+        self.technical_params = TECHNICAL_PARAMS
+        self.legacy_keywords = LEGACY_KEYWORDS_2021_2022
+    
+    def determine_modality(self, ds: pydicom.Dataset, file_path: str) -> str:
+        """Determine modality from DICOM dataset."""
+        logger.debug(f"Determining modality for {os.path.basename(file_path)}:")
+        
+        # Extract basic information
+        study_year = self._get_study_year(ds)
+        
+        # Check for 2021-2022 legacy protocol
+        if study_year in [2021, 2022]:
+            modality = self._detect_legacy_modality(ds)
+            if modality != 'unknown':
+                return modality
+            logger.debug("File doesn't match 2021-2022 rules - will be ignored.")
+            return 'unknown'
+        
+        # Standard detection workflow
+        detectors = [
+            self._detect_by_protocol,
+            self._detect_by_series_description,
+            self._detect_by_technical_params,
+            lambda ds, fp: self._detect_by_file_path(fp)
+        ]
+        
+        for detector in detectors:
+            modality = detector(ds, file_path)
+            if modality != 'unknown':
+                return modality
+        
+        logger.warning(f"Could not determine modality for file: {os.path.basename(file_path)}")
+        return 'unknown'
+    
+    def _get_study_year(self, ds: pydicom.Dataset) -> Optional[int]:
+        """Extract study year from DICOM dataset."""
+        study_date_val = get_dicom_value(ds, (0x0008, 0x0020), "")
+        if isinstance(study_date_val, str) and len(study_date_val) >= 4:
             try:
-                os.makedirs(args.output_dir, exist_ok=True)
-            except OSError as e:
-                print(f"Предупреждение: Не удалось создать выходную директорию {args.output_dir} для лог-файла. Ошибка: {e}")
-                # Лог будет в текущей директории, если output_dir создать не удалось
-                log_file_path_arg = 'dicom_to_bids.log'
+                return int(study_date_val[:4])
+            except ValueError:
+                pass
+        return None
+    
+    def _detect_legacy_modality(self, ds: pydicom.Dataset) -> str:
+        """Detect modality using 2021-2022 legacy rules."""
+        logger.debug("Using 2021-2022 legacy protocol.")
+        protocol_name = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1030), ""))
+        
+        for modality, rules in self.legacy_keywords.items():
+            if self._matches_legacy_keywords(protocol_name, rules):
+                logger.debug(f"Legacy detection: selected '{modality}'")
+                return modality
+        
+        return 'unknown'
+    
+    def _matches_legacy_keywords(self, text: str, rules: Dict) -> bool:
+        """Check if text matches legacy keyword rules."""
+        # Check forbidden keywords
+        if any(fw in text for fw in rules.get('forbidden', [])):
+            return False
+        
+        # Check required keywords
+        if not all(rw in text for rw in rules.get('required', [])):
+            return False
+        
+        return True
+    
+    def _detect_by_protocol(self, ds: pydicom.Dataset, file_path: str) -> str:
+        """Detect modality by protocol name and contrast agent."""
+        logger.debug("  PRIORITY 1: Analyzing ProtocolName and ContrastAgent")
+        
+        protocol_name = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1030), ""))
+        contrast_agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
+        
+        # Check for contrast
+        has_contrast = contrast_agent and contrast_agent not in ["", "none", "no"]
+        
+        # Check each modality
+        for modality, config in self.keywords.items():
+            if self._find_keywords_in_text(protocol_name, config['keywords']):
+                if modality == 't1c' and (has_contrast or 'contrast' in protocol_name):
+                    logger.debug(f"Modality 't1c' detected by ProtocolName: contrast found.")
+                    return 't1c'
+                elif modality != 't1c' and not has_contrast:
+                    logger.debug(f"Modality '{modality}' detected by ProtocolName.")
+                    return modality
+        
+        return 'unknown'
+    
+    def _detect_by_series_description(self, ds: pydicom.Dataset, file_path: str) -> str:
+        """Detect modality by series description."""
+        logger.debug("  PRIORITY 2: Analyzing SeriesDescription")
+        
+        series_desc = normalize_dicom_text(get_dicom_value(ds, (0x0008, 0x103E), ""))
+        contrast_agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
+        has_contrast = contrast_agent and contrast_agent not in ["", "none", "no"]
+        
+        for modality, config in self.keywords.items():
+            if self._find_keywords_in_text(series_desc, config['keywords']):
+                if modality == 't1c' and (has_contrast or any(kw in series_desc for kw in ['contrast', 'gad', 'ce'])):
+                    logger.debug(f"Modality 't1c' detected by SeriesDescription.")
+                    return 't1c'
+                elif modality != 't1c' and not has_contrast:
+                    logger.debug(f"Modality '{modality}' detected by SeriesDescription.")
+                    return modality
+        
+        return 'unknown'
+    
+    def _detect_by_technical_params(self, ds: pydicom.Dataset, file_path: str) -> str:
+        """Detect modality by technical parameters."""
+        logger.debug("  PRIORITY 3: Analyzing technical parameters")
+        
+        tr_val = safe_float(get_dicom_value(ds, (0x0018, 0x0080)), "TR")
+        te_val = safe_float(get_dicom_value(ds, (0x0018, 0x0081)), "TE")
+        ti_val = safe_float(get_dicom_value(ds, (0x0018, 0x0082)), "TI")
+        
+        contrast_agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
+        has_contrast = contrast_agent and contrast_agent not in ["", "none", "no"]
+        
+        # FLAIR detection by TI
+        if ti_val and ti_val > 1500:
+            logger.debug(f"Modality 't2fl' detected by TI={ti_val}.")
+            return 't2fl'
+        
+        # T1C detection by contrast
+        if has_contrast and tr_val and te_val and tr_val < 1200 and te_val < 30:
+            logger.debug(f"Modality 't1c' detected by contrast agent and TR/TE.")
+            return 't1c'
+        
+        # T1 detection by TR/TE
+        if tr_val and te_val and tr_val < 1000 and te_val < 30 and not has_contrast:
+            logger.debug(f"Modality 't1' detected by TR={tr_val} and TE={te_val}.")
+            return 't1'
+        
+        # T2 detection by TR/TE
+        if tr_val and te_val and tr_val > 2000 and te_val > 70:
+            if not ti_val or ti_val < 1500:  # Make sure it's not FLAIR
+                logger.debug(f"Modality 't2' detected by TR={tr_val} and TE={te_val}.")
+                return 't2'
+        
+        return 'unknown'
+    
+    def _detect_by_file_path(self, file_path: str) -> str:
+        """Fallback detection by file path."""
+        logger.debug("  FALLBACK: Analyzing file path")
+        
+        path_parts = os.path.normpath(file_path).split(os.sep)
+        for part in reversed(path_parts):
+            part_lower = part.lower()
+            
+            for modality, config in self.keywords.items():
+                if self._find_keywords_in_text(part_lower, config['keywords']):
+                    logger.debug(f"Modality '{modality}' detected by path: '{part_lower}'")
+                    return modality
+        
+        return 'unknown'
+    
+    def _find_keywords_in_text(self, text: str, keywords: List[str]) -> bool:
+        """Check if any keyword is found in text."""
+        if not text or not keywords:
+            return False
+        text_lower = text.lower()
+        return any(kw.lower() in text_lower for kw in keywords)
 
-        if log_file_path_arg is None: # Если все еще None (т.е. output_dir был создан или существовал)
-             log_file_path_arg = os.path.join(args.output_dir or '.', 'dicom_to_bids.log')
 
-    setup_logging(log_file_path_arg) # Настройка логгирования
+# --- BIDS Organizer Class ---
+class BidsOrganizer:
+    """Handles BIDS structure creation and file operations."""
+    
+    def __init__(self, output_dir: str, action_type: str = 'copy'):
+        self.output_dir = output_dir
+        self.action_type = action_type
+        self.detector = ModalityDetector()
+    
+    def organize_to_bids(self, collected_data: Dict[str, PatientData]):
+        """Organize collected data into BIDS structure."""
+        logger.info("Phase 2: Creating BIDS structure and copying files...")
+        
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Cannot create output directory {self.output_dir}: {e}")
+            raise
+        
+        # Create BIDS patient IDs
+        patient_bids_map = self._create_patient_bids_mapping(collected_data)
+        
+        for patient_data in collected_data.values():
+            self._process_patient(patient_data, patient_bids_map)
+        
+        logger.info("BIDS organization completed!")
+    
+    def _create_patient_bids_mapping(self, collected_data: Dict) -> Dict[str, str]:
+        """Create mapping from original patient IDs to BIDS IDs."""
+        sorted_patient_ids = sorted(collected_data.keys())
+        return {orig_id: f"sub-{i+1:03d}" for i, orig_id in enumerate(sorted_patient_ids)}
+    
+    def _process_patient(self, patient_data: PatientData, patient_bids_map: Dict[str, str]):
+        """Process a single patient's data."""
+        bids_sub_id = patient_bids_map[patient_data.original_id]
+        logger.info(f"Processing patient: {patient_data.original_id} -> {bids_sub_id}")
+        
+        # Create session BIDS mapping
+        session_bids_map = self._create_session_bids_mapping(patient_data.studies)
+        
+        for study_info in patient_data.studies.values():
+            self._process_study(study_info, bids_sub_id, session_bids_map)
+    
+    def _create_session_bids_mapping(self, studies: Dict[str, StudyInfo]) -> Dict[str, str]:
+        """Create mapping from original study UIDs to BIDS session IDs."""
+        sorted_study_uids = sorted(studies.keys(), key=lambda uid: studies[uid].study_datetime)
+        return {orig_id: f"ses-{i+1:03d}" for i, orig_id in enumerate(sorted_study_uids)}
+    
+    def _process_study(self, study_info: StudyInfo, bids_sub_id: str, session_bids_map: Dict[str, str]):
+        """Process a single study/session."""
+        bids_ses_id = session_bids_map[study_info.uid]
+        logger.info(f"  Processing session: {study_info.uid} -> {bids_ses_id}")
+        
+        bids_anat_path = os.path.join(self.output_dir, bids_sub_id, bids_ses_id, 'anat')
+        
+        # Group series by modality
+        modality_groups = self._group_series_by_modality(study_info.series)
+        
+        if not modality_groups:
+            logger.warning(f"    No series with known modality for session {bids_ses_id}.")
+            return
+        
+        # Process each modality group
+        for modality, series_list in modality_groups.items():
+            self._process_modality_group(series_list, modality, bids_anat_path, bids_sub_id, bids_ses_id)
+    
+    def _group_series_by_modality(self, series_dict: Dict[str, SeriesInfo]) -> Dict[str, List[SeriesInfo]]:
+        """Group series by detected modality."""
+        modality_groups = defaultdict(list)
+        
+        for series_info in series_dict.values():
+            modality = self.detector.determine_modality(series_info.first_dataset, series_info.files[0])
+            
+            if modality == 'unknown':
+                logger.warning(f"    Skipping series {series_info.uid}: unknown modality.")
+                continue
+            
+            modality_groups[modality].append(series_info)
+        
+        return dict(modality_groups)
+    
+    def _process_modality_group(self, series_list: List[SeriesInfo], modality: str, 
+                               bids_anat_path: str, bids_sub_id: str, bids_ses_id: str):
+        """Process a group of series with the same modality."""
+        # Apply priority selection
+        selected_series = self._apply_priority_selection(series_list, modality)
+        
+        # Create modality directory
+        bids_modality_dir = os.path.join(bids_anat_path, modality)
+        try:
+            os.makedirs(bids_modality_dir, exist_ok=True)
+        except OSError as e:
+            logger.error(f"    Cannot create directory {bids_modality_dir}: {e}")
+            return
+        
+        # Process selected series
+        for run_idx, series_info in enumerate(selected_series, 1):
+            self._copy_series_files(series_info, modality, bids_modality_dir, 
+                                  bids_sub_id, bids_ses_id, run_idx, len(selected_series))
+    
+    def _apply_priority_selection(self, series_list: List[SeriesInfo], modality: str) -> List[SeriesInfo]:
+        """Apply priority selection for series within the same modality."""
+        if len(series_list) <= 1:
+            return series_list
+        
+        # Sort by series number by default
+        sorted_series = sorted(series_list, key=lambda s: s.series_number)
+        
+        # Apply priority order if available
+        priority_order = MODALITY_KEYWORDS.get(modality, {}).get('priority_order', [])
+        if priority_order:
+            for preferred in priority_order:
+                for series in sorted_series:
+                    if preferred in series.protocol_name or preferred in series.series_desc:
+                        logger.debug(f"    Selected series by priority '{preferred}' for {modality}")
+                        return [series]
+            
+            logger.warning(f"    No series found matching priority for {modality}. Using first by series number.")
+        
+        return [sorted_series[0]]
+    
+    def _copy_series_files(self, series_info: SeriesInfo, modality: str, bids_modality_dir: str,
+                          bids_sub_id: str, bids_ses_id: str, run_idx: int, total_runs: int):
+        """Copy files for a single series."""
+        sorted_files = self._sort_files_by_instance_number(series_info.files)
+        
+        logger.info(f"    Copying {len(sorted_files)} files for {modality}"
+                   f"{f'_run-{run_idx:02d}' if total_runs > 1 else ''} (Series UID: {series_info.uid})")
+        
+        for slice_idx, src_file_path in enumerate(sorted_files, 1):
+            # Generate BIDS filename
+            if total_runs > 1:
+                bids_filename = f"{bids_sub_id}_{bids_ses_id}_run-{run_idx:02d}_{modality}_{slice_idx:03d}.dcm"
+            else:
+                bids_filename = f"{bids_sub_id}_{bids_ses_id}_{modality}_{slice_idx:03d}.dcm"
+            
+            dst_file_path = os.path.join(bids_modality_dir, bids_filename)
+            
+            # Copy or move file
+            try:
+                if self.action_type == 'move':
+                    shutil.move(src_file_path, dst_file_path)
+                else:
+                    shutil.copy(src_file_path, dst_file_path)
+            except Exception as e:
+                logger.error(f"      Failed to {self.action_type} {src_file_path} to {dst_file_path}: {e}")
+    
+    def _sort_files_by_instance_number(self, dicom_files_paths: List[str]) -> List[str]:
+        """Sort DICOM files by InstanceNumber."""
+        sorted_files = []
+        for f_path in dicom_files_paths:
+            try:
+                ds_slice = pydicom.dcmread(f_path, stop_before_pixels=True, specific_tags=[(0x0020,0x0013)]) # Читаем только InstanceNumber
+                instance_number = get_dicom_value(ds_slice, (0x0020,0x0013))
+                if instance_number is not None:
+                    try:
+                        instance_number = int(instance_number)
+                    except ValueError:
+                        logger.warning(f"Не удалось конвертировать InstanceNumber '{instance_number}' в int для файла {f_path}. Используем имя файла для сортировки этого элемента.")
+                        instance_number = f_path # Fallback для этого файла
+                else: # Если InstanceNumber отсутствует
+                    logger.warning(f"InstanceNumber отсутствует в файле {f_path}. Используем имя файла для сортировки этого элемента.")
+                    instance_number = f_path # Fallback для этого файла
+                sorted_files.append((instance_number, f_path))
+            except Exception as e:
+                logger.error(f"Ошибка чтения InstanceNumber из файла {f_path}: {e}. Файл будет в конце или отсортирован по имени.")
+                sorted_files.append((float('inf'), f_path)) # Помещаем файлы с ошибками в конец
 
-    try:
-        logger.info("="*60)
-        logger.info(f"Запуск скрипта DICOM в BIDS конвертера")
-        logger.info(f"  Входная директория: {os.path.abspath(args.input_dir)}")
-        logger.info(f"  Выходная директория: {os.path.abspath(args.output_dir)}")
-        logger.info(f"  Лог-файл: {os.path.abspath(log_file_path_arg)}")
-        logger.info("="*60)
-
-        organize_dicom_to_bids(args.input_dir, args.output_dir, action_type=args.action)
-
-        logger.info("Скрипт успешно завершил работу.")
-        sys.exit(0)
-
-    except FileNotFoundError as e:
-        logger.error(f"Критическая ошибка: Файл или директория не найдены. {e}")
+        # Сортируем: сначала по числовому InstanceNumber, затем по пути файла (если InstanceNumber был строкой/одинаковый)
+        sorted_files.sort(key=lambda x: (isinstance(x[0], str), x[0]))
+        return [f_path for _, f_path in sorted_files]
+    
+# --- CLI Interface ---
+def main():
+    """Main CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Convert DICOM files to BIDS format with automatic modality detection",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s /path/to/dicom/input /path/to/bids/output
+  %(prog)s /path/to/dicom/input /path/to/bids/output --action move --log-file conversion.log
+  %(prog)s /path/to/dicom/input /path/to/bids/output --verbose
+        """
+    )
+    
+    # Required arguments
+    parser.add_argument(
+        'input_dir',
+        type=str,
+        help='Input directory containing DICOM files'
+    )
+    
+    parser.add_argument(
+        'output_dir', 
+        type=str,
+        help='Output directory for BIDS structure'
+    )
+    
+    # Optional arguments
+    parser.add_argument(
+        '--action',
+        choices=['copy', 'move'],
+        default='copy',
+        help='Action to perform on files: copy (default) or move'
+    )
+    
+    parser.add_argument(
+        '--log-file',
+        type=str,
+        default='dicom_to_bids.log',
+        help='Path to log file (default: dicom_to_bids.log)'
+    )
+    
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Enable verbose logging to console'
+    )
+    
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Perform a dry run without copying/moving files'
+    )
+    
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='DICOM to BIDS Converter v1.0.0'
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate input directory
+    if not os.path.exists(args.input_dir):
+        print(f"Error: Input directory '{args.input_dir}' does not exist.")
         sys.exit(1)
-    except OSError as e:
-        logger.error(f"Критическая ошибка файловой системы: {e}", exc_info=True)
+    
+    if not os.path.isdir(args.input_dir):
+        print(f"Error: '{args.input_dir}' is not a directory.")
+        sys.exit(1)
+    
+    # Validate output directory parent exists
+    output_parent = os.path.dirname(os.path.abspath(args.output_dir))
+    if not os.path.exists(output_parent):
+        print(f"Error: Parent directory of output '{output_parent}' does not exist.")
+        sys.exit(1)
+    
+    # Setup logging
+    try:
+        setup_logging(args.log_file)
+        if args.verbose:
+            # Add more verbose console logging
+            console_handler = None
+            for handler in logger.handlers:
+                if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
+                    console_handler = handler
+                    break
+            if console_handler:
+                console_handler.setLevel(logging.DEBUG)
+    except Exception as e:
+        print(f"Error setting up logging: {e}")
+        sys.exit(1)
+    
+    # Log startup information
+    logger.info("="*60)
+    logger.info("DICOM to BIDS Converter Started")
+    logger.info("="*60)
+    logger.info(f"Input directory: {os.path.abspath(args.input_dir)}")
+    logger.info(f"Output directory: {os.path.abspath(args.output_dir)}")
+    logger.info(f"Action: {args.action}")
+    logger.info(f"Log file: {os.path.abspath(args.log_file)}")
+    logger.info(f"Dry run: {args.dry_run}")
+    
+    try:
+        # Phase 1: Scan DICOM files
+        scanner = DicomScanner()
+        collected_data = scanner.scan_directory(args.input_dir)
+        
+        if not collected_data:
+            logger.warning("No valid DICOM files found in input directory.")
+            print("Warning: No valid DICOM files found.")
+            sys.exit(0)
+        
+        # Log summary statistics
+        total_patients = len(collected_data)
+        total_studies = sum(len(patient.studies) for patient in collected_data.values())
+        total_series = sum(
+            len(study.series) 
+            for patient in collected_data.values() 
+            for study in patient.studies.values()
+        )
+        total_files = sum(
+            len(series.files)
+            for patient in collected_data.values()
+            for study in patient.studies.values()
+            for series in study.series.values()
+        )
+        
+        logger.info(f"Scan Summary:")
+        logger.info(f"  Patients: {total_patients}")
+        logger.info(f"  Studies: {total_studies}")
+        logger.info(f"  Series: {total_series}")
+        logger.info(f"  Files: {total_files}")
+        
+        if args.dry_run:
+            logger.info("DRY RUN MODE - No files will be copied or moved")
+            
+            # Show what would be processed
+            for patient_id, patient_data in collected_data.items():
+                logger.info(f"Patient: {patient_id}")
+                for study_uid, study_info in patient_data.studies.items():
+                    logger.info(f"  Study: {study_uid} ({study_info.study_datetime})")
+                    for series_uid, series_info in study_info.series.items():
+                        modality = ModalityDetector().determine_modality(
+                            series_info.first_dataset, 
+                            series_info.files[0]
+                        )
+                        logger.info(f"    Series: {series_uid} - {modality} ({len(series_info.files)} files)")
+        else:
+            # Phase 2: Organize to BIDS
+            organizer = BidsOrganizer(args.output_dir, args.action)
+            organizer.organize_to_bids(collected_data)
+        
+        logger.info("="*60)
+        logger.info("DICOM to BIDS Conversion Completed Successfully")
+        logger.info("="*60)
+        
+    except KeyboardInterrupt:
+        logger.info("Conversion interrupted by user.")
+        print("\nConversion interrupted by user.")
         sys.exit(1)
     except Exception as e:
-        logger.exception(f"Непредвиденная критическая ошибка:") # exc_info=True по умолчанию для logger.exception
+        logger.error(f"Conversion failed: {e}")
+        print(f"Error: Conversion failed. Check log file for details: {args.log_file}")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
