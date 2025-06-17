@@ -56,17 +56,23 @@ steps:
     intensity_normalization:
       enabled: false 
       method: "HistogramMatching"
+      histogram_levels: 1024
+      match_points: 7
     bias_field_correction:
       enabled: false 
       method: "N4BiasFieldCorrection"
       sitk_shrinkFactor: 4
     registration:
+      enabled: true 
       method: "ANTsPy"
       ants_transform_type: "SyN"
     skull_stripping:
-      method: "FSL_BET"
+      enabled: true 
+      method: "Freesurfer" # FSL_BET
       bet_fractional_intensity_threshold: 0.5
       bet_robust: true
+      wsthresh: 5     
+      clean_bm: true 
   segmentation:
     enabled: true 
     model_name: "Unet"
