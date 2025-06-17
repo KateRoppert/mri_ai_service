@@ -100,6 +100,7 @@ class DependencyChecker:
     """Encapsulates checks for external command-line tools."""
     def __init__(self):
         self._fsl_present = None
+        self._freesurfer_present = None
 
     @property
     def is_fsl_present(self) -> bool:
@@ -118,6 +119,20 @@ class DependencyChecker:
                 logger.error("FSL dependency check: FAILED. 'bet' command not found.")
                 self._fsl_present = False
         return self._fsl_present
+    
+    @property
+    def is_freesurfer_present(self) -> bool:
+        """Checks for Freesurfer availability by checking FREESURFER_HOME."""
+        if self._freesurfer_present is not None:
+            return self._freesurfer_present
+
+        if os.getenv("FREESURFER_HOME"):
+            logger.info("Freesurfer dependency check: OK (FREESURFER_HOME is set).")
+            self._freesurfer_present = True
+        else:
+            logger.error("Freesurfer dependency check: FAILED. FREESURFER_HOME environment variable is not set.")
+            self._freesurfer_present = False
+        return self._freesurfer_present
 
 
 class Config:
@@ -199,7 +214,7 @@ class BaseProcessingStep(ABC):
 
 class IntensityNormalizationStep(BaseProcessingStep):
     """Concrete step for histogram matching normalization."""
-    def __init__(self, processor: 'FileProcessor', params: dict):
+    def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
         super().__init__(processor, "1_intensity_normalization", params)
         self.run_params["template_file"] = self.processor.template_path
 
@@ -217,7 +232,7 @@ class IntensityNormalizationStep(BaseProcessingStep):
 class BiasFieldCorrectionStep(BaseProcessingStep):
     """Concrete step for N4 bias field correction."""
 
-    def __init__(self, processor: 'FileProcessor', params: dict):
+    def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
         super().__init__(processor, "2_bias_field_correction", params)
 
     def _run_step(self):
@@ -257,7 +272,7 @@ class BiasFieldCorrectionStep(BaseProcessingStep):
 
 class RegistrationStep(BaseProcessingStep):
     """Concrete step for ANTsPy registration."""
-    def __init__(self, processor: 'FileProcessor', params: dict):
+    def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
         super().__init__(processor, "3_registration", params)
         self.transform_prefix = str(self.processor.transform_dir / f"{self.processor.file_stem}_reg_")
         self.run_params.update({
@@ -345,6 +360,119 @@ class SkullStrippingStep(BaseProcessingStep):
             logger.warning(f"  FSL BET did not produce a mask file at {expected_mask_file}")
             self.run_params["output_mask_path"] = None
 
+class FreesurferSkullStrippingStep(BaseProcessingStep):
+    """
+    Performs skull stripping by running the full Freesurfer `recon-all -all`
+    pipeline, which produces a high-quality result.
+    NOTE: This is computationally intensive and can take several hours per subject.
+    """
+    def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
+        super().__init__(processor, "skull_stripping", params)
+        self.dependency_checker = dependency_checker
+        self.step_output_path = self.processor.final_output_path
+
+    def _run_step(self):
+        if not self.dependency_checker.is_freesurfer_present:
+            raise RuntimeError("Freesurfer is not available. This step cannot proceed.")
+
+        input_filename = self.processor.current_input_path.name
+        
+        # This check is still critical, as recon-all is T1-based.
+        if "T1w" in input_filename and "ce" not in input_filename:
+            logger.info(f"    Detected T1w image. Running full Freesurfer `recon-all -all` pipeline.")
+            
+            temp_fs_subjects_dir = self.processor.temp_dir / "fs_subjects"
+            temp_fs_subjects_dir.mkdir()
+            subject_id = self.processor.file_stem
+
+            # --- START OF THE FIX ---
+            # Build the command to run the full pipeline.
+            command = [
+                "recon-all",
+                "-i", str(self.processor.current_input_path.resolve()),
+                "-subjid", subject_id,
+                "-sd", str(temp_fs_subjects_dir.resolve()),
+                "-all"  # Use the full pipeline directive
+            ]
+            # --- END OF THE FIX ---
+
+            logger.debug(f"    Executing Freesurfer command: {' '.join(command)}")
+
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+            if result.returncode != 0:
+                error_message = f"Freesurfer recon-all command failed with exit code {result.returncode}."
+                error_message += f"\n--- Freesurfer STDOUT ---\n{result.stdout.strip()}"
+                error_message += f"\n\n--- Freesurfer STDERR ---\n{result.stderr.strip()}\n"
+                raise RuntimeError(error_message)
+
+            # After -all, the primary skull-stripped output is brain.mgz
+            expected_stripped_mgz = temp_fs_subjects_dir / subject_id / "mri" / "brain.mgz"
+            if not expected_stripped_mgz.exists():
+                raise FileNotFoundError(f"Freesurfer ran successfully, but the primary output (brain.mgz) was not found at {expected_stripped_mgz}")
+
+            logger.debug(f"    recon-all complete. Converting {expected_stripped_mgz} to NIfTI format.")
+            stripped_image_sitk = sitk.ReadImage(str(expected_stripped_mgz.resolve()))
+            sitk.WriteImage(stripped_image_sitk, str(self.step_output_path.resolve()))
+            self.run_params["output_stripped_path"] = self.step_output_path
+            
+            # The brainmask.mgz file is the binary mask, which is useful for inspection.
+            expected_mask_mgz = temp_fs_subjects_dir / subject_id / "mri" / "brainmask.mgz"
+            if expected_mask_mgz.exists():
+                final_mask_path = self.processor.transform_dir / f"{self.processor.file_stem}_brain_mask.nii.gz"
+                mask_image_sitk = sitk.ReadImage(str(expected_mask_mgz.resolve()))
+                sitk.WriteImage(mask_image_sitk, str(final_mask_path.resolve()))
+                self.run_params["output_mask_path"] = final_mask_path
+            else:
+                logger.warning("Could not find the binary brain mask (brainmask.mgz) for inspection.")
+        else:
+            logger.info(f"    Skipping Freesurfer execution for non-T1w image: {input_filename}. Copying file to output.")
+            shutil.copy(str(self.processor.current_input_path.resolve()), str(self.step_output_path.resolve()))
+
+class StepFactory:
+    """A factory for creating preprocessing step objects based on a method name."""
+    def __init__(self):
+        self._registry = {}
+
+    def register_step(self, method_name: str, step_class: type):
+        """Registers a step class with a corresponding method name from the config."""
+        logger.debug(f"Registering method '{method_name}' with class {step_class.__name__}")
+        self._registry[method_name] = step_class
+
+    def create_step(self, step_name: str, processor: 'FileProcessor'):
+        """Creates a step instance based on the configuration."""
+        step_config = processor.preprocessing_config.get(step_name)
+        if not step_config:
+            return None  # Step not defined in the config for this run
+
+        method = step_config.get("method")
+        if not method:
+            raise ValueError(f"Configuration for step '{step_name}' is missing the required 'method' key.")
+
+        step_class = self._registry.get(method)
+        if not step_class:
+            raise ValueError(f"Unknown method '{method}' for step '{step_name}'. Is it registered in the factory?")
+        
+        # The dependency_checker is passed to all steps for consistency.
+        return step_class(processor, step_config, processor.dependency_checker)
+    
+# ===================================================================
+# STEP FACTORY REGISTRATION
+# -------------------------------------------------------------------
+# This is the central registry for all available preprocessing tools.
+# To add a new tool (e.g., for skull stripping):
+# 1. Create a new class inheriting from BaseProcessingStep.
+# 2. Register it here with the 'method' name from the config.yaml.
+# ===================================================================
+
+step_factory = StepFactory()
+step_factory.register_step("HistogramMatching", IntensityNormalizationStep)
+step_factory.register_step("N4BiasFieldCorrection", BiasFieldCorrectionStep)
+step_factory.register_step("ANTsPy", RegistrationStep)
+step_factory.register_step("FSL_BET", SkullStrippingStep)
+step_factory.register_step("Freesurfer", FreesurferSkullStrippingStep)
+
+# ===================================================================
 
 # --- Context and Orchestrator Classes ---
 
@@ -402,15 +530,24 @@ class FileProcessor:
                 self.temp_dir = Path(temp_dir_str)
                 logger.info(f"Processing in temporary directory: {self.temp_dir}")
                 
-                # Define the sequence of processing steps (strategies)
-                steps = [
-                    IntensityNormalizationStep(self, self.preprocessing_config.get("intensity_normalization", {})),
-                    BiasFieldCorrectionStep(self, self.preprocessing_config.get("bias_field_correction", {})),
-                    RegistrationStep(self, self.preprocessing_config.get("registration", {})),
-                    SkullStrippingStep(self, self.preprocessing_config.get("skull_stripping", {}), self.dependency_checker)
+                steps_to_run = []
+                # Define the required order of execution
+                step_order = [
+                    "intensity_normalization",
+                    "bias_field_correction",
+                    "registration",
+                    "skull_stripping"
                 ]
 
-                for step in steps:
+                for step_name in step_order:
+                    # Ask the factory to create the correct step object
+                    step = step_factory.create_step(step_name, self)
+                    if step:
+                        steps_to_run.append(step)
+                
+                logger.info(f"Pipeline for {self.file_stem} will run {len(steps_to_run)} steps.")
+
+                for step in steps_to_run:
                     if not step.execute():
                         raise RuntimeError(f"Pipeline stopped due to failure in step '{step.step_name}'.")
 
