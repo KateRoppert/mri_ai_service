@@ -429,6 +429,76 @@ class FreesurferSkullStrippingStep(BaseProcessingStep):
             logger.info(f"    Skipping Freesurfer execution for non-T1w image: {input_filename}. Copying file to output.")
             shutil.copy(str(self.processor.current_input_path.resolve()), str(self.step_output_path.resolve()))
 
+class SynthStripSkullStrippingStep(BaseProcessingStep):
+    """Performs skull stripping using Freesurfer's mri_synthstrip."""
+    def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
+        super().__init__(processor, "skull_stripping", params)
+        self.dependency_checker = dependency_checker
+        self.step_output_path = self.processor.final_output_path
+
+    def _run_step(self):
+        if not self.dependency_checker.is_freesurfer_present:
+            raise RuntimeError("SynthStrip requires Freesurfer, which is not available.")
+
+        # The output of this tool is the final stripped brain.
+        # We point it to a temporary file before moving it.
+        stripped_temp_path = self.processor.temp_dir / f"{self.processor.file_stem}_synth_stripped.nii.gz"
+        mask_temp_path = self.processor.temp_dir / f"{self.processor.file_stem}_synth_mask.nii.gz"
+
+        # 1. Build the command as a list of arguments
+        command = [
+            "mri_synthstrip",
+            "-i", str(self.processor.current_input_path.resolve()),
+            "-o", str(stripped_temp_path.resolve())
+        ]
+        
+        # 2. Add optional mask output from the config file
+        save_mask = self.params.get('save_mask', False)
+        if save_mask:
+            command.extend(["-m", str(mask_temp_path.resolve())])
+        
+        # 3. Add the border parameter if it's specified in the config
+        if 'border' in self.params:
+            border_val = self.params['border']
+            logger.info(f"    Using custom border of {border_val} voxels for SynthStrip.")
+            command.extend(["-b", str(border_val)])
+
+        # 4. Add other optional parameters from the config file
+        if 'gpu_device' in self.params:
+            logger.info(f"    Using GPU device {self.params['gpu_device']} for SynthStrip.")
+            command.extend(["-g", "-d", str(self.params['gpu_device'])])
+
+        logger.debug(f"    Executing SynthStrip command: {' '.join(command)}")
+
+        # 5. Run the command using subprocess
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+        # 6. Robust error checking
+        if result.returncode != 0:
+            error_message = f"mri_synthstrip command failed with exit code {result.returncode}."
+            error_message += f"\n--- SynthStrip STDOUT ---\n{result.stdout.strip()}"
+            error_message += f"\n\n--- SynthStrip STDERR ---\n{result.stderr.strip()}\n"
+            raise RuntimeError(error_message)
+
+        # 7. Verify and move the primary output
+        if not stripped_temp_path.exists():
+            raise FileNotFoundError(f"SynthStrip ran successfully, but the output file was not found at {stripped_temp_path}")
+        
+        shutil.move(str(stripped_temp_path), str(self.step_output_path.resolve()))
+        self.run_params["output_stripped_path"] = self.step_output_path
+        
+        # 8. Move the mask if it was created
+        if save_mask:
+            if mask_temp_path.exists():
+                final_mask_path = self.processor.transform_dir / f"{self.processor.file_stem}_brain_mask.nii.gz"
+                shutil.move(str(mask_temp_path), str(final_mask_path.resolve()))
+                self.run_params["output_mask_path"] = final_mask_path
+            else:
+                logger.warning(f"SynthStrip was asked to save a mask, but it was not found at {mask_temp_path}")
+                self.run_params["output_mask_path"] = None
+        else:
+            self.run_params["output_mask_path"] = None
+
 class StepFactory:
     """A factory for creating preprocessing step objects based on a method name."""
     def __init__(self):
@@ -471,6 +541,7 @@ step_factory.register_step("N4BiasFieldCorrection", BiasFieldCorrectionStep)
 step_factory.register_step("ANTsPy", RegistrationStep)
 step_factory.register_step("FSL_BET", SkullStrippingStep)
 step_factory.register_step("Freesurfer", FreesurferSkullStrippingStep)
+step_factory.register_step("SynthStrip", SynthStripSkullStrippingStep)
 
 # ===================================================================
 
