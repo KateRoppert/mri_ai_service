@@ -68,11 +68,13 @@ steps:
       ants_transform_type: "SyN"
     skull_stripping:
       enabled: true 
-      method: "Freesurfer" # FSL_BET
+      method: "SynthStrip" # FSL_BET/Freesurfer
       bet_fractional_intensity_threshold: 0.5
       bet_robust: true
       wsthresh: 5     
       clean_bm: true 
+      save_mask: true 
+      border: 0
   segmentation:
     enabled: true 
     model_name: "Unet"
