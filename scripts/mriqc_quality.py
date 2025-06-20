@@ -381,13 +381,11 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--bids_dir",
-        required=True,
+        "bids_dir",
         help="Путь к корневой директории BIDS датасета (например, 'bids_data_nifti')."
     )
     parser.add_argument(
-        "--output_dir",
-        required=True,
+        "output_dir",
         help="Путь к директории для сохранения отчетов MRIQC (например, 'mriqc_output')."
     )
     parser.add_argument(

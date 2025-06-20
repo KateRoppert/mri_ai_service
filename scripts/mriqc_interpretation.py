@@ -256,13 +256,11 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--mriqc_dir",
-        required=True,
+        "mriqc_dir",
         help="Путь к директории с результатами MRIQC (например, 'mriqc_output')."
     )
     parser.add_argument(
-        "--output_dir",
-        required=True,
+        "output_dir",
         help="Путь к директории для сохранения файлов с интерпретациями (например, 'mriqc_interpretation')."
     )
     parser.add_argument(

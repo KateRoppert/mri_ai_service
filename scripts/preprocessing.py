@@ -715,9 +715,9 @@ def main():
         description="OOP-Refactored NIfTI MRI Preprocessing Pipeline.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--input_dir", required=True, type=Path, help="Input BIDS-like NIfTI directory.")
-    parser.add_argument("--output_prep_dir", required=True, type=Path, help="Output directory for preprocessed files.")
-    parser.add_argument("--output_transform_dir", required=True, type=Path, help="Output directory for transforms and logs.")
+    parser.add_argument("input_dir", type=Path, help="Input BIDS-like NIfTI directory.")
+    parser.add_argument("output_prep_dir", type=Path, help="Output directory for preprocessed files.")
+    parser.add_argument("output_transform_dir", type=Path, help="Output directory for transforms and logs.")
     parser.add_argument("--template_path", required=True, type=Path, help="Path to the MRI template file.")
     parser.add_argument("--config", required=True, type=Path, help="Path to the YAML pipeline configuration file.")
     parser.add_argument("--log_file", default=None, type=Path, help="Path to main log file. Defaults to 'main_log.txt' in transform dir.")

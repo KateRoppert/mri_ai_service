@@ -76,7 +76,7 @@ steps:
       save_mask: true 
       border: 0
   segmentation:
-    enabled: true 
+    enabled: false  
     model_name: "Unet"
     modality_input_map:
       t1: "T1w"

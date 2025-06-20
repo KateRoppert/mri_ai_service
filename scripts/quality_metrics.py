@@ -502,8 +502,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Calculate MRI quality metrics and generate reports.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--input_dir", required=True, type=Path, help="Input directory with NIfTI files.")
-    parser.add_argument("--output_dir", required=True, type=Path, help="Output directory for reports.")
+    parser.add_argument("input_dir", type=Path, help="Input directory with NIfTI files.")
+    parser.add_argument("output_dir", type=Path, help="Output directory for reports.")
     parser.add_argument("--anisotropy_thresh", type=float, default=3.0, help="Voxel size ratio threshold for anisotropy.")
     parser.add_argument("--log_file", type=Path, default=None, help="Path for log file.")
     args = parser.parse_args(argv)

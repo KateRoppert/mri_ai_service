@@ -1,5 +1,3 @@
-# pipeline/run_pipeline.py
-
 import argparse
 import yaml
 import subprocess
@@ -9,702 +7,525 @@ from pathlib import Path
 import logging
 from datetime import datetime
 import uuid
-import traceback
-import requests
 import zipfile
-import shutil 
+import shutil
+import requests 
 
-# --- Настройка основного логгера пайплайна ---
+# --- Logger Setup ---
 logger = logging.getLogger("Pipeline")
-logger.setLevel(logging.DEBUG)
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Pipeline] %(message)s')
-# Временный консольный обработчик для самых ранних сообщений
-temp_console_handler = logging.StreamHandler(sys.stdout)
-temp_console_handler.setFormatter(log_formatter)
-temp_console_handler.setLevel(logging.INFO)
-logger.addHandler(temp_console_handler)
-
-# Префикс для сообщений, предназначенных для пользователя в веб-интерфейсе
 USER_LOG_PREFIX = "PIPELINE_USER_MSG:"
 
-def setup_pipeline_logging(log_file_path: Path, console_level_str: str):
-    """Настраивает логгер для пайплайна."""
-    global temp_console_handler
-    if temp_console_handler and temp_console_handler in logger.handlers:
-        logger.removeHandler(temp_console_handler)
-    temp_console_handler = None
+def setup_logging(log_file: Path, console_level: str):
+    logger.setLevel(logging.DEBUG)
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Pipeline] %(message)s')
+    if logger.hasHandlers():
+        logger.handlers.clear()
 
+    # Console handler
     ch = logging.StreamHandler(sys.stdout)
-    try: console_level = getattr(logging, console_level_str.upper())
-    except AttributeError: console_level = logging.INFO; logger.warning(f"Неверный уровень лога консоли '{console_level_str}'. Используется INFO.")
-    ch.setLevel(console_level); ch.setFormatter(log_formatter); logger.addHandler(ch)
-
     try:
-        log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file_path, encoding='utf-8', mode='w')
-        fh.setLevel(logging.DEBUG); fh.setFormatter(log_formatter); logger.addHandler(fh)
-        logger.debug(f"Логирование пайплайна в файл настроено: {log_file_path}")
+        ch_level = getattr(logging, console_level.upper())
+    except AttributeError:
+        ch_level = logging.INFO
+        logger.warning(f"Invalid console log level '{console_level}'. Using INFO.")
+    ch.setLevel(ch_level)
+    ch.setFormatter(log_formatter)
+    logger.addHandler(ch)
+
+    # File handler
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_file, encoding='utf-8', mode='w')
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(log_formatter)
+        logger.addHandler(fh)
     except Exception as e:
-        logger.error(f"Не удалось настроить логирование пайплайна в файл {log_file_path}: {e}")
+        logger.error(f"Failed to configure file logging at {log_file}: {e}")
 
+# --- Core Data Management Classes ---
 
-def run_step(cmd: list, step_name: str, step_log_path: Path):
-    """Запускает шаг пайплайна, логирует и проверяет результат."""
-    # Сообщение для пользователя о старте шага
-    logger.info(f"{USER_LOG_PREFIX} Запуск шага - {step_name}...")
-    logger.info(f"--- Запуск шага (детально): {step_name} ---") # Для основного лога
-
-    # Убедимся, что все аргументы команды - строки
-    cmd_str_list = [str(c) for c in cmd]
-    cmd_str_list.extend(["--log_file", str(step_log_path)])
-
-    cmd_str_log = ' '.join([f'"{arg}"' if ' ' in arg else arg for arg in cmd_str_list])
-    logger.debug(f"Команда: {cmd_str_log}")
-
-    try:
-        result = subprocess.run(
-            cmd_str_list, check=True, capture_output=True, text=True,
-            env=os.environ, encoding='utf-8'
-        )
-        if result.stdout: logger.debug(f"Stdout шага '{step_name}':\n{result.stdout.strip()}")
-        if result.stderr: logger.warning(f"Stderr шага '{step_name}' (успех):\n{result.stderr.strip()}")
-
-        # Сообщение для пользователя об успехе
-        logger.info(f"{USER_LOG_PREFIX} Успешно - {step_name}. Лог шага: {step_log_path.name}")
-        logger.info(f"--- Шаг '{step_name}' успешно завершен. ---") # Для основного лога
-        return True
-
-    except subprocess.CalledProcessError as e:
-        # Сообщение для пользователя об ошибке
-        logger.error(f"{USER_LOG_PREFIX} ОШИБКА - {step_name}. Код: {e.returncode}. См. лог шага: {step_log_path.name}")
-        logger.critical(f"--- ОШИБКА на шаге: {step_name} (Код возврата: {e.returncode}) ---") # Для основного лога
-        if e.stdout: logger.error(f"Stdout шага '{step_name}' перед ошибкой:\n{e.stdout.strip()}")
-        if e.stderr: logger.error(f"Stderr шага '{step_name}' (ошибка):\n{e.stderr.strip()}")
-        else: logger.error("Stderr не содержит дополнительной информации об ошибке.")
-        logger.critical(f"Прерывание пайплайна из-за ошибки на шаге '{step_name}'.")
-        logger.info(f"Для деталей ошибки см. лог шага: {step_log_path}")
-        return False
-    except FileNotFoundError:
-        logger.error(f"{USER_LOG_PREFIX} КРИТИЧЕСКАЯ ОШИБКА - {step_name}: Не найден Python или скрипт шага.")
-        logger.critical(f"--- ОШИБКА на шаге: {step_name} ---")
-        logger.critical(f"Не удалось найти Python ('{cmd_str_list[0]}') или скрипт ('{cmd_str_list[1]}').")
-        return False
-    except Exception as e:
-        logger.error(f"{USER_LOG_PREFIX} КРИТИЧЕСКАЯ ОШИБКА - {step_name}: Непредвиденная ошибка Python.")
-        logger.critical(f"--- НЕПРЕДВИДЕННАЯ ОШИБКА Python при запуске шага: {step_name} ---")
-        logger.exception(e)
-        return False
-
-def is_dir_empty_recursive(dir_path: Path) -> bool:
-    """
-    Рекурсивно проверяет, пуста ли директория (т.е. не содержит файлов
-    ни на одном уровне вложенности, только, возможно, пустые поддиректории).
-    """
-    if not dir_path.is_dir():
-        return True # Если это не директория, считаем "пустой" в контексте удаления
-
-    for item in dir_path.iterdir():
-        if item.is_file():
-            return False # Найден файл, директория не пуста
-        if item.is_dir():
-            if not is_dir_empty_recursive(item): # Рекурсивный вызов для поддиректории
-                return False # Поддиректория не пуста
-    return True # Если прошли все элементы и не нашли файлов
-
-def main():
-    """Основная функция запуска пайплайна."""
-    parser = argparse.ArgumentParser(
-        description="Запускает пайплайн обработки МРТ данных.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument("--config", required=True, type=str, help="Путь к YAML конфигу.")
-    parser.add_argument("--run_id", type=str, default=None, help="Уникальный ID запуска.")
-    parser.add_argument("--input_data_dir", type=str, default=None, help="Переопределить входные данные.")
-    parser.add_argument("--output_base_dir", type=str, default=None, help="Переопределить базовый выход.")
-    parser.add_argument("--console_log_level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                        help="Уровень лога консоли.")
-    args = parser.parse_args()
-
-    # --- 1. Загрузка конфигурации ---
-    try:
-        config_path = Path(args.config).resolve()
-        if not config_path.is_file(): raise FileNotFoundError(f"Конфиг не найден: {config_path}")
-        with open(config_path, 'r', encoding='utf-8') as f: config = yaml.safe_load(f)
-    except Exception as e:
-        print(f"[CRITICAL ERROR] Load/parse config {args.config}: {e}", file=sys.stderr)
-        logger.critical(f"Load/parse config {args.config}: {e}", exc_info=True) # Уже в консоль через temp_handler
-        sys.exit(1)
-
-    # --- 2. Определение ID запуска и ключевых путей ---
-    run_id_to_use = args.run_id if args.run_id else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-    # --- НАЧАЛО НОВОЙ ЛОГИКИ ДЛЯ ОБРАБОТКИ АРХИВА ---
-    input_path_arg = args.input_data_dir # Путь, переданный через CLI
-    config_raw_input_path_str = config.get('paths', {}).get('raw_input_dir')
-    
-    actual_input_for_pipeline = None # Это будет итоговый путь к распакованным данным
-    created_temp_extraction_dir = None # Если мы создали папку для распаковки
-
-    # Определяем базовую директорию для запуска (нужна для создания input_raw_data)
-    # Это должно быть run_output_dir, который определяется чуть ниже.
-    # Сначала определим output_base_dir_from_cli_or_config
-    try:
-        output_base_dir_from_cli_or_config = Path(args.output_base_dir or config['paths']['output_base_dir']).resolve()
-    except KeyError as e:
-        print(f"[CRITICAL ERROR] Missing key 'paths.output_base_dir' in {config_path}: {e}", file=sys.stderr)
-        logger.critical(f"Missing key 'paths.output_base_dir' in {config_path}: {e}")
-        sys.exit(1)
-
-    # Теперь определяем run_output_dir
-    if output_base_dir_from_cli_or_config.name == run_id_to_use:
-        run_output_dir = output_base_dir_from_cli_or_config
-    else:
-        run_output_dir = output_base_dir_from_cli_or_config / run_id_to_use
-    
-    # Папка, куда будем распаковывать, если это архив (аналогично app.py)
-    # Эта папка будет внутри run_output_dir
-    extraction_target_dir_name = "input_raw_data" # Как в app.py
-    extraction_path = run_output_dir / extraction_target_dir_name
-
-    if input_path_arg: # Если --input_data_dir был передан
-        input_path_resolved = Path(input_path_arg).resolve()
-        if input_path_resolved.is_file() and input_path_resolved.name.lower().endswith('.zip'):
-            logger.info(f"Обнаружен ZIP-архив через --input_data_dir: {input_path_resolved}")
-            try:
-                extraction_path.mkdir(parents=True, exist_ok=True) # Создаем input_raw_data
-                logger.info(f"Распаковка архива в: {extraction_path}")
-                with zipfile.ZipFile(input_path_resolved, 'r') as zip_ref:
-                    zip_ref.extractall(extraction_path)
-                logger.info(f"Архив {input_path_resolved.name} успешно распакован в {extraction_path}.")
-                actual_input_for_pipeline = extraction_path
-                created_temp_extraction_dir = extraction_path # Запоминаем для возможной очистки (если вы решите ее делать)
-            except zipfile.BadZipFile:
-                logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Файл {input_path_resolved} не ZIP-архив или поврежден.")
-                sys.exit(1)
-            except Exception as e:
-                logger.critical(f"{USER_LOG_PREFIX} ОШИБКА при распаковке {input_path_resolved}: {e}", exc_info=True)
-                sys.exit(1)
-        elif input_path_resolved.is_dir():
-            logger.info(f"Используется директория из --input_data_dir: {input_path_resolved}")
-            actual_input_for_pipeline = input_path_resolved
-        else:
-            logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Путь --input_data_dir '{input_path_arg}' не файл ZIP и не директория, или не существует.")
-            sys.exit(1)
-    elif config_raw_input_path_str: # Если --input_data_dir не передан, берем из конфига
-        logger.info(f"Используется директория из config 'paths.raw_input_dir': {config_raw_input_path_str}")
-        actual_input_for_pipeline = Path(config_raw_input_path_str).resolve()
-        # Здесь мы предполагаем, что путь из конфига - это всегда директория, а не архив.
-        # Если из конфига тоже может прийти архив, логику нужно расширить.
-    else:
-        logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Не указан --input_data_dir и отсутствует 'paths.raw_input_dir' в конфиге.")
-        sys.exit(1)
-
-    # Теперь actual_input_for_pipeline содержит путь к папке с распакованными данными
-    # Это аналог effective_input_data_dir из app.py
-    # Нужно также учесть вложенную папку, как в app.py:
-    items_in_actual_input = list(actual_input_for_pipeline.iterdir())
-    if len(items_in_actual_input) == 1 and items_in_actual_input[0].is_dir():
-        logger.info(f"Обнаружена единственная вложенная директория: {items_in_actual_input[0]}. Используем ее как входные данные.")
-        actual_input_for_pipeline = items_in_actual_input[0]
-    
-    raw_input_dir = actual_input_for_pipeline # Это переменная, которая используется дальше в пайплайне
-    # --- КОНЕЦ НОВОЙ ЛОГИКИ ДЛЯ ОБРАБОТКИ АРХИВА ---
-
-    try:
-        #output_base_dir_from_cli_or_config = Path(args.output_base_dir or config['paths']['output_base_dir']).resolve()
-        #raw_input_dir = Path(args.input_data_dir or config['paths']['raw_input_dir']).resolve()
-        template_path = Path(config['paths']['template_path']).resolve()
-        subdirs_config = config['paths']['subdirs']
-        executables_config = config.get('executables', {})
-        steps_config = config.get('steps', {})
-    except KeyError as e:
-        print(f"[CRITICAL ERROR] Missing key in 'paths' of {config_path}: {e}", file=sys.stderr)
-        logger.critical(f"Missing key in 'paths' of {config_path}: {e}")
-        sys.exit(1)
-
-    if output_base_dir_from_cli_or_config.name == run_id_to_use:
-        run_output_dir = output_base_dir_from_cli_or_config
-        effective_output_base_for_log = output_base_dir_from_cli_or_config.parent
-    else:
-        run_output_dir = output_base_dir_from_cli_or_config / run_id_to_use
-        effective_output_base_for_log = output_base_dir_from_cli_or_config
-
-    # --- 3. Настройка основного логирования пайплайна ---
-    logs_subdir_name = subdirs_config.get('logs', 'logs')
-    pipeline_log_dir = run_output_dir / logs_subdir_name
-    pipeline_log_file = pipeline_log_dir / 'pipeline.log'
-    try:
-        pipeline_log_dir.mkdir(parents=True, exist_ok=True)
-        setup_pipeline_logging(pipeline_log_file, args.console_log_level)
-    except OSError as e:
-        logger.critical(f"Не удалось создать {pipeline_log_dir} или настроить логгер: {e}")
-        print(f"CRITICAL ERROR: Create log dir {pipeline_log_dir} or setup logger: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    logger.info(f"{USER_LOG_PREFIX} Начало обработки пайплайна (ID: {run_id_to_use})")
-    logger.info("=" * 60)
-    logger.info(f"Запуск пайплайна обработки МРТ")
-    # ... (остальные info логи как раньше) ...
-    logger.info(f"Run ID: {run_id_to_use}")
-    logger.info(f"Конфигурационный файл: {config_path}")
-    logger.info(f"Входные сырые данные: {raw_input_dir}")
-    logger.info(f"Базовая выходная директория (эффективная): {effective_output_base_for_log}")
-    logger.info(f"Директория этого запуска: {run_output_dir}")
-    logger.info(f"Файл шаблона: {template_path}")
-    logger.info(f"Лог пайплайна: {pipeline_log_file}")
-    logger.info(f"Уровень лога консоли: {args.console_log_level.upper()}")
-    logger.info("=" * 60)
-
-
-    # --- 4. Проверка входных данных и создание структуры директорий ---
-    if not raw_input_dir.is_dir(): logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Входная директория не найдена: {raw_input_dir}"); sys.exit(1)
-    if not template_path.is_file(): logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Файл шаблона не найден: {template_path}"); sys.exit(1)
-
-    sd = subdirs_config
-    bids_dicom_dir = run_output_dir / sd['bids_dicom']
-    dicom_checks_dir = run_output_dir / sd['dicom_checks']; dicom_meta_dir = run_output_dir / sd['dicom_meta']
-    bids_nifti_dir = run_output_dir / sd['bids_nifti']; validation_reports_dir = run_output_dir / sd['validation_reports']
-    fast_qc_reports_dir = run_output_dir / sd['fast_qc_reports']; mriqc_output_dir = run_output_dir / sd['mriqc_output']
-    mriqc_interpret_dir = run_output_dir / sd['mriqc_interpret']; transforms_dir = run_output_dir / sd['transforms']
-    preprocessed_dir = run_output_dir / sd['preprocessed']
-    output_dirs_to_create = [ bids_dicom_dir, dicom_checks_dir, dicom_meta_dir, bids_nifti_dir,
-                              validation_reports_dir, fast_qc_reports_dir, mriqc_output_dir,
-                              mriqc_interpret_dir, transforms_dir, preprocessed_dir ]
-    
-    # === ДОБАВЛЕНИЕ ДИРЕКТОРИИ ДЛЯ СЕГМЕНТАЦИИ ===
-    segmentation_masks_subdir_name = sd.get('segmentation_masks', 'segmentation_masks')
-    segmentation_output_root_dir = run_output_dir / segmentation_masks_subdir_name
-    # Создаем также подпапку для индивидуальных логов сегментации внутри основной папки логов пайплайна
-    segmentation_individual_logs_dir = pipeline_log_dir / "10_segmentation_logs"
-
-
-    output_dirs_to_create = [
-        bids_dicom_dir, dicom_checks_dir, dicom_meta_dir, bids_nifti_dir,
-        validation_reports_dir, fast_qc_reports_dir, mriqc_output_dir,
-        mriqc_interpret_dir, transforms_dir, preprocessed_dir,
-        segmentation_output_root_dir, # <<< Добавлена
-        segmentation_individual_logs_dir # <<< Добавлена
-    ]
-    try:
-        logger.info(f"{USER_LOG_PREFIX} Создание структуры выходных директорий...")
-        for dir_path in output_dirs_to_create: dir_path.mkdir(parents=True, exist_ok=True); logger.debug(f"  Создана/проверена: {dir_path}")
-        logger.info(f"{USER_LOG_PREFIX} Структура выходных директорий готова.")
-    except OSError as e: logger.critical(f"{USER_LOG_PREFIX} ОШИБКА: Не удалось создать выходные директории: {e}"); sys.exit(1)
-
-    # --- 5. Определение путей к скриптам и исполняемым файлам ---
-    try:
-        project_root = Path(__file__).resolve().parent.parent
-        scripts_dir = project_root / 'scripts'
-        if not scripts_dir.is_dir(): raise FileNotFoundError(f"Директория scripts не найдена: {scripts_dir}")
-    except NameError:
-        logger.warning("Не удалось определить project_root. Используется cwd для scripts/.")
-        scripts_dir = Path.cwd() / 'scripts'
-        if not scripts_dir.is_dir(): logger.critical(f"{USER_LOG_PREFIX} КРИТИЧЕСКАЯ ОШИБКА: Директория scripts {scripts_dir} не найдена."); sys.exit(1)
-
-    dciodvfy_exec = executables_config.get('dciodvfy', 'dciodvfy')
-    dcm2niix_exec = executables_config.get('dcm2niix', 'dcm2niix')
-    bids_validator_exec = executables_config.get('bids_validator', 'bids-validator')
-    mriqc_exec = executables_config.get('mriqc', 'mriqc')
-    python_executable = sys.executable
-
-    # --- 6. Последовательный запуск шагов пайплайна ---
-    # Шаг 1: reorganize_folders.py
-    step_name = "1_Reorganize_to_BIDS_DICOM"
-    step_script = scripts_dir / "reorganize_folders.py"
-    step_log = pipeline_log_dir / "01_reorganize_folders.log"
-    
-    # Получаем настройки для шага reorganize_folders
-    reorganize_step_cfg = steps_config.get('reorganize_folders', {})
-    dicom_to_bids_action = reorganize_step_cfg.get('action', 'copy').lower() # Берем 'action' из конфига
-    if dicom_to_bids_action not in ['copy', 'move']:
-        logger.warning(f"Некорректное значение для 'steps.reorganize_folders.action': {dicom_to_bids_action}. Используется 'copy'.")
-        dicom_to_bids_action = 'copy'
-    logger.info(f"Действие для шага '{step_name}': {dicom_to_bids_action.upper()}")
-
-    cmd = [ python_executable, str(step_script),
-            "--input_dir", str(raw_input_dir), 
-            "--output_dir", str(bids_dicom_dir),
-            "--action", dicom_to_bids_action # <<< Передаем полученное значение
-            # "--log_file" будет добавлен функцией run_step
-            ]
-    if not run_step(cmd, step_name, step_log): sys.exit(1)
-
-    # --- Опциональная очистка raw_input_dir если было перемещение ---
-    if dicom_to_bids_action == 'move':
-        logger.info(f"Действие для reorganize_folders было 'move'. Попытка очистки исходной директории: {raw_input_dir}")
+class Config:
+    def __init__(self, path: Path):
+        self.path = path
         try:
-            if raw_input_dir.exists() and raw_input_dir.is_dir():
-                if is_dir_empty_recursive(raw_input_dir): # <<< ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
-                    shutil.rmtree(raw_input_dir)
-                    logger.info(f"Исходная директория {raw_input_dir} (и все пустые подпапки) успешно удалена после перемещения.")
-                else:
-                    logger.warning(f"Исходная директория {raw_input_dir} содержит файлы или непустые подпапки после перемещения. Очистка не произведена.")
-            # else:
-                # logger.info(f"Исходная директория {raw_input_dir} уже не существует или не является директорией.")
-        except Exception as e_clean:
-            logger.error(f"Ошибка при попытке очистки {raw_input_dir}: {e_clean}")
-
-    # Шаг 2: dicom_standard_check.py
-    step_name = "2_DICOM_Standard_Check"
-    step_script = scripts_dir / "dicom_standard_check.py"
-    step_log = pipeline_log_dir / "02_dicom_check.log"
-    cmd = [ python_executable, str(step_script),
-            "--input_dir", str(bids_dicom_dir),
-            "--output_dir", str(dicom_checks_dir),
-            "--dciodvfy_path", dciodvfy_exec,
-            #"--console_log_level", args.console_log_level 
-            ]
-    if not run_step(cmd, step_name, step_log): sys.exit(1)
-
-    # Шаг 3: extract_metadata.py
-    step_name = "3_Extract_DICOM_Metadata"
-    step_script = scripts_dir / "extract_metadata.py"
-    step_log = pipeline_log_dir / "03_extract_metadata.log"
-    cmd = [ python_executable, str(step_script),
-            "--input_dir", str(bids_dicom_dir),
-            "--output_dir", str(dicom_meta_dir),
-            #"--console_log_level", args.console_log_level 
-            ]
-    if not run_step(cmd, step_name, step_log): sys.exit(1)
-
-    # Шаг 4: convert_dicom_to_nifti.py
-    step_name = "4_Convert_DICOM_to_NIfTI"
-    step_script = scripts_dir / "convert_dicom_to_nifti.py"
-    step_log = pipeline_log_dir / "04_convert_nifti.log"
-    cmd = [ python_executable, str(step_script),
-            "--input_dir", str(bids_dicom_dir),
-            "--output_dir", str(bids_nifti_dir),
-            "--dcm2niix_path", dcm2niix_exec,
-            #"--console_log_level", args.console_log_level 
-            ]
-    if not run_step(cmd, step_name, step_log): sys.exit(1)
-
-    # Шаг 5: bids_validation.py
-    step_name = "5_BIDS_Validation"
-    step_script = scripts_dir / "bids_validation.py"
-    step_log = pipeline_log_dir / "05_bids_validation.log"
-    cmd = [ python_executable, str(step_script),
-            "--bids_dir", str(bids_nifti_dir),
-            "--output_dir", str(validation_reports_dir),
-            "--validator_path", bids_validator_exec,
-            #"--console_log_level", args.console_log_level 
-            ]
-    if not run_step(cmd, step_name, step_log):
-        logger.warning(f"{USER_LOG_PREFIX} ВНИМАНИЕ: Скрипт BIDS валидации завершился с ошибкой, но пайплайн продолжит работу. Проверьте отчеты валидации.")
-        # Не выходим из пайплайна, если сам скрипт упал, но логируем как проблему
-        # sys.exit(1) # Раскомментировать, если ошибка валидации должна останавливать пайплайн
-    else:
-        # Проверка содержимого отчета валидатора, если нужно принимать решение
-        validator_report_file = validation_reports_dir / "bids_validator_report.txt"
-        if validator_report_file.exists():
-            with open(validator_report_file, 'r', encoding='utf-8') as f_report:
-                report_content_val = f_report.read()
-            if "error" in report_content_val.lower() or "failed" in report_content_val.lower(): # Упрощенная проверка
-                 logger.warning(f"{USER_LOG_PREFIX} ВНИМАНИЕ: BIDS валидация обнаружила ошибки! См. {validator_report_file.name}")
-            elif "warning" in report_content_val.lower():
-                 logger.info(f"{USER_LOG_PREFIX} BIDS валидация обнаружила предупреждения. См. {validator_report_file.name}")
-            else:
-                 logger.info(f"{USER_LOG_PREFIX} BIDS валидация не обнаружила критических ошибок.")
-
-    # --- Автоматический запуск MRIQC на сервере, если настроено ---
-    logger.info("--- Проверка необходимости автоматического запуска MRIQC на сервере ---")
-    mriqc_step_cfg = steps_config.get('mriqc', {}) # Получаем конфигурацию шага mriqc
+            with open(path, 'r', encoding='utf-8') as f:
+                self._data = yaml.safe_load(f)
+        except Exception as e:
+            raise ValueError(f"Failed to load or parse config {path}") from e
+        
+    def get_path(self, key: str) -> Path | None:
+        return Path(self._data['paths'][key]) if key in self._data.get('paths', {}) else None
     
-    should_run_mriqc_generally = mriqc_step_cfg.get('enabled', False)
-    run_mriqc_on_server = mriqc_step_cfg.get('run_on_server', False)
-    auto_trigger_mriqc = mriqc_step_cfg.get('run_on_server_auto_trigger', False)
+    def get_exec(self, key: str, default: str) -> str:
+        return self._data.get('executables', {}).get(key, default)
+    
+    def get_step_config(self, step_name: str) -> dict:
+        return self._data.get('steps', {}).get(step_name, {})
 
-    # Предполагаем, что Flask работает на порту 5001 локально
-    # Этот URL лучше бы вынести в конфигурацию, если он может меняться,
-    # но для простоты пока захардкодим.
-    FLASK_API_BASE_URL = "http://127.0.0.1:5001" # Убедитесь, что порт совпадает с портом вашего Flask-приложения
+class PipelineWorkspace:
+    def __init__(self, base_output_dir: Path, run_id: str, config: Config):
+        self.run_id = run_id
+        self.run_output_dir = base_output_dir / run_id
+        sd = config.get_step_config('paths').get('subdirs', {})
+        self.logs_dir = self.run_output_dir / sd.get('logs', 'logs')
+        self.bids_dicom_dir = self.run_output_dir / sd.get('bids_dicom', 'bids_dicom')
+        self.dicom_checks_dir = self.run_output_dir / sd.get('dicom_checks', 'dicom_checks')
+        self.dicom_meta_dir = self.run_output_dir / sd.get('dicom_meta', 'dicom_meta')
+        self.bids_nifti_dir = self.run_output_dir / sd.get('bids_nifti', 'bids_nifti')
+        self.validation_reports_dir = self.run_output_dir / sd.get('validation_reports', 'validation_reports')
+        self.fast_qc_reports_dir = self.run_output_dir / sd.get('fast_qc_reports', 'fast_qc_reports')
+        self.mriqc_output_dir = self.run_output_dir / sd.get('mriqc_output', 'mriqc_output')
+        self.mriqc_interpret_dir = self.run_output_dir / sd.get('mriqc_interpret', 'mriqc_interpret')
+        self.transforms_dir = self.run_output_dir / sd.get('transforms', 'transforms')
+        self.preprocessed_dir = self.run_output_dir / sd.get('preprocessed', 'preprocessed')
+        self.segmentation_dir = self.run_output_dir / sd.get('segmentation_masks', 'segmentation_masks')
 
-    if should_run_mriqc_generally and run_mriqc_on_server and auto_trigger_mriqc:
-        if bids_nifti_dir.is_dir() and any(bids_nifti_dir.iterdir()): # Проверка, что папка NIfTI не пуста
-            logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} NIfTI файлы готовы. Инициирую автоматический запуск MRIQC на сервере...")
+    def create_directories(self):
+        logger.info(f"{USER_LOG_PREFIX} Creating output directory structure...")
+        for path in self.__dict__.values():
+            if isinstance(path, Path):
+                path.mkdir(parents=True, exist_ok=True)
+
+class PipelineInputHandler:
+    def __init__(self, cli_input_path_str: str | None, config_input_path: Path | None, run_dir: Path):
+        self.cli_input_path_str = cli_input_path_str
+        self.config_input_path = config_input_path
+        self.run_dir = run_dir
+
+    def prepare(self) -> Path:
+        path_str = self.cli_input_path_str or self.config_input_path
+        if not path_str: raise ValueError("Input data directory is not specified in CLI arguments or config file.")
+        path = Path(path_str).resolve()
+        logger.info(f"Using input data path: {path}")
+        if not path.exists(): raise FileNotFoundError(f"Input data path does not exist: {path}")
+        if path.is_file() and path.name.lower().endswith('.zip'):
+            extraction_dir = self.run_dir / "input_raw_data"
+            extraction_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"ZIP archive detected. Extracting to: {extraction_dir}")
+            with zipfile.ZipFile(path, 'r') as zip_ref: zip_ref.extractall(extraction_dir)
+            #items = list(extraction_dir.iterdir())
+            #return items[0] if len(items) == 1 and items[0].is_dir() else extraction_dir
+            return extraction_dir
+        elif path.is_dir(): return path
+        else: raise ValueError(f"Input path is not a valid directory or .zip file: {path}")
+
+# --- Step Abstraction ---
+
+class Step:
+    """Abstract Base Class for a pipeline step."""
+    def __init__(self, step_name: str, workspace: PipelineWorkspace, config: Config):
+        self.name = step_name
+        self.workspace = workspace
+        self.config = config
+        self.step_config = self.config.get_step_config(step_name.lower().replace(' ', '_'))
+        self.python_executable = sys.executable
+        self.scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+        self.fatal_on_error = True
+
+    def execute(self) -> bool:
+        # Check if this step has a custom is_enabled method
+        if hasattr(self, 'is_enabled') and callable(getattr(self, 'is_enabled')):
+            if not self.is_enabled():
+                logger.info(f"{USER_LOG_PREFIX} Skipped - {self.name} (disabled by custom logic).")
+                return True
             
-            trigger_url = f"{FLASK_API_BASE_URL}/trigger_mriqc_auto/{run_id_to_use}"
+        elif not self.step_config.get('enabled', True):
+            logger.info(f"{USER_LOG_PREFIX} Skipped - {self.name} (disabled in config).")
+            return True
+        
+        logger.info(f"{USER_LOG_PREFIX} Starting step - {self.name}...")
+        log_path = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        try:
+            command = self._build_command()
+            logger.debug(f"Executing command: {' '.join(command)}")
+            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
+            if result.stdout: logger.debug(f"Stdout from '{self.name}':\n{result.stdout.strip()}")
+            if result.stderr: logger.warning(f"Stderr from '{self.name}':\n{result.stderr.strip()}")
+            self._post_execute_on_success()
+            logger.info(f"{USER_LOG_PREFIX} Success - {self.name}.")
+            return True
+        except subprocess.CalledProcessError as e:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"COMMAND: {' '.join(e.cmd)}\n\nSTDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}")
+            logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name}. See log: {log_path.name}")
+            logger.critical(f"Step '{self.name}' failed with code {e.returncode}. Log saved to {log_path.name}")
+            return self.fatal_on_error is False
+        except Exception as e:
+            logger.error(f"{USER_LOG_PREFIX} CRITICAL ERROR - {self.name}: An unexpected error occurred.")
+            logger.exception(e)
+            return False
+        
+    def _build_command(self) -> list[str]: raise NotImplementedError
+    def _post_execute_on_success(self): pass # Hook for post-run actions
+
+class ReorganizeStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config, input_dir: Path):
+        super().__init__("Reorganize_to_BIDS_DICOM", workspace, config)
+        self.input_dir = input_dir
+        self.action = self.step_config.get('action', 'copy').lower()
+
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "reorganize_folders.py"),
+                str(self.input_dir),
+                str(self.workspace.bids_dicom_dir),
+                "--action", self.action]
+    
+    def _post_execute_on_success(self):
+        if self.action == 'move' and self.input_dir.exists():
+            logger.info(f"Action was 'move'. Cleaning up source directory: {self.input_dir}")
+            shutil.rmtree(self.input_dir)
+
+class DICOMCheckStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("DICOM_Standard_Check", workspace, config)
+
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "dicom_standard_check.py"),
+                str(self.workspace.bids_dicom_dir),
+                str(self.workspace.dicom_checks_dir),
+                "--dciodvfy_path", self.config.get_exec('dciodvfy', 'dciodvfy')]
+
+class ExtractMetadataStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("Extract_DICOM_Metadata", workspace, config)
+
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "extract_metadata.py"),
+                str(self.workspace.bids_dicom_dir),
+                str(self.workspace.dicom_meta_dir)]
+    
+class DicomToNiftiStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("Convert_DICOM_to_NIfTI", workspace, config)
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "convert_dicom_to_nifti.py"),
+                str(self.workspace.bids_dicom_dir),
+                str(self.workspace.bids_nifti_dir),
+                "--dcm2niix_path", self.config.get_exec('dcm2niix', 'dcm2niix')]
+
+class BIDSValidationStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("BIDS_Validation", workspace, config)
+        self.fatal_on_error = False 
+        # A validation error should not stop the pipeline
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "bids_validation.py"),
+                str(self.workspace.bids_nifti_dir), 
+                str(self.workspace.validation_reports_dir),
+                "--validator_path", self.config.get_exec('bids_validator', 'bids-validator')]
+    
+    def _post_execute_on_success(self):
+        report_file = self.workspace.validation_reports_dir / "bids_validator_report.txt"
+        if report_file.exists():
+            content = report_file.read_text()
+            if "error" in content.lower():
+                logger.warning(f"{USER_LOG_PREFIX} BIDS Validation found errors. Please review the report.")
+
+class MRIQCServerTriggerStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("MRIQC_Server_Trigger", workspace, config)
+        self.mriqc_config = self.config.get_step_config('mriqc')
+
+    def _is_enabled(self) -> bool:
+        return (self.mriqc_config.get('enabled', False) and
+                self.mriqc_config.get('run_on_server', False) and
+                self.mriqc_config.get('run_on_server_auto_trigger', False))
+    
+    def execute(self) -> bool:
+        if not self._is_enabled():
+            logger.info(f"Skipping {self.name}: conditions not met in config.")
+            return True
+        logger.info(f"{USER_LOG_PREFIX} Initiating automatic MRIQC run on server...")
+        trigger_url = f"{self.config.get_exec('flask_api_base_url', 'http://127.0.0.1:5001')}/trigger_mriqc_auto/{self.workspace.run_id}"
+        try:
+            if not self.workspace.bids_nifti_dir.is_dir() or not any(self.workspace.bids_nifti_dir.iterdir()):
+                logger.warning(f"Cannot trigger server MRIQC: BIDS NIfTI directory is empty or missing.")
+                return True
+            response = requests.post(trigger_url, timeout=20)
+            if response.status_code in [200, 202]:
+                logger.info(f"{USER_LOG_PREFIX} Server trigger successful: {response.json().get('message', '')}")
+            else:
+                logger.error(f"{USER_LOG_PREFIX} Failed to trigger server MRIQC. Status: {response.status_code}, Info: {response.text}")
+        except requests.RequestException as e:
+            logger.error(f"{USER_LOG_PREFIX} Failed to connect to server for MRIQC trigger: {e}")
+        return True # Non-fatal
+
+class MRIQCLocalStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("MRIQC_Local_Analysis", workspace, config)
+        self.mriqc_config = self.config.get_step_config('mriqc')
+
+    def _is_enabled(self) -> bool:
+        return (self.mriqc_config.get('enabled', False) and not self.mriqc_config.get('run_on_server', False))
+    
+    def execute(self) -> bool:
+        if not self._is_enabled():
+            logger.info(f"Skipping {self.name}: conditions not met in config.")
+            return True
+        
+        logger.info(f"{USER_LOG_PREFIX} Starting step - {self.name}...")
+        log_path = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        
+        try:
+            command = self._build_command()
+            logger.debug(f"Executing command: {' '.join(command)}")
+            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
+            
+            if result.stdout: 
+                logger.debug(f"Stdout from '{self.name}':\n{result.stdout.strip()}")
+            if result.stderr: 
+                logger.warning(f"Stderr from '{self.name}':\n{result.stderr.strip()}")
+            
+            self._post_execute_on_success()
+            logger.info(f"{USER_LOG_PREFIX} Success - {self.name}.")
+            return True
+        
+        except subprocess.CalledProcessError as e:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"COMMAND: {' '.join(e.cmd)}\n\nSTDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}")
+            logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name}. See log: {log_path.name}")
+            logger.critical(f"Step '{self.name}' failed with code {e.returncode}. Log saved to {log_path.name}")
+            return self.fatal_on_error is False
+        
+        except Exception as e:
+            logger.error(f"{USER_LOG_PREFIX} CRITICAL ERROR - {self.name}: An unexpected error occurred.")
+            logger.exception(e)
+            return False
+    
+    def _build_command(self) -> list:
+        cfg = self.mriqc_config
+        return [self.python_executable, str(self.scripts_dir / "mriqc_quality.py"),
+                str(self.workspace.bids_nifti_dir),
+                str(self.workspace.mriqc_output_dir),
+                "--mriqc_path", self.config.get_exec('mriqc_local_exec', 'mriqc'),
+                "--report_type", str(cfg.get('report_type', 'both')),
+                "--n_procs", str(cfg.get('n_procs', 1)),
+                "--n_threads", str(cfg.get('n_threads', 1)),
+                "--mem_gb", str(cfg.get('mem_gb', 4))]
+
+class MRIQCInterpretationStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("MRIQC_Interpretation", workspace, config)
+        self.mriqc_config = config.get_step_config('mriqc')
+        self.interpret_config = config.get_step_config('mriqc_interpretation')
+
+    def _is_enabled(self) -> bool:
+        return (self.mriqc_config.get('enabled', False) and
+                not self.mriqc_config.get('run_on_server', False) and
+                self.interpret_config.get('enabled', False))
+    
+    def execute(self) -> bool:
+        if not self._is_enabled():
+            logger.info(f"Skipping {self.name}: conditions not met in config.")
+            return True
+        if not self.workspace.mriqc_output_dir.is_dir() or not any(self.workspace.mriqc_output_dir.iterdir()):
+            logger.warning(f"{USER_LOG_PREFIX} Skipped - {self.name}: MRIQC output directory is empty.")
+            return True
+        return super().execute()
+    
+    def _build_command(self) -> list:
+        return [self.python_executable, str(self.scripts_dir / "mriqc_interpretation.py"),
+                str(self.workspace.mriqc_output_dir),
+                str(self.workspace.mriqc_interpret_dir)]
+
+class FastQCMetricsStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("Fast_Quality_Metrics", workspace, config)
+
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "quality_metrics.py"),
+                str(self.workspace.bids_nifti_dir),
+                str(self.workspace.fast_qc_reports_dir)]
+
+class PreprocessingStep(Step):
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("Preprocessing", workspace, config)
+    def _build_command(self) -> list[str]:
+        return [self.python_executable, str(self.scripts_dir / "preprocessing.py"),
+                str(self.workspace.bids_nifti_dir), 
+                str(self.workspace.preprocessed_dir),
+                str(self.workspace.transforms_dir),
+                "--template_path", str(self.config.get_path('template_path')), 
+                "--config", str(self.config.path)]
+
+class SegmentationStep(Step):
+    """Concrete step for running segmentation.py for all subjects/sessions."""
+    def __init__(self, workspace: PipelineWorkspace, config: Config):
+        super().__init__("AI_Segmentation", workspace, config)
+
+    def execute(self) -> bool:
+        """
+        Custom execution logic for segmentation, which finds all modalities for
+        each session and calls the segmentation script.
+        """
+        logger.info(f"{USER_LOG_PREFIX} Starting step - {self.name}...")
+        
+        seg_config = self.config.get_step_config('segmentation')
+        if not seg_config.get('enabled', False):
+            logger.info(f"{USER_LOG_PREFIX} Skipped - {self.name} (disabled in config).")
+            return True
+
+        session_files = self._find_session_files()
+        if not session_files:
+            logger.warning(f"No subject/session folders found in {self.workspace.preprocessed_dir} to segment.")
+            return True
+
+        error_count = 0
+        for (subj, ses), files_map in session_files.items():
+            client_id = f"{subj}_{ses}"
+            logger.info(f"--- Preparing segmentation for {client_id} ---")
+            
+            base_name_for_output = f"{subj}_{ses}"
+            output_mask_filename = f"{base_name_for_output}_segmask.nii.gz"
+
+            output_mask_subfolder = self.workspace.segmentation_dir / subj / ses / "anat"
+            output_mask_subfolder.mkdir(parents=True, exist_ok=True)
+            output_mask_file_path = output_mask_subfolder / output_mask_filename
+
+            step_log_path = self.workspace.logs_dir / f"segmentation_{client_id}.log"
             
             try:
-                logger.debug(f"Отправка POST-запроса на: {trigger_url}")
-                response = requests.post(trigger_url, timeout=15) # Таймаут 15 секунд
-
-                if response.status_code == 202: # Ожидаем 202 Accepted от Flask
-                    logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Запрос на автоматический запуск MRIQC успешно отправлен на Flask. "
-                                f"Ответ: {response.status_code} - {response.json().get('message', '')}")
-                    logger.info(f"--- Запрос на авто-запуск MRIQC для {run_id_to_use} принят Flask API. Пайплайн продолжит локальную обработку. ---")
-                elif response.status_code == 200: # Flask может вернуть 200, если задача уже была запущена/выполнена
-                     logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Запрос на автоматический запуск MRIQC обработан Flask. "
-                                f"Возможно, задача уже была запущена/выполнена. Ответ: {response.status_code} - {response.json().get('message', '')}")
-                     logger.info(f"--- Запрос на авто-запуск MRIQC для {run_id_to_use} обработан Flask API (возможно, уже запущен). Пайплайн продолжит локальную обработку. ---")
-                else:
-                    logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА при отправке запроса на авто-запуск MRIQC. "
-                                 f"Статус: {response.status_code}, Ответ: {response.text}")
-                    logger.error(f"--- Ошибка от Flask API при попытке авто-запуска MRIQC для {run_id_to_use}. Статус: {response.status_code} ---")
-            
-            except requests.exceptions.ConnectionError as e_conn:
-                logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА: Не удалось подключиться к Flask API ({trigger_url}) для авто-запуска MRIQC.")
-                logger.error(f"--- Ошибка соединения с Flask API ({trigger_url}): {e_conn} ---")
-            except requests.exceptions.Timeout as e_timeout:
-                logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА: Таймаут при подключении к Flask API ({trigger_url}) для авто-запуска MRIQC.")
-                logger.error(f"--- Таймаут соединения с Flask API ({trigger_url}): {e_timeout} ---")
-            except Exception as e_req:
-                logger.error(f"[{run_id_to_use}] {USER_LOG_PREFIX} ОШИБКА: Непредвиденная ошибка при отправке запроса на авто-запуск MRIQC.")
-                logger.error(f"--- Непредвиденная ошибка при запросе к Flask API: {e_req} ---", exc_info=True)
-        else:
-            logger.warning(f"[{run_id_to_use}] {USER_LOG_PREFIX} Авто-запуск MRIQC на сервере настроен, но папка BIDS NIfTI ({bids_nifti_dir}) пуста или не существует. Пропуск триггера.")
-            logger.warning(f"--- Пропуск авто-запуска MRIQC: папка {bids_nifti_dir} пуста или не найдена. ---")
-    elif should_run_mriqc_generally and run_mriqc_on_server and not auto_trigger_mriqc:
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} MRIQC настроен для запуска на сервере, но автоматический триггер отключен. Запуск через веб-интерфейс.")
-        logger.info(f"--- Автоматический запуск MRIQC на сервере отключен в конфигурации. ---")
-    elif should_run_mriqc_generally and not run_mriqc_on_server:
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} MRIQC настроен для локального запуска (будет выполнен позже, если это Шаг 7).")
-        logger.info(f"--- MRIQC настроен для локального запуска (Шаг 7). ---")
-    else: # should_run_mriqc_generally is False
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} MRIQC отключен в конфигурации.")
-        logger.info(f"--- MRIQC полностью отключен в конфигурации. ---")
-
-
-    # Шаг 6: quality_metrics.py
-    step_name = "6_Fast_Quality_Metrics"
-    step_script = scripts_dir / "quality_metrics.py"
-    step_log = pipeline_log_dir / "06_fast_qc.log"
-    qc_config = steps_config.get('quality_metrics', {})
-    anisotropy_thresh_qc = qc_config.get('anisotropy_thresh', 3.0)
-    cmd = [ python_executable, str(step_script),
-            "--input_dir", str(bids_nifti_dir),
-            "--output_dir", str(fast_qc_reports_dir),
-            "--anisotropy_thresh", str(anisotropy_thresh_qc),
-            #"--console_log_level", args.console_log_level 
-            ]
-    if not run_step(cmd, step_name, step_log): sys.exit(1)
-
-    # Шаг 7: mriqc_quality.py (Опциональный)
-    step_name = "7_MRIQC_Analysis"
-    mriqc_config = steps_config.get('mriqc', {})
-    if mriqc_step_cfg.get('enabled', False) and not mriqc_step_cfg.get('run_on_server', False):
-        logger.info(f"--- Запуск ЛОКАЛЬНОГО MRIQC (Шаг 7) ---")
-        step_script = scripts_dir / "mriqc_quality.py"
-        step_log = pipeline_log_dir / "07_mriqc.log"
-        mriqc_error_log_name = mriqc_config.get("error_log_filename", "mriqc_run_errors.log")
-        mriqc_error_log_path = pipeline_log_dir / mriqc_error_log_name
-        cmd = [ python_executable, str(step_script),
-                "--bids_dir", str(bids_nifti_dir),
-                "--output_dir", str(mriqc_output_dir),
-                "--report_type", mriqc_config.get('report_type', 'both'),
-                "--mriqc_path", mriqc_exec,
-                "--n_procs", str(mriqc_config.get('n_procs', 1)),
-                "--n_threads", str(mriqc_config.get('n_threads', 1)),
-                "--mem_gb", str(mriqc_config.get('mem_gb', 4)),
-                "--error_log", str(mriqc_error_log_path),
-                "--console_log_level", args.console_log_level ]
-        if not run_step(cmd, step_name, step_log): sys.exit(1)
-    elif mriqc_step_cfg.get('enabled', False) and mriqc_step_cfg.get('run_on_server', False):
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен локальный шаг - {step_name}, так как MRIQC настроен для запуска на сервере.")
-        logger.info(f"--- Шаг '{step_name}' (локальный MRIQC) пропущен, так как он запускается/запущен на сервере. ---")
-    else: # mriqc_step_cfg.get('enabled', False) is False
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен шаг - {step_name} (отключен в конфигурации).")
-        logger.info(f"--- Шаг '{step_name}' (локальный MRIQC) пропущен (отключен). ---")
-
-    # Шаг 8: mriqc_interpretation.py (Опциональный)
-    step_name = "8_MRIQC_Interpretation"
-    mriqc_interpret_config = steps_config.get('mriqc_interpretation', {})
-    if mriqc_step_cfg.get('enabled', False) and \
-       not mriqc_step_cfg.get('run_on_server', False) and \
-       mriqc_interpret_config.get('enabled', False):
-        logger.info(f"--- Запуск ЛОКАЛЬНОЙ интерпретации MRIQC (Шаг 8) ---") 
-        if mriqc_output_dir.exists() and any(mriqc_output_dir.iterdir()):
-            step_script = scripts_dir / "mriqc_interpretation.py"
-            step_log = pipeline_log_dir / "08_mriqc_interpret.log"
-            cmd = [ python_executable, str(step_script),
-                    "--mriqc_dir", str(mriqc_output_dir),
-                    "--output_dir", str(mriqc_interpret_dir),
-                    #"--console_log_level", args.console_log_level 
-                    ]
-            if not run_step(cmd, step_name, step_log): sys.exit(1)
-        else:
-            logger.warning(f"{USER_LOG_PREFIX} Пропущен шаг - {step_name}: папка результатов MRIQC не найдена или пуста.")
-            logger.warning(f"--- Шаг '{step_name}' пропущен: {mriqc_output_dir} не найдена/пуста. ---")
-    elif mriqc_step_cfg.get('enabled', False) and mriqc_step_cfg.get('run_on_server', False):
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен локальный шаг - {step_name}, так как MRIQC (и его интерпретация) обрабатывается на сервере.")
-        logger.info(f"--- Шаг '{step_name}' (локальная интерпретация MRIQC) пропущен, обрабатывается на сервере. ---")
-    else:
-        logger.info(f"[{run_id_to_use}] {USER_LOG_PREFIX} Пропущен шаг - {step_name} (отключен в конфигурации).")
-        logger.info(f"--- Шаг '{step_name}' (локальная интерпретация MRIQC) пропущен (отключен). ---")
-        
-    # Шаг 9: preprocessing.py
-    step_name = "9_Preprocessing"
-    step_script = scripts_dir / "preprocessing.py"
-    step_log = pipeline_log_dir / "09_preprocessing.log"
-    cmd = [ python_executable, str(step_script),
-            "--input_dir", str(bids_nifti_dir),
-            "--output_prep_dir", str(preprocessed_dir),
-            "--output_transform_dir", str(transforms_dir),
-            "--template_path", str(template_path),
-            "--config", str(config_path),
-            "--console_log_level", args.console_log_level ]
-    if not run_step(cmd, step_name, step_log): sys.exit(1)
-
-    # Шаг 10: segmentation.py
-    step_name_segmentation_base = "10_AI_Segmentation"
-    segmentation_config = steps_config.get('segmentation', {}) # Параметры шага из конфига
-    aiaa_server_url = executables_config.get('aiaa_server_url')   # URL сервера AIAA
-
-    if segmentation_config.get('enabled', False) and aiaa_server_url:
-        logger.info(f"{USER_LOG_PREFIX} Запуск этапа сегментации...")
-        segmentation_script_path = scripts_dir / "segmentation.py" 
-        modality_map_config_from_pipeline = segmentation_config.get('modality_input_map') 
-
-        if not modality_map_config_from_pipeline:
-            logger.error(
-                f"{USER_LOG_PREFIX} ОШИБКА - {step_name_segmentation_base}: "
-                f"Карта модальностей 'modality_input_map' не найдена в config -> steps -> segmentation. Пропуск сегментации."
-            )
-        else:
-            subject_session_modality_files = {}
-            logger.debug(f"Поиск предобработанных файлов для сегментации в: {preprocessed_dir}")
-            for subj_dir in preprocessed_dir.glob("sub-*"):
-                if not subj_dir.is_dir(): continue
-                for ses_dir in subj_dir.glob("ses-*"):
-                    if not ses_dir.is_dir(): continue
-                    anat_dir = ses_dir / "anat"
-                    if not anat_dir.is_dir(): continue
-                    current_subj_ses_key = (subj_dir.name, ses_dir.name)
-                    if current_subj_ses_key not in subject_session_modality_files:
-                        subject_session_modality_files[current_subj_ses_key] = {}
-                    
-                    # Ключи, которые ожидает segmentation.py (t1, t1c, t2, flair)
-                    expected_script_mod_keys = ['t1', 't1c', 't2', 'flair']
-                    for script_mod_key in expected_script_mod_keys:
-                        # Ищем соответствующий идентификатор из конфига пайплайна
-                        # (например, для script_mod_key 't1c', ищем 'ce-gd_T1w' в modality_map_config_from_pipeline)
-                        mod_identifier_str = modality_map_config_from_pipeline.get(script_mod_key)
-                        if not mod_identifier_str:
-                            logger.warning(f"Для {current_subj_ses_key}: идентификатор для ключа '{script_mod_key}' не найден в modality_input_map конфига. Эта модальность будет пропущена для segmentation.py.")
-                            continue
-
-                        found_mod_file = None
-                        for n_file in anat_dir.glob(f"*{mod_identifier_str}*.nii*"): 
-                            if n_file.is_file():
-                                if script_mod_key == 't1': # Особая проверка для T1, чтобы не спутать с T1c
-                                    t1c_identifier = modality_map_config_from_pipeline.get('t1c')
-                                    if t1c_identifier and t1c_identifier in n_file.name:
-                                        continue 
-                                found_mod_file = n_file
-                                break 
-                        
-                        if found_mod_file:
-                            subject_session_modality_files[current_subj_ses_key][script_mod_key] = found_mod_file
-                            logger.debug(f"  Найден файл для {subj_dir.name}/{ses_dir.name}: {script_mod_key} -> {found_mod_file.name}")
-                        else:
-                            logger.info(f"  Файл для модальности '{script_mod_key}' (идент: '{mod_identifier_str}') не найден в {anat_dir} для {subj_dir.name}/{ses_dir.name}. Будет передан как отсутствующий.")
-                            # Оставляем отсутствующий ключ в subject_session_modality_files[current_subj_ses_key]
-                            # или явно subject_session_modality_files[current_subj_ses_key][script_mod_key] = None
-                            # Но удобнее, если его просто не будет, а segmentation.py ожидает args.input_t1 и т.д.
-                            # которые будут None, если аргумент не передан.
-
-            if not subject_session_modality_files:
-                logger.warning(f"{USER_LOG_PREFIX} {step_name_segmentation_base}: Не найдено сгруппированных по sub/ses файлов в {preprocessed_dir}.")
-            
-            segmentation_errors_count = 0
-            for (subj_id, ses_id), found_modalities_map in subject_session_modality_files.items():
-                logger.info(f"--- Подготовка к сегментации для {subj_id}/{ses_id} ---")
+                command = self._build_command_for_session(files_map, output_mask_file_path, client_id)
                 
-                client_id_for_server = f"{subj_id}_{ses_id}"
-                
-                # Формируем пути для выходной маски и индивидуального лога
-                # Пытаемся взять имя на основе T1, если он есть, иначе первый доступный или дефолт.
-                base_name_source_file = None
-                if 't1' in found_modalities_map:
-                    base_name_source_file = found_modalities_map['t1']
-                elif found_modalities_map: # Если хоть какие-то модальности есть
-                    base_name_source_file = next(iter(found_modalities_map.values()))
-                
-                if base_name_source_file:
-                    base_name_for_output = base_name_source_file.name.replace(".nii.gz", "").replace(".nii", "")
-                    t1_identifier_from_config = modality_map_config_from_pipeline.get('t1', 'T1w') # Идентификатор T1 из конфига
-                    # Удаляем основной идентификатор модальности (например, _T1w), чтобы имя было чище
-                    base_name_for_output = base_name_for_output.replace(f"_{t1_identifier_from_config}", "")
-                else: # Если ни одного файла не нашлось (хотя это маловероятно, если current_subj_ses_key существует)
-                    base_name_for_output = f"{subj_id}_{ses_id}" # Дефолтное имя
-                    logger.warning(f"Для {client_id_for_server} не найдено ни одного файла для формирования базового имени, используется дефолт.")
-
-                output_mask_filename = f"{base_name_for_output}_segmask.nii.gz"
-                output_mask_subfolder = segmentation_output_root_dir / subj_id / ses_id / "anat"
-                output_mask_subfolder.mkdir(parents=True, exist_ok=True)
-                output_mask_file_path = output_mask_subfolder / output_mask_filename
-
-                seg_log_filename = f"{base_name_for_output}_segmentation.log"
-                individual_seg_log_path = segmentation_individual_logs_dir / seg_log_filename
-
-                # Формируем команду для запуска segmentation.py
-                # Теперь передаем аргументы, только если файл найден.
-                # segmentation.py должен быть готов к тому, что некоторые аргументы --input_* могут отсутствовать.
-                cmd_segmentation = [
-                    python_executable, str(segmentation_script_path),
-                    "--output_mask", str(output_mask_file_path),
-                    "--config", str(config_path),
-                    "--client_id", client_id_for_server,
-                    "--console_log_level", args.console_log_level
-                ]
-                
-                # Добавляем аргументы для найденных модальностей
-                if found_modalities_map.get('t1'):
-                    cmd_segmentation.extend(["--input_t1", str(found_modalities_map['t1'])])
-                if found_modalities_map.get('t1c'):
-                    cmd_segmentation.extend(["--input_t1ce", str(found_modalities_map['t1c'])])
-                if found_modalities_map.get('t2'):
-                    cmd_segmentation.extend(["--input_t2", str(found_modalities_map['t2'])])
-                if found_modalities_map.get('flair'):
-                    cmd_segmentation.extend(["--input_flair", str(found_modalities_map['flair'])])
-
-                # Проверяем, есть ли хотя бы один входной файл для segmentation.py
-                # (segmentation.py сам должен это проверить и выйти, если ни одного нет, но можно и здесь)
-                if not any(key in found_modalities_map for key in ['t1', 't1c', 't2', 'flair']):
-                    logger.error(f"{USER_LOG_PREFIX} ОШИБКА - {step_name_segmentation_base} для {client_id_for_server}: "
-                                 f"Не найдено ни одного из необходимых файлов модальностей (T1, T1c, T2, FLAIR). Пропуск сегментации.")
-                    segmentation_errors_count += 1
+                # Check that we have at least one file to send before running
+                if not any(arg.startswith('--input') for arg in command):
+                    logger.error(f"For {client_id}, no valid modality files were found to process. Skipping.")
+                    error_count += 1
                     continue
 
-                step_name_current_seg = f"{step_name_segmentation_base} для {client_id_for_server}"
-                if not run_step(cmd_segmentation, step_name_current_seg, individual_seg_log_path):
-                    segmentation_errors_count += 1
-                    logger.error(f"{USER_LOG_PREFIX} Ошибка сегментации для: {client_id_for_server}. См. лог: {individual_seg_log_path.name}")
-            
-            if segmentation_errors_count > 0:
-                logger.warning(f"{USER_LOG_PREFIX} Завершено с {segmentation_errors_count} ошибками на этапе сегментации.")
-            else:
-                logger.info(f"{USER_LOG_PREFIX} Все наборы файлов (с хотя бы одной модальностью) успешно переданы на сегментацию.")
-    else:
-        logger.info(f"{USER_LOG_PREFIX} Пропущен шаг - {step_name_segmentation_base} (отключен или не настроен URL сервера).")
-        logger.info(f"--- Шаг '{step_name_segmentation_base}' пропущен. ---")
+                logger.debug(f"Executing command: {' '.join(command)}")
+                # Use a generic run_step function to handle subprocess logic
+                self._run_single_segmentation(command, client_id, step_log_path)
+                logger.info(f"--- Segmentation successful for {client_id} ---")
 
+            except Exception as e:
+                logger.error(f"--- Segmentation FAILED for {client_id} ---")
+                logger.exception(e)
+                error_count += 1
 
-    # --- Завершение пайплайна ---
-    logger.info("=" * 60)
-    logger.info(f"{USER_LOG_PREFIX} Успех - Пайплайн завершил все запущенные шаги.")
-    logger.info("Пайплайн успешно завершил все запущенные шаги.") # Для основного лога
-    logger.info(f"Результаты сохранены в: {run_output_dir.resolve()}")
-    logger.info("=" * 60)
+        if error_count > 0:
+            logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name} completed with {error_count} failures.")
+            return False
+        
+        logger.info(f"{USER_LOG_PREFIX} Success - {self.name}.")
+        return True
+
+    def _find_session_files(self) -> dict:
+        """Groups preprocessed files by subject and session."""
+        sessions = {}
+        mod_map = self.config.get_step_config('segmentation').get('modality_input_map', {})
+        if not mod_map:
+            logger.warning("`modality_input_map` is not defined in the config under segmentation. Cannot find files.")
+            return sessions
+
+        for subj_dir in self.workspace.preprocessed_dir.glob("sub-*"):
+            if not subj_dir.is_dir(): continue
+            for ses_dir in subj_dir.glob("ses-*"):
+                if not ses_dir.is_dir() or not (ses_dir / "anat").exists(): continue
+                key = (subj_dir.name, ses_dir.name)
+                sessions[key] = {}
+                for mod_key, mod_id in mod_map.items():
+                    found_files = list((ses_dir / "anat").glob(f"*{mod_id}*.nii*"))
+                    if found_files:
+                        # Add logic to avoid mistaking T1c for T1
+                        if mod_key == 't1' and 't1c' in mod_map:
+                            if mod_map['t1c'] in found_files[0].name:
+                                continue # This is a T1c file, skip for T1 key
+                        sessions[key][mod_key] = found_files[0]
+        return sessions
+
+    def _build_command_for_session(self, files_map, output_mask, client_id) -> list[str]:
+        """Builds the command for a single segmentation run."""
+        command = [
+            self.python_executable,
+            str(self.scripts_dir / "segmentation.py"),
+            "--output_mask", str(output_mask),
+            "--config", str(self.config.path),
+            "--client_id", client_id,
+        ]
+        if files_map.get('t1'): command.extend(["--input_t1", str(files_map['t1'])])
+        if files_map.get('t1c'): command.extend(["--input_t1ce", str(files_map['t1c'])])
+        if files_map.get('t2'): command.extend(["--input_t2", str(files_map['t2'])])
+        if files_map.get('flair'): command.extend(["--input_flair", str(files_map['flair'])])
+        return command
+
+    def _run_single_segmentation(self, command: list[str], client_id: str, log_path: Path):
+        """Helper to run one instance of the segmentation script and handle its output."""
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"COMMAND: {' '.join(command)}\n\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}")
+        except subprocess.CalledProcessError as e:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"COMMAND: {' '.join(e.cmd)}\n\nSTDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}")
+            # Re-raise the exception to be caught by the main execute loop
+            raise RuntimeError(f"Segmentation for {client_id} failed. See log: {log_path.name}") from e
+
+# --- Main Orchestrator ---
+
+class PipelineRunner:
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.config = Config(Path(args.config))
+        run_id = args.run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        base_output_dir = Path(args.output_base_dir or self.config.get_path('output_base_dir'))
+        self.workspace = PipelineWorkspace(base_output_dir, run_id, self.config)
+        log_file = self.workspace.logs_dir / "pipeline.log"
+        setup_logging(log_file, args.console_log_level)
+        logger.info(f"Pipeline run starting with ID: {run_id}")
+
+    def run(self):
+        try:
+            self.workspace.create_directories()
+            input_handler = PipelineInputHandler(
+                self.args.input_data_dir, self.config.get_path('raw_input_dir'), self.workspace.run_output_dir)
+            effective_input_dir = input_handler.prepare()
+
+            logger.info("=" * 60)
+            logger.info(f"Effective Input Directory: {effective_input_dir}")
+            logger.info(f"Run Output Directory: {self.workspace.run_output_dir}")
+            logger.info("=" * 60)
+
+            steps_to_run = [
+                ReorganizeStep(self.workspace, self.config, effective_input_dir),
+                DICOMCheckStep(self.workspace, self.config),
+                ExtractMetadataStep(self.workspace, self.config),
+                DicomToNiftiStep(self.workspace, self.config),
+                BIDSValidationStep(self.workspace, self.config),
+                MRIQCServerTriggerStep(self.workspace, self.config),
+                MRIQCLocalStep(self.workspace, self.config),
+                MRIQCInterpretationStep(self.workspace, self.config),
+                FastQCMetricsStep(self.workspace, self.config),
+                PreprocessingStep(self.workspace, self.config),
+                SegmentationStep(self.workspace, self.config),
+            ]
+
+            for step in steps_to_run:
+                if not step.execute():
+                    logger.critical(f"Pipeline aborted due to failure in step: {step.name}")
+                    sys.exit(1)
+
+            logger.info(f"{USER_LOG_PREFIX} Success - Pipeline completed all steps.")
+        except Exception as e:
+            logger.error(f"{USER_LOG_PREFIX} A critical error occurred during the pipeline execution.")
+            logger.critical("Pipeline failed with an unhandled exception.", exc_info=True)
+            sys.exit(1)
 
 if __name__ == "__main__":
-    bootstrap_console_handler = logging.StreamHandler(sys.stdout)
-    bootstrap_console_handler.setFormatter(log_formatter)
-    bootstrap_console_handler.setLevel(logging.INFO)
-    logger.addHandler(bootstrap_console_handler)
+    parser = argparse.ArgumentParser(description="Main pipeline orchestrator.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--config", required=True, help="Path to the main YAML config file.")
+    parser.add_argument("--run_id", help="Unique ID for this run. If not provided, one will be generated.")
+    parser.add_argument("--input_data_dir", help="Override input path from config. Can be a directory or ZIP file.")
+    parser.add_argument("--output_base_dir", help="Override base output directory from config.")
+    parser.add_argument("--console_log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Console logging level.")
+    args = parser.parse_args()
     try:
-        main()
-        if bootstrap_console_handler in logger.handlers : logger.removeHandler(bootstrap_console_handler)
+        runner = PipelineRunner(args)
+        runner.run()
         sys.exit(0)
-    except SystemExit as e:
-        if bootstrap_console_handler in logger.handlers : logger.removeHandler(bootstrap_console_handler)
-        sys.exit(e.code)
-    except Exception as e:
-        print(f"[CRITICAL UNEXPECTED ERROR] Pipeline failed at top level.", file=sys.stderr)
-        traceback.print_exc()
-        if logger.hasHandlers() and not any(isinstance(h, logging.StreamHandler) for h in logger.handlers if h != bootstrap_console_handler):
-            logger.critical(f"Непредвиденная ошибка: {e}", exc_info=True)
-        else: print(f"Traceback:\n{traceback.format_exc()}", file=sys.stderr)
-        if bootstrap_console_handler in logger.handlers : logger.removeHandler(bootstrap_console_handler)
+    except (ValueError, FileNotFoundError) as e:
+        logger.critical(f"Setup failed: {e}")
+        sys.exit(1)
+    except Exception:
+        logger.critical("A fatal exception occurred during pipeline initialization.", exc_info=True)
         sys.exit(1)

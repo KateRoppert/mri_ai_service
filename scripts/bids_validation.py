@@ -321,11 +321,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--bids_dir", required=True, type=Path,
+        "bids_dir", type=Path,
         help="Root directory of the BIDS dataset."
     )
     parser.add_argument(
-        "--output_dir", required=True, type=Path,
+        "output_dir", type=Path,
         help="Directory to save logs and validation reports."
     )
     parser.add_argument(
