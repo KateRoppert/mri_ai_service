@@ -22,7 +22,6 @@ Key Components:
 """
 import os
 import sys
-import glob
 import shutil
 import json
 import logging
@@ -38,6 +37,8 @@ import SimpleITK as sitk
 from nipype.interfaces.fsl import BET, FSLCommand
 from nipype.interfaces.base import Undefined
 import ants
+from typing import Tuple
+from scipy.stats import gaussian_kde
 
 # --- Logger Setup ---
 # A single logger instance is configured once and used throughout the application.
@@ -155,6 +156,19 @@ class Config:
     def keep_intermediate_files(self) -> bool:
         """Returns whether to keep intermediate files after processing."""
         return self._data.get('steps', {}).get('preprocessing', {}).get('keep_intermediate_files', False)
+    
+    def get_enabled_steps(self) -> list[str]:
+        """Returns names of all enabled steps in correct order"""
+        step_order = ["intensity_normalization", "bias_field_correction", 
+                     "registration", "skull_stripping"]
+        return [
+            step_name for step_name in step_order
+            if self.is_step_enabled(step_name)
+        ]
+    
+    def is_step_enabled(self, step_name: str) -> bool:
+        params = self.get_step_params(step_name)
+        return str(params.get('enabled', 'true')).lower() in ['true', '1', 'yes']
 
 
 # --- Strategy Pattern Implementation ---
@@ -212,21 +226,158 @@ class BaseProcessingStep(ABC):
         """
         pass
 
+class IntensityNormalizationStrategy(ABC):
+    """Abstract base class for intensity normalization strategies."""
+    
+    @abstractmethod
+    def normalize(self, input_img: sitk.Image, params: dict) -> sitk.Image:
+        """Normalize the input image according to the specific strategy."""
+        pass
+
+class HistogramMatchingStrategy(IntensityNormalizationStrategy):
+    """Normalization using histogram matching to a template."""
+    
+    def normalize(self, input_img: sitk.Image, params: dict) -> sitk.Image:
+        template_img = sitk.ReadImage(str(params['template_path']), sitk.sitkFloat32)
+        
+        matcher = sitk.HistogramMatchingImageFilter()
+        matcher.SetNumberOfHistogramLevels(params.get('histogram_levels', 1024))
+        matcher.SetNumberOfMatchPoints(params.get('match_points', 7))
+        
+        return matcher.Execute(input_img, template_img)
+
+class ZScoreStrategy(IntensityNormalizationStrategy):
+    """Normalization using z-score (mean=0, std=1)."""
+    
+    def normalize(self, input_img: sitk.Image, params: dict) -> sitk.Image:
+        # Convert to numpy array for calculations
+        array = sitk.GetArrayFromImage(input_img)
+        
+        # Calculate mean and std only for non-zero voxels (assuming background is 0)
+        mask = array > 0
+        mean = array[mask].mean()
+        std = array[mask].std()
+        
+        # Apply z-score normalization
+        normalized_array = (array - mean) / std
+        
+        # Convert back to SimpleITK image
+        normalized_img = sitk.GetImageFromArray(normalized_array)
+        normalized_img.CopyInformation(input_img)
+        
+        return normalized_img
+
+class WhiteStripeStrategy(IntensityNormalizationStrategy):
+    """
+    WhiteStripe normalization with automatic modality detection from filename
+    and configurable parameters.
+    """
+    
+    def normalize(self, input_img: sitk.Image, params: dict) -> sitk.Image:
+        # Get parameters from config (with defaults)
+        n_sd = params.get('n_sd', 2.0)
+        threshold_at_zero = params.get('threshold_at_zero', True)
+        input_filename = params.get('input_filename', '')  # Получаем имя файла из параметров
+        
+        # Detect modality from filename
+        modality = self._detect_modality_from_filename(input_filename)
+        
+        # Convert to numpy array
+        img_array = sitk.GetArrayFromImage(input_img)
+        
+        # Apply threshold if enabled
+        if threshold_at_zero:
+            mask = img_array > 0
+            if np.sum(mask) == 0:
+                raise ValueError("No non-zero voxels found after thresholding")
+            working_array = img_array[mask]
+        else:
+            working_array = img_array.flatten()
+        
+        # Find WhiteStripe voxels
+        peak, window = self._find_whitestripe_peak(working_array, modality, n_sd)
+        ws_mask = (working_array >= window[0]) & (working_array <= window[1])
+        
+        if np.sum(ws_mask) == 0:
+            raise ValueError("WhiteStripe failed: no voxels selected in the stripe")
+        
+        # Calculate normalization parameters
+        ws_mean, ws_std = np.mean(working_array[ws_mask]), np.std(working_array[ws_mask])
+        
+        # Apply normalization to entire image
+        normalized_array = (img_array - ws_mean) / ws_std
+        
+        # Convert back to SimpleITK
+        normalized_img = sitk.GetImageFromArray(normalized_array)
+        normalized_img.CopyInformation(input_img)
+        
+        return normalized_img
+    
+    def _detect_modality_from_filename(self, filename: str) -> str:
+        """Detect modality from BIDS-style filename"""
+            
+        filename_lower = filename.lower()
+        
+        if 'flair' in filename_lower:
+            return 'FLAIR'
+        elif 't2w' in filename_lower:
+            return 'T2'
+        elif 't1w' in filename_lower:
+            if 'gad' in filename_lower or 'ce-' in filename_lower:
+                return 'T1CE'
+            else:
+                return 'T1'
+        else:
+            return 'T1'  # Default fallback
+        
+    def _find_whitestripe_peak(self, data: np.ndarray, modality: str, n_sd: float) -> Tuple[float, Tuple[float, float]]:
+        """Find peak and window for WhiteStripe"""
+        # Kernel density estimation
+        kde = gaussian_kde(data)
+        x = np.linspace(np.min(data), np.max(data), 1000)
+        y = kde(x)
+        peak = x[np.argmax(y)]
+        
+        # Set window based on modality
+        std = np.std(data)
+        if modality in ['T1', 'T1CE']:
+            window = (peak, peak + n_sd * std)  # Right tail for T1
+        else:  # T2/FLAIR
+            window = (peak - n_sd * std, peak + n_sd * std)  # Symmetric for T2/FLAIR
+        
+        return peak, window
+    
 class IntensityNormalizationStep(BaseProcessingStep):
-    """Concrete step for histogram matching normalization."""
+    """Step for intensity normalization with multiple method options."""
+    
+    STRATEGIES = {
+        "HistogramMatching": HistogramMatchingStrategy,
+        "ZScore": ZScoreStrategy,
+        "WhiteStripe": WhiteStripeStrategy
+    }
+    
     def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
         super().__init__(processor, "1_intensity_normalization", params)
         self.run_params["template_file"] = self.processor.template_path
+        self.method = params.get('method', 'HistogramMatching')
+        
+        if self.method not in self.STRATEGIES:
+            raise ValueError(f"Unknown intensity normalization method: {self.method}")
+        
+        self.strategy = self.STRATEGIES[self.method]()
 
     def _run_step(self):
-        template_img = sitk.ReadImage(str(self.processor.template_path.resolve()), sitk.sitkFloat32)
         input_img = sitk.ReadImage(str(self.processor.current_input_path.resolve()), sitk.sitkFloat32)
         
-        matcher = sitk.HistogramMatchingImageFilter()
-        matcher.SetNumberOfHistogramLevels(self.params.get('histogram_levels', 1024))
-        matcher.SetNumberOfMatchPoints(self.params.get('match_points', 7))
+        # Prepare parameters for the strategy
+        strategy_params = {
+            'template_path': self.processor.template_path,
+            **self.params  # Pass all params from config
+        }
         
-        normalized_img = matcher.Execute(input_img, template_img)
+        # Execute the selected normalization strategy
+        normalized_img = self.strategy.normalize(input_img, strategy_params)
+        
         sitk.WriteImage(normalized_img, str(self.step_output_path.resolve()))
 
 class BiasFieldCorrectionStep(BaseProcessingStep):
@@ -537,6 +688,8 @@ class StepFactory:
 
 step_factory = StepFactory()
 step_factory.register_step("HistogramMatching", IntensityNormalizationStep)
+step_factory.register_step("ZScore", IntensityNormalizationStep)
+step_factory.register_step("WhiteStripe", IntensityNormalizationStep)
 step_factory.register_step("N4BiasFieldCorrection", BiasFieldCorrectionStep)
 step_factory.register_step("ANTsPy", RegistrationStep)
 step_factory.register_step("FSL_BET", SkullStrippingStep)
@@ -561,11 +714,15 @@ class FileProcessor:
         
         self.file_stem = self.input_file.name.replace(".nii.gz", "").replace(".nii", "")
         self.current_input_path = self.input_file
+
+        self.paths['output_prep_root'].mkdir(parents=True, exist_ok=True)
         
         # Setup paths
-        relative_path = self.input_file.relative_to(self.paths['input_root'])
-        self.final_output_path = self.paths['output_prep_root'] / relative_path
-        self.transform_dir = self.paths['output_tfm_root'] / relative_path.parent / self.file_stem
+        relative_path = self.input_file.relative_to(self.paths['input_root']).parent
+        self.final_output_dir = self.paths['output_prep_root'] / relative_path
+        self.final_output_path = self.final_output_dir / self.input_file.name
+        
+        self.transform_dir = self.paths['output_tfm_root'] / relative_path / self.file_stem
         self.summary_json_path = self.transform_dir / f"{self.file_stem}_processing_summary.json"
         
         self.temp_dir = None # To be created in run()
@@ -580,73 +737,63 @@ class FileProcessor:
         self.overall_summary["steps_parameters"][step_name] = {"status": status, **params}
         
     def run(self) -> bool:
-        """
-        Executes the full pipeline of steps for the file.
-
-        Returns:
-            bool: True if all steps succeeded, False otherwise.
-        """
-        self.final_output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.transform_dir.mkdir(parents=True, exist_ok=True)
-
-        log_file_path = self.transform_dir / f"{self.file_stem}_log.txt"
-        file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
-        file_handler.setFormatter(logger.handlers[0].formatter)
-        file_handler.setLevel(logging.DEBUG)
-        logger.addHandler(file_handler)
-
-        all_steps_succeeded = False
+        """Executes the pipeline for one file with proper result saving"""
         try:
+            # Ensure directories exist
+            self.final_output_dir.mkdir(parents=True, exist_ok=True)
+            self.transform_dir.mkdir(parents=True, exist_ok=True)
+
+            # Setup logging
+            log_file_path = self.transform_dir / f"{self.file_stem}_log.txt"
+            file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+            file_handler.setFormatter(logger.handlers[0].formatter)
+            logger.addHandler(file_handler)
+
+            all_steps_succeeded = False
+            
             with tempfile.TemporaryDirectory(prefix=f"{self.file_stem}_", dir=self.transform_dir) as temp_dir_str:
                 self.temp_dir = Path(temp_dir_str)
-                logger.info(f"Processing in temporary directory: {self.temp_dir}")
                 
-                steps_to_run = []
-                # Define the required order of execution
-                step_order = [
-                    "intensity_normalization",
-                    "bias_field_correction",
-                    "registration",
-                    "skull_stripping"
-                ]
-
+                # Get enabled steps in correct order
+                step_order = ["intensity_normalization", "bias_field_correction", 
+                            "registration", "skull_stripping"]
+                enabled_steps = []
+                
                 for step_name in step_order:
-                    # Ask the factory to create the correct step object
                     step = step_factory.create_step(step_name, self)
-                    if step:
-                        steps_to_run.append(step)
+                    if step and step.params.get('enabled', True):
+                        enabled_steps.append(step)
                 
-                logger.info(f"Pipeline for {self.file_stem} will run {len(steps_to_run)} steps.")
-
-                for step in steps_to_run:
+                logger.info(f"Will execute {len(enabled_steps)} steps")
+                
+                # Execute all enabled steps
+                for step in enabled_steps:
                     if not step.execute():
-                        raise RuntimeError(f"Pipeline stopped due to failure in step '{step.step_name}'.")
-
+                        raise RuntimeError(f"Step {step.step_name} failed")
+                
+                # Save final result if at least one step was executed
+                if enabled_steps:
+                    final_path = self.final_output_dir / self.input_file.name
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(self.current_input_path), str(final_path))
+                    logger.info(f"Final result saved to {final_path}")
+                
                 all_steps_succeeded = True
-                self.overall_summary["processing_status"] = "success"
-        
+                
         except Exception as e:
-            logger.error(f"--- FAILED processing file {self.input_file.name}. Reason: {e}")
+            logger.error(f"Processing failed: {str(e)}", exc_info=True)
             self.overall_summary["processing_status"] = "failed"
             self.overall_summary["error_message"] = str(e)
-
         finally:
-            # Finalize and save summary
+            # Save processing summary
             save_parameters(self.overall_summary, self.summary_json_path)
             
-            # Clean up intermediate files if configured to do so
-            if self.temp_dir and self.temp_dir.exists() and not self.config.keep_intermediate_files and all_steps_succeeded:
-                logger.debug(f"Removing temporary directory: {self.temp_dir}")
-                # The 'with' statement handles this automatically.
-                pass
-            elif self.temp_dir:
-                 logger.info(f"Intermediate files kept at: {self.temp_dir}")
-            
-            logger.removeHandler(file_handler)
-            file_handler.close()
-
-        return all_steps_succeeded
-
+            # Clean up
+            if 'file_handler' in locals():
+                logger.removeHandler(file_handler)
+                file_handler.close()
+                
+            return all_steps_succeeded
 
 class PreprocessingPipeline:
     """
