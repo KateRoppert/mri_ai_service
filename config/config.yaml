@@ -54,20 +54,26 @@ steps:
   preprocessing:
     keep_intermediate_files: false
     intensity_normalization:
-      enabled: false 
-      method: "HistogramMatching"
+      enabled: true
+      method: "WhiteStripe" # "HistogramMatching", "ZScore", or "WhiteStripe"
+      # Parameters specific to HistogramMatching:
       histogram_levels: 1024
       match_points: 7
+      # Parameters specific to ZScore:
+      exclude_zeros: true  # Whether to exclude zeros from mean/std calculation
+      # Parameters specific to WhiteStripe:
+      n_sd: 2.5          # Можно настроить ширину полосы
+      threshold_at_zero: true  # Игнорировать нулевые воксели
     bias_field_correction:
-      enabled: false 
+      enabled: false
       method: "N4BiasFieldCorrection"
       sitk_shrinkFactor: 4
     registration:
-      enabled: true 
+      enabled: false 
       method: "ANTsPy"
       ants_transform_type: "SyN"
     skull_stripping:
-      enabled: true 
+      enabled: false
       method: "SynthStrip" # FSL_BET/Freesurfer
       bet_fractional_intensity_threshold: 0.5
       bet_robust: true
