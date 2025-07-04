@@ -5,6 +5,7 @@ import pydicom.dataelem
 import argparse
 import logging
 import sys
+import json
 from collections import defaultdict
 from datetime import datetime
 from dataclasses import dataclass
@@ -38,7 +39,21 @@ class PatientData:
     studies: Dict[str, StudyInfo]
 
 
-# --- Protocol Detection Strategy Pattern ---
+@dataclass
+class ModalitySelectionLog:
+    """Enhanced logging for modality selection decisions."""
+    session_id: str
+    modality: str
+    selected_protocol: str
+    selection_reason: str
+    strategy_used: str
+    candidates_considered: List[str]
+    forbidden_filtered: List[str]
+    priority_scores: Dict[str, float]
+    year_detected: Optional[int] = None
+
+
+# --- Enhanced Protocol Detection Strategy Pattern ---
 class ModalityDetectionStrategy(ABC):
     """Abstract base class for modality detection strategies."""
     
@@ -65,51 +80,80 @@ class ModalityDetectionStrategy(ABC):
         """Return the preference order for selecting series within a modality."""
         return []
     
+    def get_scoring_weights(self, modality: str) -> Dict[str, float]:
+        """Return scoring weights for priority selection."""
+        return {}
+    
     def is_exclusive(self) -> bool:
         """Return True if this strategy should prevent fallback to other strategies when applicable."""
         return False
 
 
-class StandardDetectionStrategy(ModalityDetectionStrategy):
-    """Standard modality detection strategy."""
+class EnhancedStandardDetectionStrategy(ModalityDetectionStrategy):
+    """Enhanced standard modality detection strategy based on CSV analysis."""
     
     def __init__(self):
-        self.keywords = {
-            't1c': {
-                'keywords': ['ce', 't1', 'contrast', 'gad', 'postcontrast', 't1c', 't1+c', 't1-ce', 
-                            't1contrast', 't1 gd', 'ce-t1', 't1 post', 'gd t1', 'mdc', 'with contrast', '+gd', 'post gd'],
-                'forbidden': ['mpr'],
-                'priority_order': ['tfe', 'tse']
-            },
+        # Enhanced dictionaries based on CSV analysis
+        self.modality_config = {
             't1': {
-                'keywords': ['t1', 't1w', 't1 weighted', 'spgr', 'mprage', 'tfl', 'bravo'],
-                'forbidden': ['ce', 'mpr', 'contrast'],
-                'priority_order': ['tfe', 'tse']
+                'keywords': ['t1', 't1w'],
+                'forbidden': ['thr', 'mpr', 'ce', 'pit', 'contrast', 'gad'],
+                'priority_sequences': ['tfe', 'tse', 'se'],
+                'priority_modifiers': ['3d', 'clear', 'brain'],
+                'scoring_weights': {
+                    'tfe': 3.0,
+                    'tse': 2.0, 
+                    'se': 1.0,
+                    '3d': 1.5,
+                    'clear': 1.2,
+                    'brain': 1.1
+                }
             },
-            't2fl': {
-                'keywords': ['flair', 't2fl', 'fluid attenuated inversion recovery', 'ir_fse', 'darkfluid'],
-                'forbidden': ['mpr'],
-                'priority_order': []
+            't1c': {
+                'keywords': ['t1', 'ce'],  # Both must be present
+                'alt_keywords': ['t1', 'contrast', 'gad', 'postcontrast', '+c', 'post'],
+                'forbidden': ['mpr', 'dyn', 'pit', 'spir'],
+                'priority_sequences': ['tfe', 'tse', 'se'],
+                'priority_modifiers': ['3d', 'brain'],
+                'scoring_weights': {
+                    'tfe': 3.0,
+                    'tse': 2.0,
+                    'se': 1.0,
+                    '3d': 1.5,
+                    'brain': 1.1
+                }
             },
             't2': {
-                'keywords': ['t2', 't2w', 't2 weighted', 'tse', 'fse', 't2 tse', 't2 fse', 'haste'],
-                'forbidden': ['mpr'],
-                'priority_order': ['axi', 'sag', 'cor']
+                'keywords': ['t2', 't2w'],
+                'forbidden': ['ce', 'pit', 'mpr', 'contrast', 'flair'],
+                'priority_sequences': ['tse'],
+                'priority_modifiers': ['sense', 'brain', 'axi'],
+                'scoring_weights': {
+                    'tse': 2.0,
+                    'sense': 1.3,
+                    'brain': 1.1,
+                    'axi': 1.0
+                }
+            },
+            't2fl': {
+                'keywords': ['flair'],
+                'forbidden': ['mpr', 'ce', 'spir', 'contrast'],
+                'priority_sequences': [],
+                'priority_modifiers': ['3d', 'sense', 'long', 'brain'],
+                'scoring_weights': {
+                    '3d': 2.0,
+                    'sense': 1.3,
+                    'long': 1.2,
+                    'brain': 1.1
+                }
             }
-        }
-        
-        self.technical_params = {
-            't2fl': {'ti_min': 1500, 'tr_min': 4000, 'te_min': 70},
-            't1': {'tr_max': 1000, 'te_max': 30},
-            't1c': {'tr_max': 1200, 'te_max': 30},
-            't2': {'tr_min': 2000, 'te_min': 70}
         }
     
     def get_name(self) -> str:
-        return "Standard Detection"
+        return "Enhanced Standard Detection"
     
     def is_applicable(self, ds: pydicom.Dataset, file_path: str) -> bool:
-        """Standard detection is always applicable as fallback."""
+        """Enhanced standard detection is always applicable as fallback."""
         return True
     
     def get_priority(self) -> int:
@@ -117,22 +161,28 @@ class StandardDetectionStrategy(ModalityDetectionStrategy):
     
     def get_priority_order(self, modality: str) -> List[str]:
         """Return the preference order for selecting series within a modality."""
-        return self.keywords.get(modality, {}).get('priority_order', [])
+        config = self.modality_config.get(modality, {})
+        return config.get('priority_sequences', []) + config.get('priority_modifiers', [])
+    
+    def get_scoring_weights(self, modality: str) -> Dict[str, float]:
+        """Return scoring weights for priority selection."""
+        config = self.modality_config.get(modality, {})
+        return config.get('scoring_weights', {})
     
     def is_exclusive(self) -> bool:
-        """Standard detection is never exclusive - it's the fallback."""
+        """Enhanced standard detection is never exclusive - it's the fallback."""
         return False
     
     def detect_modality(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
-        """Detect modality using standard workflow."""
+        """Detect modality using enhanced workflow."""
         logger = logging.getLogger(__name__)
         
         # Try different detection methods in order
         detectors = [
-            ("ProtocolName and ContrastAgent", self._detect_by_protocol),
-            ("SeriesDescription", self._detect_by_series_description),
+            ("Enhanced Protocol Analysis", self._detect_by_enhanced_protocol),
+            ("Series Description Analysis", self._detect_by_enhanced_series_description),
             ("Technical Parameters", self._detect_by_technical_params),
-            ("File Path", lambda ds, fp: self._detect_by_file_path(fp))
+            ("File Path Analysis", lambda ds, fp: self._detect_by_file_path(fp))
         ]
         
         for detector_name, detector_func in detectors:
@@ -146,225 +196,404 @@ class StandardDetectionStrategy(ModalityDetectionStrategy):
         
         return None
     
-    def _detect_by_protocol(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
-        """Detect modality by protocol name and contrast agent."""
+    def _detect_by_enhanced_protocol(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
+        """Enhanced protocol detection with improved keyword matching."""
         protocol_name = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1030), ""))
         contrast_agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
         
-        has_contrast = contrast_agent and contrast_agent not in ["", "none", "no"]
+        has_contrast = self._check_contrast_presence(ds, protocol_name, contrast_agent)
         
-        for modality, config in self.keywords.items():
-            if self._find_keywords_in_text(protocol_name, config['keywords']):
-                if modality == 't1c' and (has_contrast or 'contrast' in protocol_name):
-                    return 't1c'
-                elif modality != 't1c' and not has_contrast:
-                    return modality
+        logger = logging.getLogger(__name__)
+        logger.debug(f"    Protocol: '{protocol_name}', Contrast: {has_contrast}")
         
-        return None
+        return self._analyze_text_for_modality(protocol_name, has_contrast)
     
-    def _detect_by_series_description(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
-        """Detect modality by series description."""
+    def _detect_by_enhanced_series_description(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
+        """Enhanced series description detection."""
         series_desc = normalize_dicom_text(get_dicom_value(ds, (0x0008, 0x103E), ""))
         contrast_agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
-        has_contrast = contrast_agent and contrast_agent not in ["", "none", "no"]
         
-        for modality, config in self.keywords.items():
-            if self._find_keywords_in_text(series_desc, config['keywords']):
-                if modality == 't1c' and (has_contrast or any(kw in series_desc for kw in ['contrast', 'gad', 'ce'])):
-                    return 't1c'
-                elif modality != 't1c' and not has_contrast:
-                    return modality
+        has_contrast = self._check_contrast_presence(ds, series_desc, contrast_agent)
+        
+        logger = logging.getLogger(__name__)
+        logger.debug(f"    Series Desc: '{series_desc}', Contrast: {has_contrast}")
+        
+        return self._analyze_text_for_modality(series_desc, has_contrast)
+    
+    def _check_contrast_presence(self, ds: pydicom.Dataset, text: str, contrast_agent: str) -> bool:
+        """Enhanced contrast detection."""
+        # Check contrast agent field
+        if contrast_agent and contrast_agent not in ["", "none", "no"]:
+            return True
+        
+        # Check for contrast keywords in text
+        contrast_keywords = ['ce', 'contrast', 'gad', 'gadolinium', 'post', '+c', 'enhanced']
+        if any(keyword in text.lower() for keyword in contrast_keywords):
+            return True
+        
+        # Check additional DICOM fields
+        contrast_bolusagent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1078), ""))
+        if contrast_bolusagent and contrast_bolusagent not in ["", "none", "no"]:
+            return True
+        
+        return False
+    
+    def _analyze_text_for_modality(self, text: str, has_contrast: bool) -> Optional[str]:
+        """Analyze text for modality with enhanced logic."""
+        if not text:
+            return None
+        
+        logger = logging.getLogger(__name__)
+        
+        # First check forbidden words for each modality
+        candidates = []
+        for modality, config in self.modality_config.items():
+            # Check forbidden words
+            if any(forbidden in text.lower() for forbidden in config.get('forbidden', [])):
+                logger.debug(f"      {modality} rejected - forbidden word found")
+                continue
+            
+            # Check required keywords
+            if self._check_keywords_match(text, modality, config):
+                # Special handling for contrast-dependent modalities
+                if modality == 't1c':
+                    if has_contrast:
+                        candidates.append(modality)
+                        logger.debug(f"      {modality} candidate - keywords + contrast")
+                elif modality in ['t1', 't2', 't2fl']:
+                    # For non-contrast modalities, prefer if no contrast detected
+                    if not has_contrast or modality == 't2fl':  # FLAIR can be post-contrast sometimes
+                        candidates.append(modality)
+                        logger.debug(f"      {modality} candidate - keywords, no contrast conflict")
+        
+        # If multiple candidates, prioritize based on specificity
+        if len(candidates) > 1:
+            # FLAIR is most specific
+            if 't2fl' in candidates:
+                return 't2fl'
+            # T1C is more specific than T1
+            if 't1c' in candidates and has_contrast:
+                return 't1c'
+            if 't1' in candidates and not has_contrast:
+                return 't1'
+            # Return first candidate
+            return candidates[0]
+        elif len(candidates) == 1:
+            return candidates[0]
         
         return None
     
+    def _check_keywords_match(self, text: str, modality: str, config: Dict) -> bool:
+        """Check if text matches keywords for a modality."""
+        text_lower = text.lower()
+        
+        # Primary keywords (all must be present for t1c)
+        keywords = config.get('keywords', [])
+        if modality == 't1c':
+            # For T1C, require both 't1' and 'ce' (or check alternative keywords)
+            primary_match = all(keyword in text_lower for keyword in keywords)
+            
+            # Check alternative contrast keywords if primary doesn't match
+            if not primary_match:
+                alt_keywords = config.get('alt_keywords', [])
+                if alt_keywords:
+                    # Need 't1' plus any contrast indicator
+                    has_t1 = 't1' in text_lower
+                    has_contrast_kw = any(kw in text_lower for kw in alt_keywords[1:])  # Skip 't1'
+                    primary_match = has_t1 and has_contrast_kw
+            
+            return primary_match
+        else:
+            # For other modalities, any keyword match is sufficient
+            return any(keyword in text_lower for keyword in keywords)
+    
     def _detect_by_technical_params(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
-        """Detect modality by technical parameters."""
+        """Enhanced technical parameter detection."""
         tr_val = safe_float(get_dicom_value(ds, (0x0018, 0x0080)), "TR")
         te_val = safe_float(get_dicom_value(ds, (0x0018, 0x0081)), "TE")
         ti_val = safe_float(get_dicom_value(ds, (0x0018, 0x0082)), "TI")
         
         contrast_agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
-        has_contrast = contrast_agent and contrast_agent not in ["", "none", "no"]
+        has_contrast = self._check_contrast_presence(ds, "", contrast_agent)
         
-        # FLAIR detection by TI
+        logger = logging.getLogger(__name__)
+        logger.debug(f"    TR={tr_val}, TE={te_val}, TI={ti_val}, Contrast={has_contrast}")
+        
+        # FLAIR detection by TI (most specific)
         if ti_val and ti_val > 1500:
+            logger.debug(f"    Technical params suggest FLAIR (TI={ti_val})")
             return 't2fl'
         
-        # T1C detection by contrast
+        # T1C detection by contrast + T1 parameters
         if has_contrast and tr_val and te_val and tr_val < 1200 and te_val < 30:
+            logger.debug(f"    Technical params suggest T1C (contrast + TR/TE)")
             return 't1c'
         
-        # T1 detection by TR/TE
+        # T1 detection by TR/TE without contrast
         if tr_val and te_val and tr_val < 1000 and te_val < 30 and not has_contrast:
+            logger.debug(f"    Technical params suggest T1 (TR/TE, no contrast)")
             return 't1'
         
         # T2 detection by TR/TE
         if tr_val and te_val and tr_val > 2000 and te_val > 70:
             if not ti_val or ti_val < 1500:  # Make sure it's not FLAIR
+                logger.debug(f"    Technical params suggest T2 (TR/TE, not FLAIR)")
                 return 't2'
         
         return None
     
     def _detect_by_file_path(self, file_path: str) -> Optional[str]:
-        """Fallback detection by file path."""
+        """Enhanced file path analysis."""
         path_parts = os.path.normpath(file_path).split(os.sep)
         for part in reversed(path_parts):
             part_lower = part.lower()
             
-            for modality, config in self.keywords.items():
-                if self._find_keywords_in_text(part_lower, config['keywords']):
-                    return modality
+            modality = self._analyze_text_for_modality(part_lower, 'contrast' in part_lower)
+            if modality:
+                return modality
         
         return None
-    
-    def _find_keywords_in_text(self, text: str, keywords: List[str]) -> bool:
-        """Check if any keyword is found in text."""
-        if not text or not keywords:
-            return False
-        text_lower = text.lower()
-        return any(kw.lower() in text_lower for kw in keywords)
 
 
-class Legacy2021_2022DetectionStrategy(ModalityDetectionStrategy):
-    """Detection strategy for 2021-2022 legacy protocol."""
+class YearSpecificDetectionStrategy(ModalityDetectionStrategy):
+    """Year-specific detection strategy based on CSV analysis."""
     
-    def __init__(self):
-        self.keywords = {
-            't1c': {'required': ['ce', 't1'], 'forbidden': ['mpr'], 'prefer_order': ['tfe', 'tse']},
-            't1': {'required': ['t1'], 'forbidden': ['ce', 'mpr'], 'prefer_order': ['tfe', 'tse']},
-            't2fl': {'required': ['flair'], 'forbidden': ['mpr']},
-            't2': {'required': ['t2'], 'forbidden': ['mpr'], 'prefer_order': ['axi', 'sag', 'cor']}
-        }
+    def __init__(self, target_years: List[int], strategy_name: str, keywords_config: Dict):
+        self.target_years = target_years
+        self.strategy_name = strategy_name
+        self.keywords_config = keywords_config
     
     def get_name(self) -> str:
-        return "Legacy 2021-2022 Protocol"
+        years_str = ", ".join(map(str, self.target_years))
+        return f"{self.strategy_name} ({years_str})"
     
     def get_priority(self) -> int:
         return 10  # Higher priority than standard
     
     def get_priority_order(self, modality: str) -> List[str]:
         """Return the preference order for selecting series within a modality."""
-        return self.keywords.get(modality, {}).get('prefer_order', [])
+        config = self.keywords_config.get(modality, {})
+        return config.get('prefer_order', [])
+    
+    def get_scoring_weights(self, modality: str) -> Dict[str, float]:
+        """Return scoring weights for priority selection."""
+        config = self.keywords_config.get(modality, {})
+        return config.get('scoring_weights', {})
     
     def is_exclusive(self) -> bool:
-        """This protocol is exclusive - if year matches, don't fall back to other protocols."""
+        """Year-specific protocols are exclusive - if year matches, don't fall back."""
         return True
     
     def is_applicable(self, ds: pydicom.Dataset, file_path: str) -> bool:
-        """Check if this is a 2021-2022 study."""
+        """Check if this is a study from target years."""
         study_date_val = get_dicom_value(ds, (0x0008, 0x0020), "")
         if isinstance(study_date_val, str) and len(study_date_val) >= 4:
             try:
                 year = int(study_date_val[:4])
-                logger.debug(f"  Study Date: '{year}'")
-                return year in [2021, 2022]
+                return year in self.target_years
             except ValueError:
                 pass
         return False
     
     def detect_modality(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
-        """Detect modality using 2021-2022 legacy rules."""
+        """Detect modality using year-specific rules."""
         logger = logging.getLogger(__name__)
         protocol_name = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1030), ""))
+        series_desc = normalize_dicom_text(get_dicom_value(ds, (0x0008, 0x103E), ""))
         
-        logger.debug(f"  Checking protocol name: '{protocol_name}'")
+        # Combine protocol name and series description for analysis
+        combined_text = f"{protocol_name} {series_desc}".strip()
         
-        for modality, rules in self.keywords.items():
-            if self._matches_legacy_keywords(protocol_name, rules):
-                logger.debug(f"  ✓ Matched modality '{modality}' with legacy rules")
+        logger.debug(f"  Year-specific analysis: '{combined_text}'")
+        
+        for modality, rules in self.keywords_config.items():
+            if self._matches_year_specific_rules(combined_text, rules):
+                logger.debug(f"  ✓ Matched modality '{modality}' with year-specific rules")
                 return modality
         
-        logger.debug("  ✗ No match found with legacy rules")
+        logger.debug("  ✗ No match found with year-specific rules")
         return None
     
-    def _matches_legacy_keywords(self, text: str, rules: Dict) -> bool:
-        """Check if text matches legacy keyword rules."""
-        # Check forbidden keywords
-        if any(fw in text for fw in rules.get('forbidden', [])):
+    def _matches_year_specific_rules(self, text: str, rules: Dict) -> bool:
+        """Check if text matches year-specific rules."""
+        text_lower = text.lower()
+        
+        # Check forbidden keywords first
+        forbidden = rules.get('forbidden', [])
+        if any(fw in text_lower for fw in forbidden):
             return False
         
-        # Check required keywords (ALL must be present)
-        if not all(rw in text for rw in rules.get('required', [])):
+        # Check required keywords
+        required = rules.get('required', [])
+        if required and not all(rw in text_lower for rw in required):
+            return False
+        
+        # Check marker keywords
+        markers = rules.get('markers', [])
+        if markers and not any(mk in text_lower for mk in markers):
             return False
         
         return True
 
-
-# Example of how to add a new protocol strategy
-class CustomProtocol2018DetectionStrategy(ModalityDetectionStrategy):
-    """Example custom protocol for 2018 studies."""
-    
-    def __init__(self):
-        # Define your custom keywords and rules here
-        self.keywords = {
-            't1c': {'markers': ['ce_t1w'], 'exclude': []},
-            't1': {'markers': ['t1w'], 'exclude': ['ce', 'thr']},
-            't2fl': {'markers': ['flair']},
-            't2': {'markers': ['t2w']}
-        }
-        # Define custom priority orders
-        self.priority_orders = {
-            't1c': ['se'],
-            't1': ['tse', 'se'],
-            't2': ['tse', 'se'],
-            't2fl': ['sense', '']
-        }
-    
-    def get_name(self) -> str:
-        return "Custom Protocol 2018"
-    
-    def get_priority(self) -> int:
-        return 10  # Higher priority than legacy
-    
-    def get_priority_order(self, modality: str) -> List[str]:
-        """Return the preference order for selecting series within a modality."""
-        return self.priority_orders.get(modality, [])
-    
-    def is_exclusive(self) -> bool:
-        """This protocol is exclusive - if year matches, don't fall back to other protocols."""
-        return True
-    
-    def is_applicable(self, ds: pydicom.Dataset, file_path: str) -> bool:
-        """Check if this is a 2018 study with custom protocol."""
-        study_date_val = get_dicom_value(ds, (0x0008, 0x0020), "")
-        if isinstance(study_date_val, str) and len(study_date_val) >= 4:
-            try:
-                year = int(study_date_val[:4])
-                logger.debug(f"  Study Date: '{year}'")
-                return year == 2018
-            except ValueError:
-                pass
-        return False
-    
-    def detect_modality(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
-        """Implement your custom detection logic here."""
-        logger = logging.getLogger(__name__)
-        protocol_name = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1030), ""))
-        
-        for modality, rules in self.keywords.items():
-            markers = rules.get('markers', [])
-            exclude = rules.get('exclude', [])
-            
-            if any(m in protocol_name for m in markers) and not any(e in protocol_name for e in exclude):
-                logger.debug(f"  ✓ Detected '{modality}' using custom 2018 rules")
-                return modality
-        
-        return None
 
 # --- Enhanced Modality Detector ---
 class EnhancedModalityDetector:
-    """Enhanced modality detector supporting multiple detection strategies."""
+    """Enhanced modality detector with comprehensive year-specific strategies."""
     
     def __init__(self):
         # Initialize all available strategies
-        self.strategies: List[ModalityDetectionStrategy] = [
-            Legacy2021_2022DetectionStrategy(),
-            CustomProtocol2018DetectionStrategy(),
-            StandardDetectionStrategy()  # Always last as fallback
-        ]
+        self.strategies: List[ModalityDetectionStrategy] = []
+        
+        # Add year-specific strategies based on CSV analysis
+        self._add_year_specific_strategies()
+        
+        # Add enhanced standard strategy as fallback
+        self.strategies.append(EnhancedStandardDetectionStrategy())
+        
         # Sort by priority (lower number = higher priority)
         self.strategies.sort(key=lambda s: s.get_priority())
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize selection logging
+        self.selection_logs: List[ModalitySelectionLog] = []
+    
+    def _add_year_specific_strategies(self):
+        """Add year-specific strategies based on CSV analysis."""
+        
+        # 2018 Strategy
+        strategy_2018 = YearSpecificDetectionStrategy(
+            target_years=[2018],
+            strategy_name="Protocol 2018",
+            keywords_config={
+                't1': {
+                    'markers': ['t1w'],
+                    'forbidden': ['thr', 'ce'],
+                    'prefer_order': ['tse', 'se'],
+                    'scoring_weights': {'tse': 2.0, 'se': 1.0}
+                },
+                't1c': {
+                    'required': ['ce', 't1w'],
+                    'forbidden': [],
+                    'prefer_order': ['se'],
+                    'scoring_weights': {'se': 2.0}
+                },
+                't2': {
+                    'markers': ['t2w'],
+                    'forbidden': [],
+                    'prefer_order': ['tse'],
+                    'scoring_weights': {'tse': 2.0}
+                },
+                't2fl': {
+                    'markers': ['flair'],
+                    'forbidden': [],
+                    'prefer_order': ['sense', 'long'],
+                    'scoring_weights': {'sense': 1.5, 'long': 1.2}
+                }
+            }
+        )
+        
+        # 2020 Strategy
+        strategy_2020 = YearSpecificDetectionStrategy(
+            target_years=[2020],
+            strategy_name="Protocol 2020",
+            keywords_config={
+                't1': {
+                    'markers': ['t1w', 't1-tse'],
+                    'forbidden': ['thr', 'mpr', 'ce'],
+                    'prefer_order': ['tse', 'clear', '3d', 'se'],
+                    'scoring_weights': {'tse': 2.0, 'clear': 1.5, '3d': 1.3, 'se': 1.0}
+                },
+                't1c': {
+                    'required': ['ce', 't1'],
+                    'forbidden': ['mpr'],
+                    'prefer_order': ['tse', '3d', 'se'],
+                    'scoring_weights': {'tse': 2.0, '3d': 1.5, 'se': 1.0}
+                },
+                't2': {
+                    'markers': ['t2w', 't2-tse'],
+                    'forbidden': ['mpr'],
+                    'prefer_order': ['tse', 'sense'],
+                    'scoring_weights': {'tse': 2.0, 'sense': 1.3}
+                },
+                't2fl': {
+                    'markers': ['flair'],
+                    'forbidden': ['mpr'],
+                    'prefer_order': ['3d', 'long'],
+                    'scoring_weights': {'3d': 2.0, 'long': 1.2}
+                }
+            }
+        )
+        
+        # 2021-2022 Strategy
+        strategy_2021_2022 = YearSpecificDetectionStrategy(
+            target_years=[2021, 2022],
+            strategy_name="Protocol 2021-2022",
+            keywords_config={
+                't1': {
+                    'markers': ['t1-tfe', 't1-tse'],
+                    'forbidden': ['mpr', 'ce'],
+                    'prefer_order': ['tfe', 'tse', '3d'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
+                },
+                't1c': {
+                    'required': ['ce', 't1'],
+                    'forbidden': ['mpr'],
+                    'prefer_order': ['tfe', 'tse', '3d'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
+                },
+                't2': {
+                    'markers': ['t2-tse'],
+                    'forbidden': ['mpr'],
+                    'prefer_order': ['tse', 'axi'],
+                    'scoring_weights': {'tse': 2.0, 'axi': 1.2}
+                },
+                't2fl': {
+                    'markers': ['flair'],
+                    'forbidden': ['mpr'],
+                    'prefer_order': ['3d'],
+                    'scoring_weights': {'3d': 2.0}
+                }
+            }
+        )
+        
+        # 2023+ Strategy
+        strategy_2023_plus = YearSpecificDetectionStrategy(
+            target_years=[2023, 2024, 2025],
+            strategy_name="Protocol 2023+",
+            keywords_config={
+                't1': {
+                    'markers': ['t1-tfe', 't1-tse'],
+                    'forbidden': ['mpr', 'ce'],
+                    'prefer_order': ['tfe', 'tse', '3d'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
+                },
+                't1c': {
+                    'required': ['ce', 't1'],
+                    'forbidden': ['mpr', 'dyn', 'pit'],
+                    'prefer_order': ['tfe', 'tse', '3d'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
+                },
+                't2': {
+                    'markers': ['t2-tse'],
+                    'forbidden': ['ce', 'pit', 'mpr'],
+                    'prefer_order': ['tse', 'axi'],
+                    'scoring_weights': {'tse': 2.0, 'axi': 1.2}
+                },
+                't2fl': {
+                    'markers': ['flair'],
+                    'forbidden': ['mpr', 'ce'],
+                    'prefer_order': ['3d'],
+                    'scoring_weights': {'3d': 2.0}
+                }
+            }
+        )
+        
+        self.strategies.extend([
+            strategy_2018,
+            strategy_2020,
+            strategy_2021_2022,
+            strategy_2023_plus
+        ])
     
     def add_strategy(self, strategy: ModalityDetectionStrategy):
         """Add a new detection strategy."""
@@ -372,14 +601,24 @@ class EnhancedModalityDetector:
         self.strategies.sort(key=lambda s: s.get_priority())
         self.logger.info(f"Added detection strategy: {strategy.get_name()}")
     
-    def determine_modality(self, ds: pydicom.Dataset, file_path: str) -> str:
-        """Determine modality using registered strategies."""
-        modality, _ = self.determine_modality_with_strategy(ds, file_path)
-        return modality
-    
-    def determine_modality_with_strategy(self, ds: pydicom.Dataset, file_path: str) -> Tuple[str, Optional[ModalityDetectionStrategy]]:
-        """Determine modality using registered strategies, also returning which strategy was used."""
+    def determine_modality_with_details(self, ds: pydicom.Dataset, file_path: str, session_id: str = "") -> Tuple[str, Optional[ModalityDetectionStrategy], Dict]:
+        """Determine modality with detailed logging information."""
         self.logger.debug(f"Determining modality for {os.path.basename(file_path)}:")
+        
+        details = {
+            'candidates_considered': [],
+            'forbidden_filtered': [],
+            'strategy_used': None,
+            'year_detected': None
+        }
+        
+        # Extract year for logging
+        study_date_val = get_dicom_value(ds, (0x0008, 0x0020), "")
+        if isinstance(study_date_val, str) and len(study_date_val) >= 4:
+            try:
+                details['year_detected'] = int(study_date_val[:4])
+            except ValueError:
+                pass
         
         # Try each strategy in priority order
         for strategy in self.strategies:
@@ -388,25 +627,31 @@ class EnhancedModalityDetector:
             # Check if strategy is applicable
             if strategy.is_applicable(ds, file_path):
                 self.logger.debug(f"→ Trying strategy: {strategy_name}")
+                details['strategy_used'] = strategy_name
                 
                 # Try to detect modality
                 modality = strategy.detect_modality(ds, file_path)
                 
                 if modality and modality != 'unknown':
                     self.logger.info(f"✓ Modality '{modality}' detected using strategy: {strategy_name}")
-                    return modality, strategy
+                    return modality, strategy, details
                 else:
                     # If this is an exclusive strategy and it didn't match, skip the file entirely
                     if strategy.is_exclusive():
                         self.logger.warning(f"  Exclusive strategy {strategy_name} did not match - skipping file")
-                        return 'unknown', None
+                        return 'unknown', None, details
                     else:
                         self.logger.debug(f"  Strategy {strategy_name} did not detect modality")
             else:
                 self.logger.debug(f"  Strategy {strategy_name} is not applicable")
         
         self.logger.warning(f"Could not determine modality for file: {os.path.basename(file_path)}")
-        return 'unknown', None
+        return 'unknown', None, details
+    
+    def determine_modality(self, ds: pydicom.Dataset, file_path: str) -> str:
+        """Determine modality using registered strategies."""
+        modality, _, _ = self.determine_modality_with_details(ds, file_path)
+        return modality
 
 
 # --- Global Logger Setup ---
@@ -624,18 +869,27 @@ class DicomScanner:
         collected_data[pat_id].studies[study_uid].series[series_uid].files.append(file_path)
 
 
-# --- BIDS Organizer Class ---
+# --- Enhanced BIDS Organizer Class ---
 class BidsOrganizer:
-    """Handles BIDS structure creation and file operations."""
+    """Enhanced BIDS organizer with proper naming conventions and missing modality handling."""
     
     def __init__(self, output_dir: str, action_type: str = 'copy'):
         self.output_dir = output_dir
         self.action_type = action_type
-        self.detector = EnhancedModalityDetector()  # Use enhanced detector
+        self.detector = EnhancedModalityDetector()
+        self.selection_log = []
+        
+        # BIDS modality mapping
+        self.bids_modality_map = {
+            't1': 'T1w',
+            't1c': 'T1w-Gd',  # BIDS extension for post-contrast T1
+            't2': 'T2w', 
+            't2fl': 'FLAIR'
+        }
     
     def organize_to_bids(self, collected_data: Dict[str, PatientData]):
-        """Organize collected data into BIDS structure."""
-        logger.info("Phase 2: Creating BIDS structure and copying files...")
+        """Organize collected data into BIDS structure with enhanced logging."""
+        logger.info("Phase 2: Creating BIDS structure and organizing files...")
         
         try:
             os.makedirs(self.output_dir, exist_ok=True)
@@ -646,10 +900,14 @@ class BidsOrganizer:
         # Create BIDS patient IDs
         patient_bids_map = self._create_patient_bids_mapping(collected_data)
         
+        # Process each patient
         for patient_data in collected_data.values():
             self._process_patient(patient_data, patient_bids_map)
         
-        logger.info("BIDS organization completed!")
+        # Generate selection summary
+        self._generate_selection_summary()
+        
+        logger.info("Enhanced BIDS organization completed!")
     
     def _create_patient_bids_mapping(self, collected_data: Dict) -> Dict[str, str]:
         """Create mapping from original patient IDs to BIDS IDs."""
@@ -673,143 +931,207 @@ class BidsOrganizer:
         return {orig_id: f"ses-{i+1:03d}" for i, orig_id in enumerate(sorted_study_uids)}
     
     def _process_study(self, study_info: StudyInfo, bids_sub_id: str, session_bids_map: Dict[str, str]):
-        """Process a single study/session."""
+        """Process a single study/session with enhanced modality detection."""
         bids_ses_id = session_bids_map[study_info.uid]
+        session_id = f"{bids_sub_id}_{bids_ses_id}"
         logger.info(f"  Processing session: {study_info.uid} -> {bids_ses_id}")
         
-        bids_anat_path = os.path.join(self.output_dir, bids_sub_id, bids_ses_id, 'anat')
+        # Group series by modality with enhanced detection
+        modality_groups, detection_details = self._group_series_by_modality_enhanced(study_info.series, session_id)
         
-        # Group series by modality
-        modality_groups = self._group_series_by_modality(study_info.series)
+        # Required modalities
+        required_modalities = ['t1', 't1c', 't2', 't2fl']
+        found_modalities = list(modality_groups.keys())
+        missing_modalities = [m for m in required_modalities if m not in found_modalities]
         
-        # Ensure all 4 required modalities have directories
-        required_modalities = ['t1', 't1c', 't2fl', 't2']
+        logger.info(f"    Found modalities: {', '.join(found_modalities) if found_modalities else 'None'}")
+        if missing_modalities:
+            logger.warning(f"    Missing modalities: {', '.join(missing_modalities)}")
         
-        # Create directories for all required modalities
-        for modality in required_modalities:
-            modality_dir = os.path.join(bids_anat_path, modality)
-            try:
-                os.makedirs(modality_dir, exist_ok=True)
-                logger.debug(f"    Created directory for {modality}")
-            except OSError as e:
-                logger.error(f"    Cannot create directory {modality_dir}: {e}")
-        
-        # Process series that were found
-        for modality in required_modalities:
-            if modality in modality_groups:
+        # Only create directories and process found modalities
+        if found_modalities:
+            bids_anat_path = os.path.join(self.output_dir, bids_sub_id, bids_ses_id, 'anat')
+            
+            # Process each found modality
+            for modality in found_modalities:
                 series_with_strategies = modality_groups[modality]
-                self._process_modality_group(series_with_strategies, modality, bids_anat_path, bids_sub_id, bids_ses_id)
-            else:
-                logger.warning(f"    No series found for required modality: {modality}")
+                self._process_modality_group_enhanced(series_with_strategies, modality, bids_anat_path, 
+                                                   bids_sub_id, bids_ses_id, session_id)
+        else:
+            logger.warning(f"    No valid modalities found for session {bids_ses_id} - skipping directory creation")
         
-        # Log summary
+        # Log session summary
         logger.info(f"    Session {bids_ses_id} processing complete. "
-                   f"Found modalities: {', '.join(modality_groups.keys())}")
+                   f"Processed {len(found_modalities)}/{len(required_modalities)} modalities.")
     
-    def _group_series_by_modality(self, series_dict: Dict[str, SeriesInfo]) -> Dict[str, List[Tuple[SeriesInfo, ModalityDetectionStrategy]]]:
-        """Group series by detected modality, also tracking which strategy was used."""
+    def _group_series_by_modality_enhanced(self, series_dict: Dict[str, SeriesInfo], session_id: str) -> Tuple[Dict, Dict]:
+        """Enhanced grouping with detailed logging."""
         modality_groups = defaultdict(list)
+        detection_details = {}
         
         for series_info in series_dict.values():
-            modality, strategy = self.detector.determine_modality_with_strategy(series_info.first_dataset, series_info.files[0])
+            modality, strategy, details = self.detector.determine_modality_with_details(
+                series_info.first_dataset, series_info.files[0], session_id
+            )
+            
+            detection_details[series_info.uid] = {
+                'modality': modality,
+                'strategy': strategy.get_name() if strategy else None,
+                'details': details
+            }
             
             if modality == 'unknown':
                 logger.warning(f"    Skipping series {series_info.uid}: unknown modality.")
+                logger.debug(f"      Protocol: '{series_info.protocol_name}'")
+                logger.debug(f"      Series Desc: '{series_info.series_desc}'")
                 continue
             
             modality_groups[modality].append((series_info, strategy))
+            logger.debug(f"    Series {series_info.uid} -> {modality} (strategy: {strategy.get_name() if strategy else 'None'})")
         
-        return dict(modality_groups)
+        return dict(modality_groups), detection_details
     
-    def _process_modality_group(self, series_with_strategies: List[Tuple[SeriesInfo, ModalityDetectionStrategy]], 
-                               modality: str, bids_anat_path: str, bids_sub_id: str, bids_ses_id: str):
-        """Process a group of series with the same modality."""
-        # Extract just the series for selection
-        series_list = [series for series, _ in series_with_strategies]
+    def _process_modality_group_enhanced(self, series_with_strategies: List[Tuple[SeriesInfo, ModalityDetectionStrategy]], 
+                                       modality: str, bids_anat_path: str, bids_sub_id: str, bids_ses_id: str, session_id: str):
+        """Enhanced modality group processing with priority scoring."""
+        logger.debug(f"    Processing {len(series_with_strategies)} series for modality: {modality}")
         
-        # Get all applicable strategies (might be different strategies for different series)
-        strategies = list(set(strategy for _, strategy in series_with_strategies if strategy))
+        if len(series_with_strategies) == 1:
+            # Only one series - use it directly
+            series_info, strategy = series_with_strategies[0]
+            selected_series = [series_info]
+            selection_reason = "only_candidate"
+            logger.info(f"    Selected only series for {modality}: {series_info.uid}")
+        else:
+            # Multiple series - apply enhanced selection
+            selected_series, selection_reason, scoring_details = self._apply_enhanced_priority_selection(
+                series_with_strategies, modality, session_id
+            )
         
-        # Apply priority selection - get the best series
-        selected_series = self._apply_priority_selection(series_list, modality, strategies)
-        
-        # Create modality directory (should already exist from _process_study)
+        # Create modality directory
         bids_modality_dir = os.path.join(bids_anat_path, modality)
+        try:
+            os.makedirs(bids_modality_dir, exist_ok=True)
+            logger.debug(f"    Created directory: {bids_modality_dir}")
+        except OSError as e:
+            logger.error(f"    Cannot create directory {bids_modality_dir}: {e}")
+            return
         
-        # Process selected series (should be only one - the best match)
+        # Process selected series
         for series_info in selected_series:
-            self._copy_series_files(series_info, modality, bids_modality_dir, 
-                                  bids_sub_id, bids_ses_id)
+            # Log selection decision
+            # Find the strategy used for this series
+            strategy_used = None
+            for series, strategy in series_with_strategies:
+                if series.uid == series_info.uid:
+                    strategy_used = strategy.get_name() if strategy else "Unknown"
+                    break
+            
+            selection_log_entry = ModalitySelectionLog(
+                session_id=session_id,
+                modality=modality,
+                selected_protocol=series_info.protocol_name,
+                selection_reason=selection_reason,
+                strategy_used=strategy_used or "Unknown",
+                candidates_considered=[series.protocol_name for series, _ in series_with_strategies],
+                forbidden_filtered=[],  # Would need to track this in detection
+                priority_scores=getattr(self, '_last_scoring_details', {}),
+                year_detected=None  # Would extract from study date
+            )
+            self.selection_log.append(selection_log_entry)
+            
+            self._copy_series_files_enhanced(series_info, modality, bids_modality_dir, 
+                                           bids_sub_id, bids_ses_id)
     
-    def _apply_priority_selection(self, series_list: List[SeriesInfo], modality: str, 
-                                 strategies: List[ModalityDetectionStrategy] = None) -> List[SeriesInfo]:
-        """Apply priority selection for series within the same modality.
-        First tries preference order, then falls back to newest acquisition time."""
+    def _apply_enhanced_priority_selection(self, series_with_strategies: List[Tuple[SeriesInfo, ModalityDetectionStrategy]], 
+                                         modality: str, session_id: str) -> Tuple[List[SeriesInfo], str, Dict]:
+        """Enhanced priority selection with scoring system."""
+        logger.debug(f"    Found {len(series_with_strategies)} series for {modality}, applying enhanced selection")
         
-        if len(series_list) <= 1:
-            return series_list
+        # Extract series and strategies
+        series_list = [series for series, _ in series_with_strategies]
+        strategies = [strategy for _, strategy in series_with_strategies if strategy]
         
-        logger.debug(f"    Found {len(series_list)} series for {modality}, applying selection criteria")
+        # Collect scoring weights from all applicable strategies
+        all_scoring_weights = {}
+        for strategy in strategies:
+            weights = strategy.get_scoring_weights(modality)
+            all_scoring_weights.update(weights)
         
-        # First, try to select by preference order
-        # Collect all priority orders from applicable strategies
-        all_priority_orders = []
+        # Calculate scores for each series
+        series_scores = {}
+        scoring_details = {}
         
-        if strategies:
-            for strategy in strategies:
-                priority_order = strategy.get_priority_order(modality)
-                if priority_order:
-                    all_priority_orders.extend(priority_order)
+        for series_info in series_list:
+            score = self._calculate_series_score(series_info, modality, all_scoring_weights)
+            series_scores[series_info.uid] = score
+            scoring_details[series_info.uid] = {
+                'protocol': series_info.protocol_name,
+                'series_desc': series_info.series_desc,
+                'score': score
+            }
+            logger.debug(f"      Series {series_info.uid}: score={score:.2f} (Protocol: '{series_info.protocol_name}')")
         
-        # Also check standard keywords as fallback
-        standard_keywords = {
-            't1c': ['tfe', 'tse'],
-            't1': ['tfe', 'tse'],
-            't2': ['axi', 'sag', 'cor'],
-            't2fl': []
-        }
+        # Store for logging
+        self._last_scoring_details = scoring_details
         
-        # Combine and deduplicate priority orders (maintain order)
-        seen = set()
-        priority_order = []
-        for item in all_priority_orders + standard_keywords.get(modality, []):
-            if item not in seen:
-                seen.add(item)
-                priority_order.append(item)
-        
-        # Try to select by preference order
-        if priority_order:
-            logger.debug(f"    Checking preference order for {modality}: {priority_order}")
+        # Select highest scoring series
+        if series_scores:
+            best_series_uid = max(series_scores.keys(), key=lambda uid: series_scores[uid])
+            best_series = next(s for s in series_list if s.uid == best_series_uid)
             
-            for preferred_keyword in priority_order:
-                for series in series_list:
-                    # Check both protocol name and series description
-                    if (preferred_keyword in series.protocol_name.lower() or 
-                        preferred_keyword in series.series_desc.lower()):
-                        logger.info(f"    Selected series by preference '{preferred_keyword}' for {modality}: "
-                                   f"{series.uid} (Protocol: {series.protocol_name})")
-                        return [series]
-            
-            logger.debug(f"    No series matched preference order for {modality}")
+            logger.info(f"    Selected series by scoring for {modality}: {best_series_uid} "
+                       f"(score: {series_scores[best_series_uid]:.2f})")
+            return [best_series], "priority_scoring", scoring_details
         
-        # If no preference match found, select by newest acquisition time
-        logger.debug(f"    Falling back to newest acquisition time for {modality}")
+        # Fallback to newest if scoring fails
+        logger.debug(f"    Falling back to newest acquisition for {modality}")
+        newest_series = self._select_newest_series(series_list)
+        return [newest_series], "newest_acquisition", {}
+    
+    def _calculate_series_score(self, series_info: SeriesInfo, modality: str, scoring_weights: Dict[str, float]) -> float:
+        """Calculate priority score for a series."""
+        score = 1.0  # Base score
         
-        # Extract acquisition time for each series
+        # Combine protocol name and series description for analysis
+        combined_text = f"{series_info.protocol_name} {series_info.series_desc}".lower()
+        
+        # Apply scoring weights
+        for keyword, weight in scoring_weights.items():
+            if keyword in combined_text:
+                score *= weight
+                logger.debug(f"        Applied weight {weight} for keyword '{keyword}'")
+        
+        # Bonus for brain-specific sequences
+        if 'brain' in combined_text:
+            score *= 1.1
+            logger.debug(f"        Applied brain bonus: 1.1")
+        
+        # Penalty for spine/other anatomy
+        anatomy_penalties = {'spine': 0.8, 'cervical': 0.8, 'pit': 0.7, 'pituitary': 0.7}
+        for anatomy, penalty in anatomy_penalties.items():
+            if anatomy in combined_text:
+                score *= penalty
+                logger.debug(f"        Applied {anatomy} penalty: {penalty}")
+        
+        return score
+    
+    def _select_newest_series(self, series_list: List[SeriesInfo]) -> SeriesInfo:
+        """Select the newest series by acquisition time."""
         series_with_times = []
+        
         for series in series_list:
             # Get acquisition datetime from the first dataset
             ds = series.first_dataset
             acq_date = get_dicom_value(ds, (0x0008, 0x0022), "")  # AcquisitionDate
             acq_time = get_dicom_value(ds, (0x0008, 0x0032), "").split('.')[0]  # AcquisitionTime
             
-            # If no acquisition date/time, fall back to series date/time
-            if not acq_date or acq_date == "":
+            # Fallback hierarchy for datetime
+            if not acq_date:
                 acq_date = get_dicom_value(ds, (0x0008, 0x0021), "")  # SeriesDate
                 acq_time = get_dicom_value(ds, (0x0008, 0x0031), "").split('.')[0]  # SeriesTime
             
-            # If still no date/time, use study date/time
-            if not acq_date or acq_date == "":
+            if not acq_date:
                 acq_date = get_dicom_value(ds, (0x0008, 0x0020), "00000000")  # StudyDate
                 acq_time = get_dicom_value(ds, (0x0008, 0x0030), "000000").split('.')[0]  # StudyTime
             
@@ -818,35 +1140,35 @@ class BidsOrganizer:
                 if len(acq_date) >= 8 and len(acq_time) >= 6:
                     acq_datetime = datetime.strptime(f"{acq_date[:8]}{acq_time[:6]}", "%Y%m%d%H%M%S")
                 else:
-                    # Fallback to study datetime if parsing fails
                     acq_datetime = series.study_datetime
             except ValueError:
-                logger.warning(f"      Could not parse acquisition time for series {series.uid}, using study time")
                 acq_datetime = series.study_datetime
             
             series_with_times.append((series, acq_datetime))
-            logger.debug(f"      Series {series.uid}: {acq_datetime}, Protocol: {series.protocol_name}")
         
-        # Sort by acquisition time (newest first)
+        # Sort by acquisition time (newest first) and select the first
         series_with_times.sort(key=lambda x: x[1], reverse=True)
-        
-        # Select the newest
         selected_series = series_with_times[0][0]
-        logger.info(f"    Selected newest series for {modality}: {selected_series.uid} "
+        
+        logger.info(f"    Selected newest series: {selected_series.uid} "
                    f"(acquired at {series_with_times[0][1]})")
         
-        return [selected_series]
+        return selected_series
     
-    def _copy_series_files(self, series_info: SeriesInfo, modality: str, bids_modality_dir: str,
-                          bids_sub_id: str, bids_ses_id: str):
-        """Copy files for a single series."""
+    def _copy_series_files_enhanced(self, series_info: SeriesInfo, modality: str, bids_modality_dir: str,
+                                  bids_sub_id: str, bids_ses_id: str):
+        """Copy files with proper BIDS naming conventions."""
         sorted_files = self._sort_files_by_instance_number(series_info.files)
         
-        logger.info(f"    Copying {len(sorted_files)} files for {modality} (Series UID: {series_info.uid})")
+        # BIDS suffix mapping
+        bids_suffix = self.bids_modality_map.get(modality, modality)
+        
+        logger.info(f"    Copying {len(sorted_files)} files for {modality} -> {bids_suffix} "
+                   f"(Series UID: {series_info.uid})")
         
         for slice_idx, src_file_path in enumerate(sorted_files, 1):
-            # Generate BIDS filename - no run number since we only keep the newest
-            bids_filename = f"{bids_sub_id}_{bids_ses_id}_{modality}_{slice_idx:03d}.dcm"
+            # Proper BIDS naming: sub-<label>_ses-<label>_<suffix>_<instance>.dcm
+            bids_filename = f"{bids_sub_id}_{bids_ses_id}_{bids_suffix}_instance-{slice_idx:03d}.dcm"
             
             dst_file_path = os.path.join(bids_modality_dir, bids_filename)
             
@@ -856,6 +1178,10 @@ class BidsOrganizer:
                     shutil.move(src_file_path, dst_file_path)
                 else:
                     shutil.copy(src_file_path, dst_file_path)
+                    
+                if slice_idx <= 3:  # Log first few files
+                    logger.debug(f"      {self.action_type.capitalize()}d: {os.path.basename(src_file_path)} -> {bids_filename}")
+                    
             except Exception as e:
                 logger.error(f"      Failed to {self.action_type} {src_file_path} to {dst_file_path}: {e}")
     
@@ -883,41 +1209,60 @@ class BidsOrganizer:
         # Sort: first by numeric InstanceNumber, then by file path
         sorted_files.sort(key=lambda x: (isinstance(x[0], str), x[0]))
         return [f_path for _, f_path in sorted_files]
-
-
-# --- Strategy Factory ---
-class StrategyFactory:
-    """Factory for creating detection strategies based on configuration."""
     
-    @staticmethod
-    def create_strategies_from_config(config_path: Optional[str] = None) -> List[ModalityDetectionStrategy]:
-        """Create strategies from configuration file or return defaults."""
-        strategies = [
-            Legacy2021_2022DetectionStrategy(),
-            CustomProtocol2023DetectionStrategy(),
-            StandardDetectionStrategy()
-        ]
+    def _generate_selection_summary(self):
+        """Generate and log selection summary."""
+        if not self.selection_log:
+            return
         
-        # If config file is provided, load additional strategies
-        if config_path and os.path.exists(config_path):
-            # Here you could load JSON/YAML config and create strategies dynamically
-            pass
+        logger.info("="*50)
+        logger.info("MODALITY SELECTION SUMMARY")
+        logger.info("="*50)
         
-        return strategies
+        # Group by session
+        sessions = defaultdict(list)
+        for log_entry in self.selection_log:
+            sessions[log_entry.session_id].append(log_entry)
+        
+        for session_id, entries in sessions.items():
+            logger.info(f"\nSession: {session_id}")
+            for entry in entries:
+                logger.info(f"  {entry.modality}: {entry.selected_protocol}")
+                logger.info(f"    Strategy: {entry.strategy_used}")
+                logger.info(f"    Reason: {entry.selection_reason}")
+                if len(entry.candidates_considered) > 1:
+                    logger.info(f"    Candidates: {len(entry.candidates_considered)} total")
+        
+        # Export detailed log to JSON
+        log_file = os.path.join(self.output_dir, 'modality_selection_log.json')
+        try:
+            with open(log_file, 'w') as f:
+                json.dump([{
+                    'session_id': log.session_id,
+                    'modality': log.modality,
+                    'selected_protocol': log.selected_protocol,
+                    'selection_reason': log.selection_reason,
+                    'strategy_used': log.strategy_used,
+                    'candidates_considered': log.candidates_considered,
+                    'priority_scores': log.priority_scores
+                } for log in self.selection_log], f, indent=2)
+            logger.info(f"\nDetailed selection log saved to: {log_file}")
+        except Exception as e:
+            logger.error(f"Failed to save selection log: {e}")
 
 
 # --- CLI Interface ---
 def main():
-    """Main CLI entry point."""
+    """Enhanced main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Convert DICOM files to BIDS format with automatic modality detection",
+        description="Enhanced DICOM to BIDS converter with intelligent modality detection",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s /path/to/dicom/input /path/to/bids/output
   %(prog)s /path/to/dicom/input /path/to/bids/output --action move --log-file conversion.log
   %(prog)s /path/to/dicom/input /path/to/bids/output --verbose
-  %(prog)s /path/to/dicom/input /path/to/bids/output --strategy-config protocols.json
+  %(prog)s /path/to/dicom/input /path/to/bids/output --dry-run
         """
     )
     
@@ -945,8 +1290,8 @@ Examples:
     parser.add_argument(
         '--log-file',
         type=str,
-        default='dicom_to_bids.log',
-        help='Path to log file (default: dicom_to_bids.log)'
+        default='dicom_to_bids_enhanced.log',
+        help='Path to log file (default: dicom_to_bids_enhanced.log)'
     )
     
     parser.add_argument(
@@ -962,12 +1307,6 @@ Examples:
     )
     
     parser.add_argument(
-        '--strategy-config',
-        type=str,
-        help='Path to JSON/YAML configuration file for detection strategies'
-    )
-    
-    parser.add_argument(
         '--list-strategies',
         action='store_true',
         help='List all available detection strategies and exit'
@@ -976,12 +1315,12 @@ Examples:
     parser.add_argument(
         '--version',
         action='version',
-        version='DICOM to BIDS Converter v2.0.0 (Extended Protocol Support)'
+        version='Enhanced DICOM to BIDS Converter v3.0.0 (CSV-Analysis Based)'
     )
     
     args = parser.parse_args()
     
-    # Setup logging early
+    # Setup logging
     try:
         setup_logging(args.log_file)
         if args.verbose:
@@ -999,11 +1338,14 @@ Examples:
     # Handle --list-strategies
     if args.list_strategies:
         detector = EnhancedModalityDetector()
-        print("\nAvailable Detection Strategies:")
-        print("-" * 50)
+        print("\nEnhanced Detection Strategies (CSV-Analysis Based):")
+        print("-" * 60)
         for strategy in detector.strategies:
             print(f"- {strategy.get_name()} (priority: {strategy.get_priority()})")
+            if hasattr(strategy, 'target_years'):
+                print(f"  Target years: {strategy.target_years}")
         print("\nStrategies are tried in order of priority (lower number = higher priority)")
+        print("Year-specific strategies are exclusive - they override standard detection")
         sys.exit(0)
     
     # Validate input directory
@@ -1022,9 +1364,9 @@ Examples:
         sys.exit(1)
     
     # Log startup information
-    logger.info("="*60)
-    logger.info("DICOM to BIDS Converter Started (v2.0.0)")
-    logger.info("="*60)
+    logger.info("="*70)
+    logger.info("Enhanced DICOM to BIDS Converter Started (v3.0.0 - CSV Analysis Based)")
+    logger.info("="*70)
     logger.info(f"Input directory: {os.path.abspath(args.input_dir)}")
     logger.info(f"Output directory: {os.path.abspath(args.output_dir)}")
     logger.info(f"Action: {args.action}")
@@ -1071,40 +1413,47 @@ Examples:
         if args.dry_run:
             logger.info("DRY RUN MODE - No files will be copied or moved")
             
-            # Show what would be processed with strategy info
+            # Show what would be processed
+            temp_organizer = BidsOrganizer(args.output_dir, args.action)
+            required_modalities = ['t1', 't1c', 't2', 't2fl']
+            
             for patient_id, patient_data in collected_data.items():
                 logger.info(f"Patient: {patient_id}")
+                
                 for study_uid, study_info in patient_data.studies.items():
+                    session_id = f"patient_{patient_id}_study_{study_uid[:8]}"
                     logger.info(f"  Study: {study_uid} ({study_info.study_datetime})")
                     
-                    # Group series by modality to show what would be selected
-                    temp_organizer = BidsOrganizer(args.output_dir, args.action)
-                    modality_groups = temp_organizer._group_series_by_modality(study_info.series)
+                    # Analyze what would be detected
+                    modality_groups, detection_details = temp_organizer._group_series_by_modality_enhanced(
+                        study_info.series, session_id
+                    )
                     
-                    # Show required modalities
-                    required_modalities = ['t1', 't1c', 't2fl', 't2']
-                    logger.info(f"    Required modalities: {', '.join(required_modalities)}")
+                    found_modalities = list(modality_groups.keys())
+                    missing_modalities = [m for m in required_modalities if m not in found_modalities]
                     
-                    for modality in required_modalities:
-                        if modality in modality_groups:
-                            series_list = modality_groups[modality]
-                            if len(series_list) > 1:
-                                logger.info(f"    {modality}: {len(series_list)} series found")
-                                # Show which would be selected
-                                selected = temp_organizer._apply_priority_selection(series_list, modality)
-                                logger.info(f"      → Would select: {selected[0].uid} ({len(selected[0].files)} files)")
-                            else:
-                                logger.info(f"    {modality}: 1 series found - {series_list[0].uid} ({len(series_list[0].files)} files)")
+                    logger.info(f"    Would find: {', '.join(found_modalities) if found_modalities else 'None'}")
+                    if missing_modalities:
+                        logger.info(f"    Would be missing: {', '.join(missing_modalities)}")
+                    
+                    # Show selection details for found modalities
+                    for modality in found_modalities:
+                        series_list = [s for s, _ in modality_groups[modality]]
+                        if len(series_list) > 1:
+                            logger.info(f"    {modality}: {len(series_list)} candidates")
+                            for series in series_list:
+                                logger.info(f"      - {series.uid}: '{series.protocol_name}'")
                         else:
-                            logger.info(f"    {modality}: NOT FOUND")
+                            series = series_list[0]
+                            logger.info(f"    {modality}: '{series.protocol_name}' ({len(series.files)} files)")
         else:
-            # Phase 2: Organize to BIDS
+            # Phase 2: Organize to BIDS with enhanced processing
             organizer = BidsOrganizer(args.output_dir, args.action)
             organizer.organize_to_bids(collected_data)
         
-        logger.info("="*60)
-        logger.info("DICOM to BIDS Conversion Completed Successfully")
-        logger.info("="*60)
+        logger.info("="*70)
+        logger.info("Enhanced DICOM to BIDS Conversion Completed Successfully")
+        logger.info("="*70)
         
     except KeyboardInterrupt:
         logger.info("Conversion interrupted by user.")
@@ -1112,6 +1461,7 @@ Examples:
         sys.exit(1)
     except Exception as e:
         logger.error(f"Conversion failed: {e}")
+        logger.exception("Full exception details:")
         print(f"Error: Conversion failed. Check log file for details: {args.log_file}")
         sys.exit(1)
 
