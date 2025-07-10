@@ -37,8 +37,11 @@ import SimpleITK as sitk
 from nipype.interfaces.fsl import BET, FSLCommand
 from nipype.interfaces.base import Undefined
 import ants
-from typing import Tuple
+from typing import Dict, List, Tuple
 from scipy.stats import gaussian_kde
+import matplotlib.pyplot as plt
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 # --- Logger Setup ---
 # A single logger instance is configured once and used throughout the application.
@@ -380,6 +383,321 @@ class IntensityNormalizationStep(BaseProcessingStep):
         
         sitk.WriteImage(normalized_img, str(self.step_output_path.resolve()))
 
+@dataclass
+class ModalityParams:
+    """Parameters for modality-specific bias field correction"""
+    shrink_factor: int = 4
+    n_iterations: List[int] = None
+    convergence_threshold: float = 0.001
+    smoothing_factor: float = 0.15
+    spline_order: int = 3
+    number_of_control_points: int = 4
+    use_brain_mask: bool = False
+    
+    def __post_init__(self):
+        if self.n_iterations is None:
+            self.n_iterations = [50, 50, 50, 50]
+
+class BiasFieldCorrectionStrategy(ABC):
+    """Abstract base class for bias field correction strategies"""
+    
+    @abstractmethod
+    def correct_bias(self, input_img: sitk.Image, params: dict) -> Tuple[sitk.Image, sitk.Image]:
+        """
+        Correct bias field in the input image
+        Returns: (corrected_image, bias_field)
+        """
+        pass
+    
+    @abstractmethod
+    def get_strategy_name(self) -> str:
+        """Return strategy name for logging"""
+        pass
+
+class StandardBiasFieldStrategy(BiasFieldCorrectionStrategy):
+    """Standard N4ITK with same parameters for all modalities"""
+    
+    def correct_bias(self, input_img: sitk.Image, params: dict) -> Tuple[sitk.Image, sitk.Image]:
+        # Create mask
+        mask_img = self._create_mask(input_img, params)
+        
+        # Standard parameters
+        shrink_factor = params.get('shrink_factor', 4)
+        shrunk_img = sitk.Shrink(input_img, [shrink_factor] * input_img.GetDimension())
+        shrunk_mask = sitk.Shrink(mask_img, [shrink_factor] * input_img.GetDimension())
+        
+        corrector = sitk.N4BiasFieldCorrectionImageFilter()
+        corrector.SetMaximumNumberOfIterations(params.get('n_iterations', [50] * shrink_factor))
+        corrector.SetConvergenceThreshold(params.get('convergence_threshold', 0.001))
+        corrector.SetBiasFieldFullWidthAtHalfMaximum(params.get('smoothing_factor', 0.15))
+        
+        corrector.Execute(shrunk_img, shrunk_mask)
+        
+        log_bias_field = corrector.GetLogBiasFieldAsImage(input_img)
+        bias_field = sitk.Exp(log_bias_field)
+        corrected_image = input_img / bias_field
+        
+        return corrected_image, bias_field
+    
+    def get_strategy_name(self) -> str:
+        return "StandardN4ITK"
+    
+    def _create_mask(self, input_img: sitk.Image, params: dict) -> sitk.Image:
+        """Create brain mask using Otsu thresholding"""
+        return sitk.OtsuThreshold(input_img, 0, 1)
+
+class ModalitySpecificBiasFieldStrategy(BiasFieldCorrectionStrategy):
+    """Modality-specific N4ITK with optimized parameters per modality"""
+    
+    def __init__(self):
+        self.modality_params = self._get_default_modality_params()
+    
+    def _get_default_modality_params(self) -> Dict[str, ModalityParams]:
+        """Get default parameters optimized for each modality"""
+        return {
+            'T1': ModalityParams(
+                shrink_factor=4,
+                n_iterations=[50, 50, 50, 50],
+                convergence_threshold=0.001,
+                smoothing_factor=0.15,
+                use_brain_mask=False
+            ),
+            'T1CE': ModalityParams(
+                shrink_factor=4,
+                n_iterations=[50, 50, 30, 20],  # Less aggressive for contrast
+                convergence_threshold=0.001,
+                smoothing_factor=0.20,  # More smoothing for contrast artifacts
+                use_brain_mask=True  # Mask enhancing lesions
+            ),
+            'T2': ModalityParams(
+                shrink_factor=4,
+                n_iterations=[50, 50, 50, 50],
+                convergence_threshold=0.001,
+                smoothing_factor=0.15,
+                use_brain_mask=False
+            ),
+            'FLAIR': ModalityParams(
+                shrink_factor=3,  # Less downsampling for noisy FLAIR
+                n_iterations=[60, 50, 40, 30],  # More iterations
+                convergence_threshold=0.0005,  # Stricter convergence
+                smoothing_factor=0.25,  # More smoothing for noise
+                use_brain_mask=True  # Better with brain extraction
+            )
+        }
+    
+    def correct_bias(self, input_img: sitk.Image, params: dict) -> Tuple[sitk.Image, sitk.Image]:
+        modality = params.get('modality', 'T1')
+        modal_params = self.modality_params.get(modality, self.modality_params['T1'])
+        
+        # Override with config parameters if provided
+        if 'modality_specific_params' in params and modality in params['modality_specific_params']:
+            config_params = params['modality_specific_params'][modality]
+            for key, value in config_params.items():
+                setattr(modal_params, key, value)
+        
+        # Create appropriate mask
+        mask_img = self._create_modality_specific_mask(input_img, modality, modal_params)
+        
+        # Apply shrinking
+        shrunk_img = sitk.Shrink(input_img, [modal_params.shrink_factor] * input_img.GetDimension())
+        shrunk_mask = sitk.Shrink(mask_img, [modal_params.shrink_factor] * input_img.GetDimension())
+        
+        # Configure N4ITK
+        corrector = sitk.N4BiasFieldCorrectionImageFilter()
+        corrector.SetMaximumNumberOfIterations(modal_params.n_iterations)
+        corrector.SetConvergenceThreshold(modal_params.convergence_threshold)
+        corrector.SetBiasFieldFullWidthAtHalfMaximum(modal_params.smoothing_factor)
+        corrector.SetSplineOrder(modal_params.spline_order)
+        
+        corrector.Execute(shrunk_img, shrunk_mask)
+        
+        log_bias_field = corrector.GetLogBiasFieldAsImage(input_img)
+        bias_field = sitk.Exp(log_bias_field)
+        corrected_image = input_img / bias_field
+        
+        return corrected_image, bias_field
+    
+    def get_strategy_name(self) -> str:
+        return "ModalitySpecificN4ITK"
+    
+    def _create_modality_specific_mask(self, input_img: sitk.Image, modality: str, modal_params: ModalityParams) -> sitk.Image:
+        """Create modality-specific mask"""
+        if modal_params.use_brain_mask:
+            # More sophisticated brain extraction for FLAIR and T1CE
+            return self._create_brain_mask(input_img, modality)
+        else:
+            # Simple Otsu thresholding
+            return sitk.OtsuThreshold(input_img, 0, 1)
+    
+    def _create_brain_mask(self, input_img: sitk.Image, modality: str) -> sitk.Image:
+        """Create brain mask with morphological operations"""
+        # Otsu threshold
+        mask = sitk.OtsuThreshold(input_img, 0, 1)
+        
+        # Morphological operations to clean up mask
+        kernel_radius = 2
+        mask = sitk.BinaryMorphologicalClosing(mask, [kernel_radius] * input_img.GetDimension())
+        mask = sitk.BinaryFillhole(mask)
+        
+        # For T1CE, additional processing to handle contrast enhancement
+        if modality == 'T1CE':
+            # Erosion to reduce impact of enhancing lesions
+            mask = sitk.BinaryErode(mask, [1] * input_img.GetDimension())
+        
+        return mask
+
+class T1BasedCorrectionStrategy(BiasFieldCorrectionStrategy):
+    """Compute T1 bias field first, then use for all co-registered modalities"""
+    
+    def __init__(self):
+        self.t1_bias_field = None
+        self.t1_params = ModalityParams(
+            shrink_factor=4,
+            n_iterations=[50, 50, 50, 50],
+            convergence_threshold=0.001,
+            smoothing_factor=0.15,
+            use_brain_mask=False
+        )
+    
+    def correct_bias(self, input_img: sitk.Image, params: dict) -> Tuple[sitk.Image, sitk.Image]:
+        modality = params.get('modality', 'T1')
+        
+        if modality == 'T1':
+            # Compute T1 bias field
+            bias_field = self._compute_t1_bias_field(input_img, params)
+            self.t1_bias_field = bias_field
+            corrected_image = input_img / bias_field
+        else:
+            # Use T1 bias field for other modalities
+            if self.t1_bias_field is None:
+                # Load from saved path if available
+                t1_bias_path = params.get('t1_bias_field_path')
+                if t1_bias_path and Path(t1_bias_path).exists():
+                    self.t1_bias_field = sitk.ReadImage(str(t1_bias_path))
+                else:
+                    raise ValueError("T1 bias field not computed yet. Process T1 modality first.")
+            
+            bias_field = self.t1_bias_field
+            corrected_image = input_img / bias_field
+        
+        return corrected_image, bias_field
+    
+    def _compute_t1_bias_field(self, t1_img: sitk.Image, params: dict) -> sitk.Image:
+        """Compute bias field from T1 image"""
+        # Create mask
+        mask_img = sitk.OtsuThreshold(t1_img, 0, 1)
+        
+        # Apply shrinking
+        shrunk_img = sitk.Shrink(t1_img, [self.t1_params.shrink_factor] * t1_img.GetDimension())
+        shrunk_mask = sitk.Shrink(mask_img, [self.t1_params.shrink_factor] * t1_img.GetDimension())
+        
+        # Configure N4ITK
+        corrector = sitk.N4BiasFieldCorrectionImageFilter()
+        corrector.SetMaximumNumberOfIterations(self.t1_params.n_iterations)
+        corrector.SetConvergenceThreshold(self.t1_params.convergence_threshold)
+        corrector.SetBiasFieldFullWidthAtHalfMaximum(self.t1_params.smoothing_factor)
+        
+        corrector.Execute(shrunk_img, shrunk_mask)
+        
+        log_bias_field = corrector.GetLogBiasFieldAsImage(t1_img)
+        return sitk.Exp(log_bias_field)
+    
+    def get_strategy_name(self) -> str:
+        return "T1BasedCorrection"
+
+class EnhancedBiasFieldCorrectionStep(BaseProcessingStep):
+    """Enhanced bias field correction with multiple strategies and validation"""
+    
+    STRATEGIES = {
+        "N4BiasFieldCorrection": StandardBiasFieldStrategy,  # Match your config
+        "modality_specific": ModalitySpecificBiasFieldStrategy,
+        "t1_based": T1BasedCorrectionStrategy
+    }
+    
+    def __init__(self, processor: 'FileProcessor', params: dict, dependency_checker: DependencyChecker):
+        super().__init__(processor, "bias_field_correction", params)
+        
+        # Map your config parameters
+        self.method = params.get('method', 'N4BiasFieldCorrection')
+        self.strategy_name = params.get('strategy', 'modality_specific')  # New parameter for strategy
+        self.validate_correction = params.get('validate_correction', True)
+        #self.parallel_processing = params.get('parallel_processing', False)
+        
+        # Use method as strategy if strategy not specified
+        if 'strategy' not in params:
+            if self.method == 'N4BiasFieldCorrection':
+                self.strategy_name = 'N4BiasFieldCorrection'
+        
+        if self.strategy_name not in self.STRATEGIES:
+            raise ValueError(f"Unknown bias correction strategy: {self.strategy_name}")
+        
+        self.strategy = self.STRATEGIES[self.strategy_name]()
+        #self.validator = BiasFieldValidator()
+        
+        # Setup logging
+        self.logger = logging.getLogger(__name__)
+    
+    def _run_step(self):
+        """Run bias field correction with selected strategy"""
+        input_img = sitk.ReadImage(str(self.processor.current_input_path.resolve()), sitk.sitkFloat32)
+        
+        # Detect modality from filename
+        modality = self._detect_modality_from_filename(str(self.processor.current_input_path))
+        
+        # Prepare parameters
+        correction_params = {
+            'modality': modality,
+            'input_filename': str(self.processor.current_input_path),
+            **self.params
+        }
+        
+        self.logger.info(f"Running {self.strategy.get_strategy_name()} bias correction for {modality}")
+        
+        # Run bias field correction
+        corrected_img, bias_field = self.strategy.correct_bias(input_img, correction_params)
+        
+        # Save corrected image
+        sitk.WriteImage(corrected_img, str(self.step_output_path.resolve()))
+        
+        # Save bias field
+        bias_field_path = self.processor.transform_dir / f"bias_field_{modality.lower()}.nii.gz"
+        sitk.WriteImage(bias_field, str(bias_field_path))
+        self.run_params["output_bias_field_path"] = bias_field_path
+        
+        # Validation
+        if self.validate_correction:
+            validation_dir = self.processor.transform_dir / "validation"
+            validation_dir.mkdir(exist_ok=True)
+            
+            metrics = self.validator.validate_correction(
+                input_img, corrected_img, bias_field, 
+                validation_dir, modality
+            )
+            
+            # Save metrics
+            metrics_path = validation_dir / f"{modality}_bias_correction_metrics.json"
+            with open(metrics_path, 'w') as f:
+                json.dump(metrics, f, indent=2)
+            
+            self.run_params["validation_metrics"] = metrics
+            self.logger.info(f"Bias correction validation completed. CV improvement: {metrics.get('cv_improvement', 0):.3f}")
+    
+    def _detect_modality_from_filename(self, filename: str) -> str:
+        """Detect modality from your config's modality_input_map style"""
+        filename_lower = Path(filename).name.lower()
+        
+        # Match your config mapping: t1: "T1w", t1c: "ce-gd_T1w", t2: "T2w", flair: "FLAIR"
+        if 'flair' in filename_lower:
+            return 'FLAIR'
+        elif 't2w' in filename_lower:
+            return 'T2'
+        elif 'ce-gd_t1w' in filename_lower or ('ce' in filename_lower and 't1w' in filename_lower):
+            return 'T1CE'
+        elif 't1w' in filename_lower:
+            return 'T1'
+        else:
+            return 'T1'  # Default fallback
+
 class BiasFieldCorrectionStep(BaseProcessingStep):
     """Concrete step for N4 bias field correction."""
 
@@ -690,6 +1008,9 @@ step_factory = StepFactory()
 step_factory.register_step("HistogramMatching", IntensityNormalizationStep)
 step_factory.register_step("ZScore", IntensityNormalizationStep)
 step_factory.register_step("WhiteStripe", IntensityNormalizationStep)
+step_factory.register_step("Standard", StandardBiasFieldStrategy)
+step_factory.register_step("ModalitySpecific", ModalitySpecificBiasFieldStrategy)
+step_factory.register_step("T1Based", T1BasedCorrectionStrategy)
 step_factory.register_step("N4BiasFieldCorrection", BiasFieldCorrectionStep)
 step_factory.register_step("ANTsPy", RegistrationStep)
 step_factory.register_step("FSL_BET", SkullStrippingStep)

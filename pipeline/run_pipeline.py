@@ -15,6 +15,29 @@ import requests
 logger = logging.getLogger("Pipeline")
 USER_LOG_PREFIX = "PIPELINE_USER_MSG:"
 
+# NOTE: This pipeline passes --log_file parameter to all scripts to ensure
+# all logs are written directly to the logs directory. Make sure your scripts
+# in the scripts/ directory support the --log_file argument. If they don't,
+# you'll need to modify them to accept this parameter and write their logs
+# to the specified file instead of creating logs in their output directories.
+
+# ALTERNATIVE APPROACH: If your scripts don't support --log_file parameter,
+# you can modify the Step class to use environment variables or capture
+# output differently. Here's an example:
+#
+# def execute(self) -> bool:
+#     # ... existing code ...
+#     
+#     # Set environment variable for scripts that check for it
+#     env = os.environ.copy()
+#     env['LOG_FILE'] = str(log_path)
+#     env['LOG_DIR'] = str(self.workspace.logs_dir)
+#     
+#     result = subprocess.run(command, check=True, capture_output=True, 
+#                           text=True, encoding='utf-8', env=env)
+#
+# Then modify your scripts to check for these environment variables.
+
 def setup_logging(log_file: Path, console_level: str):
     logger.setLevel(logging.DEBUG)
     log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Pipeline] %(message)s')
@@ -32,7 +55,7 @@ def setup_logging(log_file: Path, console_level: str):
     ch.setFormatter(log_formatter)
     logger.addHandler(ch)
 
-    # File handler
+    # File handler - ensure parent directory exists
     try:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_file, encoding='utf-8', mode='w')
@@ -65,8 +88,13 @@ class Config:
 class PipelineWorkspace:
     def __init__(self, base_output_dir: Path, run_id: str, config: Config):
         self.run_id = run_id
+        # Ensure we're creating the run directory directly under base_output_dir
         self.run_output_dir = base_output_dir / run_id
+        
+        # Get subdirectory names from config, with defaults
         sd = config.get_step_config('paths').get('subdirs', {})
+        
+        # All directories are created under run_output_dir
         self.logs_dir = self.run_output_dir / sd.get('logs', 'logs')
         self.bids_dicom_dir = self.run_output_dir / sd.get('bids_dicom', 'bids_dicom')
         self.dicom_checks_dir = self.run_output_dir / sd.get('dicom_checks', 'dicom_checks')
@@ -82,9 +110,13 @@ class PipelineWorkspace:
 
     def create_directories(self):
         logger.info(f"{USER_LOG_PREFIX} Creating output directory structure...")
-        for path in self.__dict__.values():
-            if isinstance(path, Path):
+        logger.info(f"Run output directory: {self.run_output_dir}")
+        
+        # Create all directories
+        for attr_name, path in self.__dict__.items():
+            if isinstance(path, Path) and attr_name != 'run_id':
                 path.mkdir(parents=True, exist_ok=True)
+                logger.debug(f"Created directory: {path}")
 
 class PipelineInputHandler:
     def __init__(self, cli_input_path_str: str | None, config_input_path: Path | None, run_dir: Path):
@@ -94,20 +126,26 @@ class PipelineInputHandler:
 
     def prepare(self) -> Path:
         path_str = self.cli_input_path_str or self.config_input_path
-        if not path_str: raise ValueError("Input data directory is not specified in CLI arguments or config file.")
+        if not path_str: 
+            raise ValueError("Input data directory is not specified in CLI arguments or config file.")
+        
         path = Path(path_str).resolve()
         logger.info(f"Using input data path: {path}")
-        if not path.exists(): raise FileNotFoundError(f"Input data path does not exist: {path}")
+        
+        if not path.exists(): 
+            raise FileNotFoundError(f"Input data path does not exist: {path}")
+        
         if path.is_file() and path.name.lower().endswith('.zip'):
             extraction_dir = self.run_dir / "input_raw_data"
             extraction_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"ZIP archive detected. Extracting to: {extraction_dir}")
-            with zipfile.ZipFile(path, 'r') as zip_ref: zip_ref.extractall(extraction_dir)
-            #items = list(extraction_dir.iterdir())
-            #return items[0] if len(items) == 1 and items[0].is_dir() else extraction_dir
+            with zipfile.ZipFile(path, 'r') as zip_ref: 
+                zip_ref.extractall(extraction_dir)
             return extraction_dir
-        elif path.is_dir(): return path
-        else: raise ValueError(f"Input path is not a valid directory or .zip file: {path}")
+        elif path.is_dir(): 
+            return path
+        else: 
+            raise ValueError(f"Input path is not a valid directory or .zip file: {path}")
 
 # --- Step Abstraction ---
 
@@ -134,29 +172,82 @@ class Step:
             return True
         
         logger.info(f"{USER_LOG_PREFIX} Starting step - {self.name}...")
-        log_path = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        
+        # Single log file name for this step
+        log_filename = f"{self.name.lower().replace(' ', '_')}.log"
+        log_path = self.workspace.logs_dir / log_filename
+        
         try:
             command = self._build_command()
             logger.debug(f"Executing command: {' '.join(command)}")
-            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
-            if result.stdout: logger.debug(f"Stdout from '{self.name}':\n{result.stdout.strip()}")
-            if result.stderr: logger.warning(f"Stderr from '{self.name}':\n{result.stderr.strip()}")
+            
+            # Check if the script supports --log_file
+            if '--log_file' in command:
+                # The script will handle its own logging to the specified file
+                # We don't need to capture output, just run it
+                result = subprocess.run(command, check=True, text=True, encoding='utf-8')
+                
+                # Check if the log file was created by the script
+                if not log_path.exists():
+                    # Script didn't create log file, create a minimal one
+                    with open(log_path, 'w', encoding='utf-8') as f:
+                        f.write(f"COMMAND: {' '.join(command)}\n")
+                        f.write(f"EXIT CODE: 0\n")
+                        f.write(f"Script completed successfully but did not create a log file.\n")
+            else:
+                # Script doesn't support --log_file, capture output ourselves
+                result = subprocess.run(command, check=True, capture_output=True, 
+                                      text=True, encoding='utf-8')
+                
+                # Save output to log file
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"COMMAND: {' '.join(command)}\n")
+                    f.write(f"\nEXIT CODE: 0\n")
+                    f.write(f"\nSTDOUT:\n{result.stdout}")
+                    if result.stderr:
+                        f.write(f"\nSTDERR:\n{result.stderr}")
+                
+                if result.stdout: 
+                    logger.debug(f"Stdout from '{self.name}':\n{result.stdout.strip()}")
+                if result.stderr: 
+                    logger.warning(f"Stderr from '{self.name}':\n{result.stderr.strip()}")
+            
             self._post_execute_on_success()
-            logger.info(f"{USER_LOG_PREFIX} Success - {self.name}.")
+            logger.info(f"{USER_LOG_PREFIX} Success - {self.name}. Log saved to: {log_filename}")
             return True
+            
         except subprocess.CalledProcessError as e:
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.write(f"COMMAND: {' '.join(e.cmd)}\n\nSTDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}")
-            logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name}. See log: {log_path.name}")
-            logger.critical(f"Step '{self.name}' failed with code {e.returncode}. Log saved to {log_path.name}")
+            # Handle errors consistently
+            if '--log_file' in command and log_path.exists():
+                # Script already logged the error
+                logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name}. See log: {log_filename}")
+            else:
+                # We need to create the error log
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"COMMAND: {' '.join(e.cmd)}\n")
+                    f.write(f"\nEXIT CODE: {e.returncode}\n")
+                    if hasattr(e, 'stdout') and e.stdout:
+                        f.write(f"\nSTDOUT:\n{e.stdout}")
+                    if hasattr(e, 'stderr') and e.stderr:
+                        f.write(f"\nSTDERR:\n{e.stderr}")
+                logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name}. See log: {log_filename}")
+            
+            logger.critical(f"Step '{self.name}' failed with code {e.returncode}. Log saved to {log_filename}")
             return self.fatal_on_error is False
+            
         except Exception as e:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"CRITICAL ERROR:\n{str(e)}\n")
+                f.write(f"\nFull exception:\n{repr(e)}")
             logger.error(f"{USER_LOG_PREFIX} CRITICAL ERROR - {self.name}: An unexpected error occurred.")
             logger.exception(e)
             return False
         
-    def _build_command(self) -> list[str]: raise NotImplementedError
-    def _post_execute_on_success(self): pass # Hook for post-run actions
+    def _build_command(self) -> list[str]: 
+        raise NotImplementedError
+        
+    def _post_execute_on_success(self): 
+        pass  # Hook for post-run actions
 
 class ReorganizeStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config, input_dir: Path):
@@ -165,10 +256,16 @@ class ReorganizeStep(Step):
         self.action = self.step_config.get('action', 'copy').lower()
 
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "reorganize_folders.py"),
-                str(self.input_dir),
-                str(self.workspace.bids_dicom_dir),
-                "--action", self.action]
+        # Use same log file name as Step.execute() expects
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "reorganize_folders.py"),
+            str(self.input_dir),
+            str(self.workspace.bids_dicom_dir),
+            "--action", self.action,
+            "--log_file", str(log_file)
+        ]
     
     def _post_execute_on_success(self):
         if self.action == 'move' and self.input_dir.exists():
@@ -180,39 +277,60 @@ class DICOMCheckStep(Step):
         super().__init__("DICOM_Standard_Check", workspace, config)
 
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "dicom_standard_check.py"),
-                str(self.workspace.bids_dicom_dir),
-                str(self.workspace.dicom_checks_dir),
-                "--dciodvfy_path", self.config.get_exec('dciodvfy', 'dciodvfy')]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "dicom_standard_check.py"),
+            str(self.workspace.bids_dicom_dir),
+            str(self.workspace.dicom_checks_dir),
+            "--dciodvfy_path", self.config.get_exec('dciodvfy', 'dciodvfy'),
+            "--log_file", str(log_file)
+        ]
 
 class ExtractMetadataStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("Extract_DICOM_Metadata", workspace, config)
 
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "extract_metadata.py"),
-                str(self.workspace.bids_dicom_dir),
-                str(self.workspace.dicom_meta_dir)]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "extract_metadata.py"),
+            str(self.workspace.bids_dicom_dir),
+            str(self.workspace.dicom_meta_dir),
+            "--log_file", str(log_file)
+        ]
     
 class DicomToNiftiStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("Convert_DICOM_to_NIfTI", workspace, config)
+        
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "convert_dicom_to_nifti.py"),
-                str(self.workspace.bids_dicom_dir),
-                str(self.workspace.bids_nifti_dir),
-                "--dcm2niix_path", self.config.get_exec('dcm2niix', 'dcm2niix')]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "convert_dicom_to_nifti.py"),
+            str(self.workspace.bids_dicom_dir),
+            str(self.workspace.bids_nifti_dir),
+            "--dcm2niix_path", self.config.get_exec('dcm2niix', 'dcm2niix'),
+            "--log_file", str(log_file)
+        ]
 
 class BIDSValidationStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("BIDS_Validation", workspace, config)
-        self.fatal_on_error = False 
-        # A validation error should not stop the pipeline
+        self.fatal_on_error = False  # A validation error should not stop the pipeline
+        
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "bids_validation.py"),
-                str(self.workspace.bids_nifti_dir), 
-                str(self.workspace.validation_reports_dir),
-                "--validator_path", self.config.get_exec('bids_validator', 'bids-validator')]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "bids_validation.py"),
+            str(self.workspace.bids_nifti_dir), 
+            str(self.workspace.validation_reports_dir),
+            "--validator_path", self.config.get_exec('bids_validator', 'bids-validator'),
+            "--log_file", str(log_file)
+        ]
     
     def _post_execute_on_success(self):
         report_file = self.workspace.validation_reports_dir / "bids_validator_report.txt"
@@ -226,82 +344,73 @@ class MRIQCServerTriggerStep(Step):
         super().__init__("MRIQC_Server_Trigger", workspace, config)
         self.mriqc_config = self.config.get_step_config('mriqc')
 
-    def _is_enabled(self) -> bool:
+    def is_enabled(self) -> bool:
         return (self.mriqc_config.get('enabled', False) and
                 self.mriqc_config.get('run_on_server', False) and
                 self.mriqc_config.get('run_on_server_auto_trigger', False))
     
     def execute(self) -> bool:
-        if not self._is_enabled():
+        if not self.is_enabled():
             logger.info(f"Skipping {self.name}: conditions not met in config.")
             return True
+            
         logger.info(f"{USER_LOG_PREFIX} Initiating automatic MRIQC run on server...")
         trigger_url = f"{self.config.get_exec('flask_api_base_url', 'http://127.0.0.1:5001')}/trigger_mriqc_auto/{self.workspace.run_id}"
+        
+        # Create log file for this step
+        log_filename = f"{self.name.lower().replace(' ', '_')}.log"
+        log_path = self.workspace.logs_dir / log_filename
+        
         try:
             if not self.workspace.bids_nifti_dir.is_dir() or not any(self.workspace.bids_nifti_dir.iterdir()):
                 logger.warning(f"Cannot trigger server MRIQC: BIDS NIfTI directory is empty or missing.")
                 return True
+                
             response = requests.post(trigger_url, timeout=20)
+            
+            # Log the request and response
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"URL: {trigger_url}\n")
+                f.write(f"Status Code: {response.status_code}\n")
+                f.write(f"Response: {response.text}\n")
+            
             if response.status_code in [200, 202]:
                 logger.info(f"{USER_LOG_PREFIX} Server trigger successful: {response.json().get('message', '')}")
             else:
                 logger.error(f"{USER_LOG_PREFIX} Failed to trigger server MRIQC. Status: {response.status_code}, Info: {response.text}")
+                
         except requests.RequestException as e:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"URL: {trigger_url}\n")
+                f.write(f"Error: {str(e)}\n")
             logger.error(f"{USER_LOG_PREFIX} Failed to connect to server for MRIQC trigger: {e}")
-        return True # Non-fatal
+            
+        return True  # Non-fatal
 
 class MRIQCLocalStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("MRIQC_Local_Analysis", workspace, config)
         self.mriqc_config = self.config.get_step_config('mriqc')
 
-    def _is_enabled(self) -> bool:
-        return (self.mriqc_config.get('enabled', False) and not self.mriqc_config.get('run_on_server', False))
-    
-    def execute(self) -> bool:
-        if not self._is_enabled():
-            logger.info(f"Skipping {self.name}: conditions not met in config.")
-            return True
-        
-        logger.info(f"{USER_LOG_PREFIX} Starting step - {self.name}...")
-        log_path = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        
-        try:
-            command = self._build_command()
-            logger.debug(f"Executing command: {' '.join(command)}")
-            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
-            
-            if result.stdout: 
-                logger.debug(f"Stdout from '{self.name}':\n{result.stdout.strip()}")
-            if result.stderr: 
-                logger.warning(f"Stderr from '{self.name}':\n{result.stderr.strip()}")
-            
-            self._post_execute_on_success()
-            logger.info(f"{USER_LOG_PREFIX} Success - {self.name}.")
-            return True
-        
-        except subprocess.CalledProcessError as e:
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.write(f"COMMAND: {' '.join(e.cmd)}\n\nSTDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}")
-            logger.error(f"{USER_LOG_PREFIX} ERROR - {self.name}. See log: {log_path.name}")
-            logger.critical(f"Step '{self.name}' failed with code {e.returncode}. Log saved to {log_path.name}")
-            return self.fatal_on_error is False
-        
-        except Exception as e:
-            logger.error(f"{USER_LOG_PREFIX} CRITICAL ERROR - {self.name}: An unexpected error occurred.")
-            logger.exception(e)
-            return False
+    def is_enabled(self) -> bool:
+        return (self.mriqc_config.get('enabled', False) and 
+                not self.mriqc_config.get('run_on_server', False))
     
     def _build_command(self) -> list:
         cfg = self.mriqc_config
-        return [self.python_executable, str(self.scripts_dir / "mriqc_quality.py"),
-                str(self.workspace.bids_nifti_dir),
-                str(self.workspace.mriqc_output_dir),
-                "--mriqc_path", self.config.get_exec('mriqc_local_exec', 'mriqc'),
-                "--report_type", str(cfg.get('report_type', 'both')),
-                "--n_procs", str(cfg.get('n_procs', 1)),
-                "--n_threads", str(cfg.get('n_threads', 1)),
-                "--mem_gb", str(cfg.get('mem_gb', 4))]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "mriqc_quality.py"),
+            str(self.workspace.bids_nifti_dir),
+            str(self.workspace.mriqc_output_dir),
+            "--mriqc_path", self.config.get_exec('mriqc_local_exec', 'mriqc'),
+            "--report_type", str(cfg.get('report_type', 'both')),
+            "--n_procs", str(cfg.get('n_procs', 1)),
+            "--n_threads", str(cfg.get('n_threads', 1)),
+            "--mem_gb", str(cfg.get('mem_gb', 4)),
+            "--log_file", str(log_file)
+        ]
 
 class MRIQCInterpretationStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
@@ -309,44 +418,62 @@ class MRIQCInterpretationStep(Step):
         self.mriqc_config = config.get_step_config('mriqc')
         self.interpret_config = config.get_step_config('mriqc_interpretation')
 
-    def _is_enabled(self) -> bool:
+    def is_enabled(self) -> bool:
         return (self.mriqc_config.get('enabled', False) and
                 not self.mriqc_config.get('run_on_server', False) and
                 self.interpret_config.get('enabled', False))
     
     def execute(self) -> bool:
-        if not self._is_enabled():
+        if not self.is_enabled():
             logger.info(f"Skipping {self.name}: conditions not met in config.")
             return True
+            
         if not self.workspace.mriqc_output_dir.is_dir() or not any(self.workspace.mriqc_output_dir.iterdir()):
             logger.warning(f"{USER_LOG_PREFIX} Skipped - {self.name}: MRIQC output directory is empty.")
             return True
+            
         return super().execute()
     
     def _build_command(self) -> list:
-        return [self.python_executable, str(self.scripts_dir / "mriqc_interpretation.py"),
-                str(self.workspace.mriqc_output_dir),
-                str(self.workspace.mriqc_interpret_dir)]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "mriqc_interpretation.py"),
+            str(self.workspace.mriqc_output_dir),
+            str(self.workspace.mriqc_interpret_dir),
+            "--log_file", str(log_file)
+        ]
 
 class FastQCMetricsStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("Fast_Quality_Metrics", workspace, config)
 
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "quality_metrics.py"),
-                str(self.workspace.bids_nifti_dir),
-                str(self.workspace.fast_qc_reports_dir)]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "quality_metrics.py"),
+            str(self.workspace.bids_nifti_dir),
+            str(self.workspace.fast_qc_reports_dir),
+            "--log_file", str(log_file)
+        ]
 
 class PreprocessingStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("Preprocessing", workspace, config)
+        
     def _build_command(self) -> list[str]:
-        return [self.python_executable, str(self.scripts_dir / "preprocessing.py"),
-                str(self.workspace.bids_nifti_dir), 
-                str(self.workspace.preprocessed_dir),
-                str(self.workspace.transforms_dir),
-                "--template_path", str(self.config.get_path('template_path')), 
-                "--config", str(self.config.path)]
+        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
+        return [
+            self.python_executable, 
+            str(self.scripts_dir / "preprocessing.py"),
+            str(self.workspace.bids_nifti_dir), 
+            str(self.workspace.preprocessed_dir),
+            str(self.workspace.transforms_dir),
+            "--template_path", str(self.config.get_path('template_path')), 
+            "--config", str(self.config.path),
+            "--log_file", str(log_file)
+        ]
 
 class SegmentationStep(Step):
     """Concrete step for running segmentation.py for all subjects/sessions."""
@@ -354,10 +481,7 @@ class SegmentationStep(Step):
         super().__init__("AI_Segmentation", workspace, config)
 
     def execute(self) -> bool:
-        """
-        Custom execution logic for segmentation, which finds all modalities for
-        each session and calls the segmentation script.
-        """
+        """Custom execution logic for segmentation, which finds all modalities for each session."""
         logger.info(f"{USER_LOG_PREFIX} Starting step - {self.name}...")
         
         seg_config = self.config.get_step_config('segmentation')
@@ -382,7 +506,9 @@ class SegmentationStep(Step):
             output_mask_subfolder.mkdir(parents=True, exist_ok=True)
             output_mask_file_path = output_mask_subfolder / output_mask_filename
 
-            step_log_path = self.workspace.logs_dir / f"segmentation_{client_id}.log"
+            # Individual segmentation logs go in the main logs directory
+            step_log_filename = f"segmentation_{client_id}.log"
+            step_log_path = self.workspace.logs_dir / step_log_filename
             
             try:
                 command = self._build_command_for_session(files_map, output_mask_file_path, client_id)
@@ -394,12 +520,11 @@ class SegmentationStep(Step):
                     continue
 
                 logger.debug(f"Executing command: {' '.join(command)}")
-                # Use a generic run_step function to handle subprocess logic
                 self._run_single_segmentation(command, client_id, step_log_path)
-                logger.info(f"--- Segmentation successful for {client_id} ---")
+                logger.info(f"--- Segmentation successful for {client_id}. Log: {step_log_filename} ---")
 
             except Exception as e:
-                logger.error(f"--- Segmentation FAILED for {client_id} ---")
+                logger.error(f"--- Segmentation FAILED for {client_id}. Log: {step_log_filename} ---")
                 logger.exception(e)
                 error_count += 1
 
@@ -419,9 +544,11 @@ class SegmentationStep(Step):
             return sessions
 
         for subj_dir in self.workspace.preprocessed_dir.glob("sub-*"):
-            if not subj_dir.is_dir(): continue
+            if not subj_dir.is_dir(): 
+                continue
             for ses_dir in subj_dir.glob("ses-*"):
-                if not ses_dir.is_dir() or not (ses_dir / "anat").exists(): continue
+                if not ses_dir.is_dir() or not (ses_dir / "anat").exists(): 
+                    continue
                 key = (subj_dir.name, ses_dir.name)
                 sessions[key] = {}
                 for mod_key, mod_id in mod_map.items():
@@ -430,34 +557,54 @@ class SegmentationStep(Step):
                         # Add logic to avoid mistaking T1c for T1
                         if mod_key == 't1' and 't1c' in mod_map:
                             if mod_map['t1c'] in found_files[0].name:
-                                continue # This is a T1c file, skip for T1 key
+                                continue  # This is a T1c file, skip for T1 key
                         sessions[key][mod_key] = found_files[0]
         return sessions
 
     def _build_command_for_session(self, files_map, output_mask, client_id) -> list[str]:
         """Builds the command for a single segmentation run."""
+        log_file = self.workspace.logs_dir / f"segmentation_{client_id}.log"
         command = [
             self.python_executable,
             str(self.scripts_dir / "segmentation.py"),
             "--output_mask", str(output_mask),
             "--config", str(self.config.path),
             "--client_id", client_id,
+            "--log_file", str(log_file),
         ]
-        if files_map.get('t1'): command.extend(["--input_t1", str(files_map['t1'])])
-        if files_map.get('t1c'): command.extend(["--input_t1ce", str(files_map['t1c'])])
-        if files_map.get('t2'): command.extend(["--input_t2", str(files_map['t2'])])
-        if files_map.get('flair'): command.extend(["--input_flair", str(files_map['flair'])])
+        if files_map.get('t1'): 
+            command.extend(["--input_t1", str(files_map['t1'])])
+        if files_map.get('t1c'): 
+            command.extend(["--input_t1ce", str(files_map['t1c'])])
+        if files_map.get('t2'): 
+            command.extend(["--input_t2", str(files_map['t2'])])
+        if files_map.get('flair'): 
+            command.extend(["--input_flair", str(files_map['flair'])])
         return command
 
     def _run_single_segmentation(self, command: list[str], client_id: str, log_path: Path):
         """Helper to run one instance of the segmentation script and handle its output."""
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.write(f"COMMAND: {' '.join(command)}\n\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}")
+            # Since we're passing --log_file to the script, let it handle its own logging
+            result = subprocess.run(command, check=True, text=True, encoding='utf-8')
+            
+            # Check if log file was created by the script
+            if not log_path.exists():
+                # Create a minimal log if the script didn't
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"COMMAND: {' '.join(command)}\n")
+                    f.write(f"\nSegmentation completed successfully for {client_id}\n")
+                    
         except subprocess.CalledProcessError as e:
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.write(f"COMMAND: {' '.join(e.cmd)}\n\nSTDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}")
+            # If the script didn't create a log file, create one with error info
+            if not log_path.exists():
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"COMMAND: {' '.join(e.cmd)}\n")
+                    f.write(f"\nEXIT CODE: {e.returncode}\n")
+                    if hasattr(e, 'stdout') and e.stdout:
+                        f.write(f"\nSTDOUT:\n{e.stdout}")
+                    if hasattr(e, 'stderr') and e.stderr:
+                        f.write(f"\nSTDERR:\n{e.stderr}")
             # Re-raise the exception to be caught by the main execute loop
             raise RuntimeError(f"Segmentation for {client_id} failed. See log: {log_path.name}") from e
 
@@ -468,17 +615,32 @@ class PipelineRunner:
         self.args = args
         self.config = Config(Path(args.config))
         run_id = args.run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Get base output directory
         base_output_dir = Path(args.output_base_dir or self.config.get_path('output_base_dir'))
+        
+        # Ensure base_output_dir exists
+        base_output_dir.mkdir(parents=True, exist_ok=True)
+        
         self.workspace = PipelineWorkspace(base_output_dir, run_id, self.config)
-        log_file = self.workspace.logs_dir / "pipeline.log"
+        
+        # Create directories first
+        self.workspace.create_directories()
+        
+        # Set up logging
+        log_file = self.workspace.logs_dir / "pipeline_main.log"
         setup_logging(log_file, args.console_log_level)
+        
         logger.info(f"Pipeline run starting with ID: {run_id}")
+        logger.info(f"Base output directory: {base_output_dir}")
 
     def run(self):
         try:
-            self.workspace.create_directories()
             input_handler = PipelineInputHandler(
-                self.args.input_data_dir, self.config.get_path('raw_input_dir'), self.workspace.run_output_dir)
+                self.args.input_data_dir, 
+                self.config.get_path('raw_input_dir'), 
+                self.workspace.run_output_dir
+            )
             effective_input_dir = input_handler.prepare()
 
             logger.info("=" * 60)
@@ -506,26 +668,39 @@ class PipelineRunner:
                     sys.exit(1)
 
             logger.info(f"{USER_LOG_PREFIX} Success - Pipeline completed all steps.")
+            logger.info(f"All results are saved in: {self.workspace.run_output_dir}")
+            
         except Exception as e:
             logger.error(f"{USER_LOG_PREFIX} A critical error occurred during the pipeline execution.")
             logger.critical("Pipeline failed with an unhandled exception.", exc_info=True)
             sys.exit(1)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Main pipeline orchestrator.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="Main pipeline orchestrator.", 
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument("--config", required=True, help="Path to the main YAML config file.")
     parser.add_argument("--run_id", help="Unique ID for this run. If not provided, one will be generated.")
     parser.add_argument("--input_data_dir", help="Override input path from config. Can be a directory or ZIP file.")
     parser.add_argument("--output_base_dir", help="Override base output directory from config.")
-    parser.add_argument("--console_log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Console logging level.")
+    parser.add_argument(
+        "--console_log_level", 
+        default="INFO", 
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"], 
+        help="Console logging level."
+    )
     args = parser.parse_args()
+    
     try:
         runner = PipelineRunner(args)
         runner.run()
         sys.exit(0)
     except (ValueError, FileNotFoundError) as e:
-        logger.critical(f"Setup failed: {e}")
+        print(f"Setup failed: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception:
-        logger.critical("A fatal exception occurred during pipeline initialization.", exc_info=True)
+        print("A fatal exception occurred during pipeline initialization.", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         sys.exit(1)

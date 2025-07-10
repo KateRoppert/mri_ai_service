@@ -478,10 +478,10 @@ class EnhancedModalityDetector:
                     'scoring_weights': {'se': 2.0}
                 },
                 't2': {
-                    'markers': ['t2w'],
+                    'markers': ['t2w', 't2'],
                     'forbidden': [],
-                    'prefer_order': ['tse'],
-                    'scoring_weights': {'tse': 2.0}
+                    'prefer_order': ['tse', 'tra'],
+                    'scoring_weights': {'tse': 2.0, 'tra': 1.5}
                 },
                 't2fl': {
                     'markers': ['flair'],
@@ -498,19 +498,19 @@ class EnhancedModalityDetector:
             strategy_name="Protocol 2020",
             keywords_config={
                 't1': {
-                    'markers': ['t1w', 't1-tse'],
+                    'markers': ['t1w', 't1-tse', 't1'],
                     'forbidden': ['thr', 'mpr', 'ce'],
                     'prefer_order': ['tse', 'clear', '3d', 'se'],
                     'scoring_weights': {'tse': 2.0, 'clear': 1.5, '3d': 1.3, 'se': 1.0}
                 },
                 't1c': {
-                    'required': ['ce', 't1'],
+                    'required': ['c', 't1'],
                     'forbidden': ['mpr'],
                     'prefer_order': ['tse', '3d', 'se'],
                     'scoring_weights': {'tse': 2.0, '3d': 1.5, 'se': 1.0}
                 },
                 't2': {
-                    'markers': ['t2w', 't2-tse'],
+                    'markers': ['t2w', 't2-tse', 't2'],
                     'forbidden': ['mpr'],
                     'prefer_order': ['tse', 'sense'],
                     'scoring_weights': {'tse': 2.0, 'sense': 1.3}
@@ -530,19 +530,19 @@ class EnhancedModalityDetector:
             strategy_name="Protocol 2021-2022",
             keywords_config={
                 't1': {
-                    'markers': ['t1-tfe', 't1-tse'],
+                    'markers': ['t1-tfe', 't1-tse', 't1w', 't1'],
                     'forbidden': ['mpr', 'ce'],
                     'prefer_order': ['tfe', 'tse', '3d'],
                     'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
                 },
                 't1c': {
-                    'required': ['ce', 't1'],
+                    'required': ['c', 't1'],
                     'forbidden': ['mpr'],
                     'prefer_order': ['tfe', 'tse', '3d'],
                     'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
                 },
                 't2': {
-                    'markers': ['t2-tse'],
+                    'markers': ['t2-tse', 't2_tse', 't2', 't2_ffe'],
                     'forbidden': ['mpr'],
                     'prefer_order': ['tse', 'axi'],
                     'scoring_weights': {'tse': 2.0, 'axi': 1.2}
@@ -562,7 +562,7 @@ class EnhancedModalityDetector:
             strategy_name="Protocol 2023+",
             keywords_config={
                 't1': {
-                    'markers': ['t1-tfe', 't1-tse'],
+                    'markers': ['t1-tfe', 't1-tse', 't1'],
                     'forbidden': ['mpr', 'ce'],
                     'prefer_order': ['tfe', 'tse', '3d'],
                     'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
@@ -574,7 +574,7 @@ class EnhancedModalityDetector:
                     'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
                 },
                 't2': {
-                    'markers': ['t2-tse'],
+                    'markers': ['t2-tse', 't2_tse'],
                     'forbidden': ['ce', 'pit', 'mpr'],
                     'prefer_order': ['tse', 'axi'],
                     'scoring_weights': {'tse': 2.0, 'axi': 1.2}
@@ -1288,10 +1288,9 @@ Examples:
     )
     
     parser.add_argument(
-        '--log-file',
+        '--log_file',
         type=str,
-        default='dicom_to_bids_enhanced.log',
-        help='Path to log file (default: dicom_to_bids_enhanced.log)'
+        help='Path to log file'
     )
     
     parser.add_argument(
