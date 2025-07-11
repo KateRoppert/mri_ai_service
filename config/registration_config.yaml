@@ -1,0 +1,150 @@
+# Registration Configuration for Brain MRI Preprocessing
+
+registration:
+  # Tool Selection: "ANTs" or "FSL"
+  tool: "ANTs"
+  
+  # Registration Strategy:
+  # - "intra": Register all modalities to T1 within subject
+  # - "inter": Register all images directly to template  
+  # - "hybrid": First intra-subject alignment, then template registration (recommended)
+  strategy: "inter"
+  
+  # Template settings (update paths as needed)
+  template_path: "/home/roppert/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz"
+  template_mask_path: "/home/roppert/fsl/data/standard/MNI152_T1_1mm_brain_mask.nii.gz"
+  
+  # Core registration parameters
+  similarity_metric: "MI"  # MI (Mutual Information), CC (Cross Correlation), MSQ (Mean Squares)
+  interpolation: "Linear"  # Linear, BSpline, NearestNeighbor
+  transform_type: "SyN"    # Rigid, Affine, SyN (recommended for foundation models)
+  
+  # Multi-resolution optimization
+  iterations: [500, 250, 100]  # Iterations per resolution level
+  shrink_factors: [4, 2, 1]       # Subsampling factors
+  smoothing_sigmas: [2.0, 1.0, 0.0]  # Smoothing at each level
+  
+  # Optimization parameters
+  learning_rate: 0.1
+  convergence_threshold: 1e-6
+  convergence_window_size: 10
+  
+  # Sampling parameters
+  sampling_percentage: 0.1    # Fraction of voxels to use for optimization
+  sampling_strategy: "Random"  # Random or Regular
+  
+  # Metric-specific parameters
+  histogram_bins: 32  # For MI metric
+  radius: 4          # For CC metric
+  
+  # Advanced parameters (for fine-tuning)
+  regularization: 0.1      # SyN regularization strength
+  total_sigma: 3.0         # Total field smoothing
+  flow_sigma: 3.0          # Flow field smoothing
+  
+  # FSL-specific parameters (used when tool: "FSL")
+  fsl_params:
+    cost_function: "mutualinfo"  # mutualinfo, corratio, normcorr, normmi, leastsq
+    dof: 12                      # degrees of freedom (6=rigid, 12=affine)
+    search_range: 90             # search range in degrees
+    fine_search: 18              # fine search range in degrees
+    
+    # FNIRT parameters for non-linear registration
+    warp_resolution: [10, 10, 10]  # warp resolution in mm
+    subsample: [4, 2, 1, 1]        # subsampling levels
+    max_iterations: [5, 5, 5, 5]   # max iterations per level
+    lambda_values: [300, 75, 30, 30]  # regularization parameters
+  
+  # ANTs-specific advanced parameters
+  ants_params:
+    use_histogram_matching: false 
+    winsorize_intensities:
+      lower_percentile: 0.01
+      upper_percentile: 0.995
+    
+    # Multi-stage registration (for maximum control)
+    stages:
+      # Stage 1: Rigid alignment
+      - transform: "Rigid"
+        metric: "MI"
+        metric_weight: 1.0
+        radius_or_bins: 32
+        sampling_strategy: "Regular"
+        sampling_percentage: 0.15
+        convergence:
+          iteration: [500, 250, 100]
+          convergence_threshold: 1e-6
+          convergence_window_size: 10
+        shrink_factors: [4, 2, 1]
+        smoothing_sigmas: [2, 1, 0]
+      
+      # Stage 2: Affine registration  
+      - transform: "Affine"
+        metric: "MI"
+        metric_weight: 1.0
+        radius_or_bins: 32
+        sampling_strategy: "Regular" 
+        sampling_percentage: 0.25
+        convergence:
+          iteration: [500, 250, 100]
+          convergence_threshold: 1e-6
+          convergence_window_size: 10
+        shrink_factors: [4, 2, 1]
+        smoothing_sigmas: [2, 1, 0]
+      
+      # Stage 3: Non-linear SyN registration
+      - transform: "SyN"
+        metric: "CC"  # Cross-correlation often better for SyN
+        metric_weight: 1.0
+        radius_or_bins: 4
+        sampling_strategy: "None"  # Use all voxels for non-linear
+        gradient_step: 0.1
+        flow_sigma: 3.0
+        total_sigma: 0.0
+        convergence:
+          iteration: [70, 50, 20]
+          convergence_threshold: 1e-6
+          convergence_window_size: 10
+        shrink_factors: [4, 2, 1]
+        smoothing_sigmas: [2, 1, 0]
+  
+  # Modality-specific parameter overrides
+  modality_specific_params:
+    T1:
+      # T1 often serves as reference - use high-quality settings
+      similarity_metric: "CC"
+      sampling_percentage: 0.15
+      histogram_bins: 64
+      
+    T1CE:
+      # Contrast-enhanced T1 may need MI due to intensity differences
+      similarity_metric: "MI"
+      histogram_bins: 64
+      sampling_percentage: 0.1
+      
+    T2:
+      # T2 to T1 registration typically needs MI
+      similarity_metric: "MI"
+      histogram_bins: 32
+      sampling_percentage: 0.1
+      
+    FLAIR:
+      # FLAIR often has different contrast characteristics
+      similarity_metric: "MI"
+      histogram_bins: 64
+      sampling_percentage: 0.08
+      # May need more iterations for good alignment
+      iterations: [750, 375, 150]
+  
+  # Output options
+  save_transforms: true
+  save_inverse_transforms: true
+  save_intermediate_results: true  # Set to true for debugging
+  
+  # Quality control
+  compute_registration_metrics: true
+  save_difference_images: true     # Set to true for QC
+  
+  # Performance settings
+  parallel_processing: true
+  num_threads: -1  # Use all available cores (-1), or specify number
