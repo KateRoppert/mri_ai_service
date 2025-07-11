@@ -1,6 +1,6 @@
 # Базовые пути
 paths:
-  raw_input_dir: "/home/roppert/work/mri_ai_service/tests/sample_data"
+  raw_input_dir: "/media/roppert/My FDD (B)/Experimets/To paper"
   output_base_dir: "/home/roppert/work/pipeline_results"
   template_path: "/home/roppert/work/mri_ai_service/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
   # Имена поддиректорий внутри папки запуска
@@ -52,29 +52,66 @@ steps:
     # При запуске на сервере скрипт-обертка обычно запускает и quality, и interpretation вместе.
     enabled: false
   preprocessing:
-    keep_intermediate_files: false
+    keep_intermediate_files: false  
     intensity_normalization:
-      enabled: true
-      method: "WhiteStripe" # "HistogramMatching", "ZScore", or "WhiteStripe"
+      enabled: false       
+      method: "ZScore" # "HistogramMatching", "ZScore", or "WhiteStripe"
       # Parameters specific to HistogramMatching:
       histogram_levels: 1024
       match_points: 7
       # Parameters specific to ZScore:
-      exclude_zeros: true  # Whether to exclude zeros from mean/std calculation
+      exclude_zeros: false  # Whether to exclude zeros from mean/std calculation
       # Parameters specific to WhiteStripe:
       n_sd: 2.5          # Можно настроить ширину полосы
-      threshold_at_zero: true  # Игнорировать нулевые воксели
+      threshold_at_zero: false  # Игнорировать нулевые воксели
     bias_field_correction:
-      enabled: false
+      enabled: true    
       method: "N4BiasFieldCorrection"
+      strategy: "ModalitySpecific"  # Options: "Standard", "ModalitySpecific", "T1Based"
+      
+      # Validation settings
+      validate_correction: false 
+      parallel_processing: true
+      max_workers: 4
+      
       sitk_shrinkFactor: 4
+      sitk_numberOfIterations: [50, 50, 50, 50]
+      sitk_convergenceThreshold: 0.001
+      
+      # Modality-specific parameters (used when strategy is "modality_specific")
+      modality_specific_params:
+        T1:
+          shrink_factor: 4
+          n_iterations: [50, 50, 50, 50]
+          convergence_threshold: 0.001
+          smoothing_factor: 0.15
+          use_brain_mask: false
+        T1CE: 
+          shrink_factor: 4
+          n_iterations: [50, 50, 30, 20]
+          convergence_threshold: 0.001
+          smoothing_factor: 0.20
+          use_brain_mask: false
+        T2:    
+          shrink_factor: 4
+          n_iterations: [50, 50, 50, 50]
+          convergence_threshold: 0.001
+          smoothing_factor: 0.15
+          use_brain_mask: false
+        FLAIR:
+          shrink_factor: 3
+          n_iterations: [60, 50, 40, 30]
+          convergence_threshold: 0.0005
+          smoothing_factor: 0.25
+          use_brain_mask: false 
     registration:
-      enabled: false 
+      enabled: true  
       method: "ANTsPy"
       ants_transform_type: "SyN"
+      template_path: "/home/roppert/work/mri_ai_service/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
     skull_stripping:
-      enabled: false
-      method: "SynthStrip" # FSL_BET/Freesurfer
+      enabled: true  
+      method: "FSL_BET" # FSL_BET/Freesurfer
       bet_fractional_intensity_threshold: 0.5
       bet_robust: true
       wsthresh: 5     
@@ -82,7 +119,7 @@ steps:
       save_mask: true 
       border: 0
   segmentation:
-    enabled: false  
+    enabled: true     
     model_name: "Unet"
     modality_input_map:
       t1: "T1w"
