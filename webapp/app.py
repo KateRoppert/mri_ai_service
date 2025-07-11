@@ -741,7 +741,7 @@ def upload_file():
     cmd = [ sys.executable, str(PIPELINE_RUN_SCRIPT.resolve()),
             "--config", str(CONFIG_FILE_PATH.resolve()), "--run_id", run_id,
             "--input_data_dir", str(effective_input_data_dir.resolve()),
-            "--output_base_dir", str(run_specific_dir.resolve()),
+            "--output_base_dir", app.config['UPLOAD_FOLDER'],
             "--console_log_level", console_log_lvl_pipe ]
     flask_logger.info(f"Команда для пайплайна ({run_id}): {' '.join(cmd)}")
 
