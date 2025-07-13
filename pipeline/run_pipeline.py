@@ -9,7 +9,6 @@ from datetime import datetime
 import uuid
 import zipfile
 import shutil
-import requests 
 
 # --- Logger Setup ---
 logger = logging.getLogger("Pipeline")
@@ -20,23 +19,6 @@ USER_LOG_PREFIX = "PIPELINE_USER_MSG:"
 # in the scripts/ directory support the --log_file argument. If they don't,
 # you'll need to modify them to accept this parameter and write their logs
 # to the specified file instead of creating logs in their output directories.
-
-# ALTERNATIVE APPROACH: If your scripts don't support --log_file parameter,
-# you can modify the Step class to use environment variables or capture
-# output differently. Here's an example:
-#
-# def execute(self) -> bool:
-#     # ... existing code ...
-#     
-#     # Set environment variable for scripts that check for it
-#     env = os.environ.copy()
-#     env['LOG_FILE'] = str(log_path)
-#     env['LOG_DIR'] = str(self.workspace.logs_dir)
-#     
-#     result = subprocess.run(command, check=True, capture_output=True, 
-#                           text=True, encoding='utf-8', env=env)
-#
-# Then modify your scripts to check for these environment variables.
 
 def setup_logging(log_file: Path, console_level: str):
     logger.setLevel(logging.DEBUG)
@@ -94,16 +76,10 @@ class PipelineWorkspace:
         # Get subdirectory names from config, with defaults
         sd = config.get_step_config('paths').get('subdirs', {})
         
-        # All directories are created under run_output_dir
+        # Only keep directories needed for the 4 steps
         self.logs_dir = self.run_output_dir / sd.get('logs', 'logs')
         self.bids_dicom_dir = self.run_output_dir / sd.get('bids_dicom', 'bids_dicom')
-        self.dicom_checks_dir = self.run_output_dir / sd.get('dicom_checks', 'dicom_checks')
-        self.dicom_meta_dir = self.run_output_dir / sd.get('dicom_meta', 'dicom_meta')
         self.bids_nifti_dir = self.run_output_dir / sd.get('bids_nifti', 'bids_nifti')
-        self.validation_reports_dir = self.run_output_dir / sd.get('validation_reports', 'validation_reports')
-        self.fast_qc_reports_dir = self.run_output_dir / sd.get('fast_qc_reports', 'fast_qc_reports')
-        self.mriqc_output_dir = self.run_output_dir / sd.get('mriqc_output', 'mriqc_output')
-        self.mriqc_interpret_dir = self.run_output_dir / sd.get('mriqc_interpret', 'mriqc_interpret')
         self.transforms_dir = self.run_output_dir / sd.get('transforms', 'transforms')
         self.preprocessed_dir = self.run_output_dir / sd.get('preprocessed', 'preprocessed')
         self.segmentation_dir = self.run_output_dir / sd.get('segmentation_masks', 'segmentation_masks')
@@ -272,35 +248,6 @@ class ReorganizeStep(Step):
             logger.info(f"Action was 'move'. Cleaning up source directory: {self.input_dir}")
             shutil.rmtree(self.input_dir)
 
-class DICOMCheckStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("DICOM_Standard_Check", workspace, config)
-
-    def _build_command(self) -> list[str]:
-        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        return [
-            self.python_executable, 
-            str(self.scripts_dir / "dicom_standard_check.py"),
-            str(self.workspace.bids_dicom_dir),
-            str(self.workspace.dicom_checks_dir),
-            "--dciodvfy_path", self.config.get_exec('dciodvfy', 'dciodvfy'),
-            "--log_file", str(log_file)
-        ]
-
-class ExtractMetadataStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("Extract_DICOM_Metadata", workspace, config)
-
-    def _build_command(self) -> list[str]:
-        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        return [
-            self.python_executable, 
-            str(self.scripts_dir / "extract_metadata.py"),
-            str(self.workspace.bids_dicom_dir),
-            str(self.workspace.dicom_meta_dir),
-            "--log_file", str(log_file)
-        ]
-    
 class DicomToNiftiStep(Step):
     def __init__(self, workspace: PipelineWorkspace, config: Config):
         super().__init__("Convert_DICOM_to_NIfTI", workspace, config)
@@ -313,148 +260,6 @@ class DicomToNiftiStep(Step):
             str(self.workspace.bids_dicom_dir),
             str(self.workspace.bids_nifti_dir),
             "--dcm2niix_path", self.config.get_exec('dcm2niix', 'dcm2niix'),
-            "--log_file", str(log_file)
-        ]
-
-class BIDSValidationStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("BIDS_Validation", workspace, config)
-        self.fatal_on_error = False  # A validation error should not stop the pipeline
-        
-    def _build_command(self) -> list[str]:
-        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        return [
-            self.python_executable, 
-            str(self.scripts_dir / "bids_validation.py"),
-            str(self.workspace.bids_nifti_dir), 
-            str(self.workspace.validation_reports_dir),
-            "--validator_path", self.config.get_exec('bids_validator', 'bids-validator'),
-            "--log_file", str(log_file)
-        ]
-    
-    def _post_execute_on_success(self):
-        report_file = self.workspace.validation_reports_dir / "bids_validator_report.txt"
-        if report_file.exists():
-            content = report_file.read_text()
-            if "error" in content.lower():
-                logger.warning(f"{USER_LOG_PREFIX} BIDS Validation found errors. Please review the report.")
-
-class MRIQCServerTriggerStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("MRIQC_Server_Trigger", workspace, config)
-        self.mriqc_config = self.config.get_step_config('mriqc')
-
-    def is_enabled(self) -> bool:
-        return (self.mriqc_config.get('enabled', False) and
-                self.mriqc_config.get('run_on_server', False) and
-                self.mriqc_config.get('run_on_server_auto_trigger', False))
-    
-    def execute(self) -> bool:
-        if not self.is_enabled():
-            logger.info(f"Skipping {self.name}: conditions not met in config.")
-            return True
-            
-        logger.info(f"{USER_LOG_PREFIX} Initiating automatic MRIQC run on server...")
-        trigger_url = f"{self.config.get_exec('flask_api_base_url', 'http://127.0.0.1:5001')}/trigger_mriqc_auto/{self.workspace.run_id}"
-        
-        # Create log file for this step
-        log_filename = f"{self.name.lower().replace(' ', '_')}.log"
-        log_path = self.workspace.logs_dir / log_filename
-        
-        try:
-            if not self.workspace.bids_nifti_dir.is_dir() or not any(self.workspace.bids_nifti_dir.iterdir()):
-                logger.warning(f"Cannot trigger server MRIQC: BIDS NIfTI directory is empty or missing.")
-                return True
-                
-            response = requests.post(trigger_url, timeout=20)
-            
-            # Log the request and response
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.write(f"URL: {trigger_url}\n")
-                f.write(f"Status Code: {response.status_code}\n")
-                f.write(f"Response: {response.text}\n")
-            
-            if response.status_code in [200, 202]:
-                logger.info(f"{USER_LOG_PREFIX} Server trigger successful: {response.json().get('message', '')}")
-            else:
-                logger.error(f"{USER_LOG_PREFIX} Failed to trigger server MRIQC. Status: {response.status_code}, Info: {response.text}")
-                
-        except requests.RequestException as e:
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.write(f"URL: {trigger_url}\n")
-                f.write(f"Error: {str(e)}\n")
-            logger.error(f"{USER_LOG_PREFIX} Failed to connect to server for MRIQC trigger: {e}")
-            
-        return True  # Non-fatal
-
-class MRIQCLocalStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("MRIQC_Local_Analysis", workspace, config)
-        self.mriqc_config = self.config.get_step_config('mriqc')
-
-    def is_enabled(self) -> bool:
-        return (self.mriqc_config.get('enabled', False) and 
-                not self.mriqc_config.get('run_on_server', False))
-    
-    def _build_command(self) -> list:
-        cfg = self.mriqc_config
-        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        return [
-            self.python_executable, 
-            str(self.scripts_dir / "mriqc_quality.py"),
-            str(self.workspace.bids_nifti_dir),
-            str(self.workspace.mriqc_output_dir),
-            "--mriqc_path", self.config.get_exec('mriqc_local_exec', 'mriqc'),
-            "--report_type", str(cfg.get('report_type', 'both')),
-            "--n_procs", str(cfg.get('n_procs', 1)),
-            "--n_threads", str(cfg.get('n_threads', 1)),
-            "--mem_gb", str(cfg.get('mem_gb', 4)),
-            "--log_file", str(log_file)
-        ]
-
-class MRIQCInterpretationStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("MRIQC_Interpretation", workspace, config)
-        self.mriqc_config = config.get_step_config('mriqc')
-        self.interpret_config = config.get_step_config('mriqc_interpretation')
-
-    def is_enabled(self) -> bool:
-        return (self.mriqc_config.get('enabled', False) and
-                not self.mriqc_config.get('run_on_server', False) and
-                self.interpret_config.get('enabled', False))
-    
-    def execute(self) -> bool:
-        if not self.is_enabled():
-            logger.info(f"Skipping {self.name}: conditions not met in config.")
-            return True
-            
-        if not self.workspace.mriqc_output_dir.is_dir() or not any(self.workspace.mriqc_output_dir.iterdir()):
-            logger.warning(f"{USER_LOG_PREFIX} Skipped - {self.name}: MRIQC output directory is empty.")
-            return True
-            
-        return super().execute()
-    
-    def _build_command(self) -> list:
-        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        return [
-            self.python_executable, 
-            str(self.scripts_dir / "mriqc_interpretation.py"),
-            str(self.workspace.mriqc_output_dir),
-            str(self.workspace.mriqc_interpret_dir),
-            "--log_file", str(log_file)
-        ]
-
-class FastQCMetricsStep(Step):
-    def __init__(self, workspace: PipelineWorkspace, config: Config):
-        super().__init__("Fast_Quality_Metrics", workspace, config)
-
-    def _build_command(self) -> list[str]:
-        log_file = self.workspace.logs_dir / f"{self.name.lower().replace(' ', '_')}.log"
-        return [
-            self.python_executable, 
-            str(self.scripts_dir / "quality_metrics.py"),
-            str(self.workspace.bids_nifti_dir),
-            str(self.workspace.fast_qc_reports_dir),
             "--log_file", str(log_file)
         ]
 
@@ -648,16 +453,10 @@ class PipelineRunner:
             logger.info(f"Run Output Directory: {self.workspace.run_output_dir}")
             logger.info("=" * 60)
 
+            # Only the 4 steps you requested
             steps_to_run = [
                 ReorganizeStep(self.workspace, self.config, effective_input_dir),
-                DICOMCheckStep(self.workspace, self.config),
-                ExtractMetadataStep(self.workspace, self.config),
                 DicomToNiftiStep(self.workspace, self.config),
-                BIDSValidationStep(self.workspace, self.config),
-                MRIQCServerTriggerStep(self.workspace, self.config),
-                MRIQCLocalStep(self.workspace, self.config),
-                MRIQCInterpretationStep(self.workspace, self.config),
-                FastQCMetricsStep(self.workspace, self.config),
                 PreprocessingStep(self.workspace, self.config),
                 SegmentationStep(self.workspace, self.config),
             ]

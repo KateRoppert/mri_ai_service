@@ -1,6 +1,6 @@
 # Базовые пути
 paths:
-  raw_input_dir: "/media/roppert/My FDD (B)/Experimets/To paper"
+  raw_input_dir: "/home/roppert/work/data/Ms/P000010/15.11/"
   output_base_dir: "/home/roppert/work/pipeline_results"
   template_path: "/home/roppert/work/mri_ai_service/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
   # Имена поддиректорий внутри папки запуска
@@ -65,7 +65,7 @@ steps:
       n_sd: 2.5          # Можно настроить ширину полосы
       threshold_at_zero: false  # Игнорировать нулевые воксели
     bias_field_correction:
-      enabled: true    
+      enabled: false    
       method: "N4BiasFieldCorrection"
       strategy: "ModalitySpecific"  # Options: "Standard", "ModalitySpecific", "T1Based"
       
