@@ -52,6 +52,11 @@ steps:
     # При запуске на сервере скрипт-обертка обычно запускает и quality, и interpretation вместе.
     enabled: false
   preprocessing:
+    step_order:
+      - intensity_normalization
+      - bias_field_correction
+      - registration
+      - skull_stripping
     keep_intermediate_files: false  
     intensity_normalization:
       enabled: false       
