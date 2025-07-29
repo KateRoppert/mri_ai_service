@@ -1253,8 +1253,73 @@ def trigger_segmentation_locally(run_id: str):
         run_data['thread_segmentation'] = seg_thread
         flask_logger.info(f"Поток для AI сегментации ({run_id}) запущен.")
         return jsonify({"message": "Запрос на AI сегментацию принят."}), 202
+    
+
+# Health check endpoint
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Docker container"""
+    try:
+        # Check if critical directories exist
+        required_dirs = ['/app/config', '/app/scripts', '/app/mni_templates']
+        for dir_path in required_dirs:
+            if not os.path.exists(dir_path):
+                return {'status': 'unhealthy', 'error': f'Missing directory: {dir_path}'}, 500
+        
+        # Check if neuroimaging tools are available
+        import subprocess
+        tools_check = {}
+        
+        # Check FSL
+        try:
+            result = subprocess.run(['fslinfo'], capture_output=True, timeout=5)
+            tools_check['fsl'] = 'available' if result.returncode == 0 else 'unavailable'
+        except:
+            tools_check['fsl'] = 'unavailable'
+        
+        # Check ANTs
+        try:
+            result = subprocess.run(['antsRegistration', '--help'], capture_output=True, timeout=5)
+            tools_check['ants'] = 'available' if result.returncode == 0 else 'unavailable'
+        except:
+            tools_check['ants'] = 'unavailable'
+        
+        return {
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'tools': tools_check,
+            'python_version': sys.version
+        }
+    except Exception as e:
+        return {'status': 'unhealthy', 'error': str(e)}, 500
+
+# Add this to handle container shutdown gracefully
+import signal
+import sys
+
+def signal_handler(sig, frame):
+    print('Shutting down gracefully...')
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 if __name__ == '__main__':
     flask_logger.info(f"Запуск Flask dev server (host 0.0.0.0, port 5001, debug={app.debug})...")
-    app.run(host='0.0.0.0', port=5001, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=5001, debug=False)
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'timestamp': datetime.now().isoformat()}
+
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'timestamp': datetime.now().isoformat()}
+
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'timestamp': datetime.now().isoformat()}
+
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'timestamp': datetime.now().isoformat()}
