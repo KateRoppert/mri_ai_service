@@ -886,6 +886,17 @@ class BidsOrganizer:
             't2': 'T2w', 
             't2fl': 'FLAIR'
         }
+        
+        # Initialize mapping and failed cases tracking
+        self.patient_mapping = {}
+        self.session_mapping = {}
+        self.failed_cases = {
+            'patients_with_missing_modalities': {},
+            'sessions_with_missing_modalities': [],
+            'patients_completely_missing': [],
+            'sessions_completely_missing': []
+        }
+        self.input_stats = {'total_patients': 0, 'total_sessions': 0}
     
     def organize_to_bids(self, collected_data: Dict[str, PatientData]):
         """Organize collected data into BIDS structure with enhanced logging."""
@@ -897,6 +908,20 @@ class BidsOrganizer:
             logger.error(f"Cannot create output directory {self.output_dir}: {e}")
             raise
         
+        # Create logs directory
+        logs_dir = os.path.join(self.output_dir, 'logs')
+        try:
+            os.makedirs(logs_dir, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Cannot create logs directory {logs_dir}: {e}")
+            raise
+        
+        # Store input statistics for comparison
+        self.input_stats = {
+            'total_patients': len(collected_data),
+            'total_sessions': sum(len(patient.studies) for patient in collected_data.values())
+        }
+        
         # Create BIDS patient IDs
         patient_bids_map = self._create_patient_bids_mapping(collected_data)
         
@@ -907,12 +932,20 @@ class BidsOrganizer:
         # Generate selection summary
         self._generate_selection_summary()
         
+        # Write mapping and failed cases files
+        self._write_mapping_files(logs_dir)
+        
         logger.info("Enhanced BIDS organization completed!")
     
     def _create_patient_bids_mapping(self, collected_data: Dict) -> Dict[str, str]:
         """Create mapping from original patient IDs to BIDS IDs."""
         sorted_patient_ids = sorted(collected_data.keys())
-        return {orig_id: f"sub-{i+1:03d}" for i, orig_id in enumerate(sorted_patient_ids)}
+        mapping = {orig_id: f"sub-{i+1:03d}" for i, orig_id in enumerate(sorted_patient_ids)}
+        
+        # Store in instance variable for later export
+        self.patient_mapping = mapping
+        
+        return mapping
     
     def _process_patient(self, patient_data: PatientData, patient_bids_map: Dict[str, str]):
         """Process a single patient's data."""
@@ -922,16 +955,58 @@ class BidsOrganizer:
         # Create session BIDS mapping
         session_bids_map = self._create_session_bids_mapping(patient_data.studies)
         
+        # Store session mappings with full patient context
+        for study_uid, bids_ses_id in session_bids_map.items():
+            study_info = patient_data.studies[study_uid]
+            study_date = study_info.study_datetime.strftime("%Y-%m-%d")
+            
+            # Create unique key for session mapping
+            session_key = f"{patient_data.original_id}_{study_uid}"
+            self.session_mapping[session_key] = {
+                'original_patient_id': patient_data.original_id,
+                'bids_patient_id': bids_sub_id,
+                'original_study_uid': study_uid,
+                'original_study_date': study_date,
+                'bids_session_id': bids_ses_id
+            }
+        
+        # Track patient-level missing modalities
+        patient_has_missing_modalities = False
+        patient_has_any_valid_sessions = False
+        
         for study_info in patient_data.studies.values():
-            self._process_study(study_info, bids_sub_id, session_bids_map)
+            has_missing, has_any_modalities = self._process_study(study_info, bids_sub_id, session_bids_map, patient_data.original_id)
+            if has_missing:
+                patient_has_missing_modalities = True
+            if has_any_modalities:
+                patient_has_any_valid_sessions = True
+        
+        # Record if patient has any missing modalities
+        if patient_has_missing_modalities:
+            if patient_data.original_id not in self.failed_cases['patients_with_missing_modalities']:
+                self.failed_cases['patients_with_missing_modalities'][patient_data.original_id] = {
+                    'bids_id': bids_sub_id,
+                    'sessions_with_issues': []
+                }
+        
+        # Record if patient is completely missing (no valid sessions)
+        if not patient_has_any_valid_sessions:
+            self.failed_cases['patients_completely_missing'].append({
+                'original_patient_id': patient_data.original_id,
+                'bids_patient_id': bids_sub_id,
+                'total_sessions': len(patient_data.studies),
+                'reason': 'No sessions with valid modalities'
+            })
     
     def _create_session_bids_mapping(self, studies: Dict[str, StudyInfo]) -> Dict[str, str]:
         """Create mapping from original study UIDs to BIDS session IDs."""
         sorted_study_uids = sorted(studies.keys(), key=lambda uid: studies[uid].study_datetime)
         return {orig_id: f"ses-{i+1:03d}" for i, orig_id in enumerate(sorted_study_uids)}
     
-    def _process_study(self, study_info: StudyInfo, bids_sub_id: str, session_bids_map: Dict[str, str]):
-        """Process a single study/session with enhanced modality detection."""
+    def _process_study(self, study_info: StudyInfo, bids_sub_id: str, session_bids_map: Dict[str, str], 
+                      original_patient_id: str) -> Tuple[bool, bool]:
+        """Process a single study/session with enhanced modality detection.
+        Returns (has_missing_modalities, has_any_modalities)."""
         bids_ses_id = session_bids_map[study_info.uid]
         session_id = f"{bids_sub_id}_{bids_ses_id}"
         logger.info(f"  Processing session: {study_info.uid} -> {bids_ses_id}")
@@ -945,8 +1020,47 @@ class BidsOrganizer:
         missing_modalities = [m for m in required_modalities if m not in found_modalities]
         
         logger.info(f"    Found modalities: {', '.join(found_modalities) if found_modalities else 'None'}")
+        
+        has_missing_modalities = False
+        has_any_modalities = len(found_modalities) > 0
+        
         if missing_modalities:
+            has_missing_modalities = True
             logger.warning(f"    Missing modalities: {', '.join(missing_modalities)}")
+            
+            # Record failed session
+            study_date = study_info.study_datetime.strftime("%Y-%m-%d")
+            session_failure_info = {
+                'original_patient_id': original_patient_id,
+                'bids_patient_id': bids_sub_id,
+                'original_study_uid': study_info.uid,
+                'original_study_date': study_date,
+                'bids_session_id': bids_ses_id,
+                'found_modalities': found_modalities,
+                'missing_modalities': missing_modalities
+            }
+            self.failed_cases['sessions_with_missing_modalities'].append(session_failure_info)
+            
+            # Update patient-level tracking
+            if original_patient_id in self.failed_cases['patients_with_missing_modalities']:
+                self.failed_cases['patients_with_missing_modalities'][original_patient_id]['sessions_with_issues'].append({
+                    'session_id': bids_ses_id,
+                    'study_date': study_date,
+                    'missing_modalities': missing_modalities
+                })
+        
+        # Track completely missing sessions (no modalities at all)
+        if not has_any_modalities:
+            study_date = study_info.study_datetime.strftime("%Y-%m-%d")
+            self.failed_cases['sessions_completely_missing'].append({
+                'original_patient_id': original_patient_id,
+                'bids_patient_id': bids_sub_id,
+                'original_study_uid': study_info.uid,
+                'original_study_date': study_date,
+                'bids_session_id': bids_ses_id,
+                'total_series': len(study_info.series),
+                'reason': 'No valid modalities detected'
+            })
         
         # Only create directories and process found modalities
         if found_modalities:
@@ -963,6 +1077,8 @@ class BidsOrganizer:
         # Log session summary
         logger.info(f"    Session {bids_ses_id} processing complete. "
                    f"Processed {len(found_modalities)}/{len(required_modalities)} modalities.")
+        
+        return has_missing_modalities, has_any_modalities
     
     def _group_series_by_modality_enhanced(self, series_dict: Dict[str, SeriesInfo], session_id: str) -> Tuple[Dict, Dict]:
         """Enhanced grouping with detailed logging."""
@@ -1249,6 +1365,61 @@ class BidsOrganizer:
             logger.info(f"\nDetailed selection log saved to: {log_file}")
         except Exception as e:
             logger.error(f"Failed to save selection log: {e}")
+    
+    def _write_mapping_files(self, logs_dir: str):
+        """Write mapping and failed cases files to logs directory."""
+        # Write patient and session mapping file
+        mapping_file = os.path.join(logs_dir, 'bids_mapping.json')
+        mapping_data = {
+            'patients': self.patient_mapping,
+            'sessions': self.session_mapping
+        }
+        
+        try:
+            with open(mapping_file, 'w') as f:
+                json.dump(mapping_data, f, indent=2)
+            logger.info(f"BIDS mapping saved to: {mapping_file}")
+        except Exception as e:
+            logger.error(f"Failed to save BIDS mapping: {e}")
+        
+        # Write failed cases file
+        failed_file = os.path.join(logs_dir, 'failed_cases.json')
+        
+        # Add summary statistics
+        self.failed_cases['summary'] = {
+            'input_patients': self.input_stats['total_patients'],
+            'input_sessions': self.input_stats['total_sessions'],
+            'output_patients': self.input_stats['total_patients'] - len(self.failed_cases['patients_completely_missing']),
+            'output_sessions': self.input_stats['total_sessions'] - len(self.failed_cases['sessions_completely_missing']),
+            'total_patients_with_partial_issues': len(self.failed_cases['patients_with_missing_modalities']),
+            'total_sessions_with_partial_issues': len(self.failed_cases['sessions_with_missing_modalities']),
+            'total_patients_completely_missing': len(self.failed_cases['patients_completely_missing']),
+            'total_sessions_completely_missing': len(self.failed_cases['sessions_completely_missing'])
+        }
+        
+        try:
+            with open(failed_file, 'w') as f:
+                json.dump(self.failed_cases, f, indent=2)
+            logger.info(f"Failed cases report saved to: {failed_file}")
+            
+            # Log summary of failed cases
+            logger.info(f"Input/Output Comparison:")
+            logger.info(f"  Patients: {self.failed_cases['summary']['input_patients']} input -> {self.failed_cases['summary']['output_patients']} output")
+            logger.info(f"  Sessions: {self.failed_cases['summary']['input_sessions']} input -> {self.failed_cases['summary']['output_sessions']} output")
+            
+            if self.failed_cases['summary']['total_patients_with_partial_issues'] > 0:
+                logger.warning(f"Found {self.failed_cases['summary']['total_patients_with_partial_issues']} patients with partial missing modalities")
+            
+            if self.failed_cases['summary']['total_sessions_with_partial_issues'] > 0:
+                logger.warning(f"Found {self.failed_cases['summary']['total_sessions_with_partial_issues']} sessions with partial missing modalities")
+            
+            if self.failed_cases['summary']['total_patients_completely_missing'] > 0:
+                logger.warning(f"Found {self.failed_cases['summary']['total_patients_completely_missing']} patients completely missing from output")
+            
+            if self.failed_cases['summary']['total_sessions_completely_missing'] > 0:
+                logger.warning(f"Found {self.failed_cases['summary']['total_sessions_completely_missing']} sessions completely missing from output")
+        except Exception as e:
+            logger.error(f"Failed to save failed cases report: {e}")
 
 
 # --- CLI Interface ---
