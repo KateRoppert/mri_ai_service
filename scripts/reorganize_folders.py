@@ -126,9 +126,10 @@ class EnhancedStandardDetectionStrategy(ModalityDetectionStrategy):
             't2': {
                 'keywords': ['t2', 't2w'],
                 'forbidden': ['ce', 'pit', 'mpr', 'contrast', 'flair'],
-                'priority_sequences': ['tse'],
+                'priority_sequences': ['t2','tse'],
                 'priority_modifiers': ['sense', 'brain', 'axi'],
                 'scoring_weights': {
+                    't2': 3.0,
                     'tse': 2.0,
                     'sense': 1.3,
                     'brain': 1.1,
@@ -466,22 +467,22 @@ class EnhancedModalityDetector:
             strategy_name="Protocol 2018",
             keywords_config={
                 't1': {
-                    'markers': ['t1w'],
+                    'markers': ['t1w', 't1'],
                     'forbidden': ['thr', 'ce'],
-                    'prefer_order': ['tse', 'se'],
-                    'scoring_weights': {'tse': 2.0, 'se': 1.0}
+                    'prefer_order': ['tfe', 'tse', 'se'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, 'se': 1.0}
                 },
                 't1c': {
-                    'required': ['ce', 't1w'],
+                    'required': ['ce', 't1w', 't1'],
                     'forbidden': [],
                     'prefer_order': ['se'],
                     'scoring_weights': {'se': 2.0}
                 },
                 't2': {
                     'markers': ['t2w', 't2'],
-                    'forbidden': [],
-                    'prefer_order': ['tse', 'tra'],
-                    'scoring_weights': {'tse': 2.0, 'tra': 1.5}
+                    'forbidden': ['flair'],
+                    'prefer_order': ['tse','tra','st2'],
+                    'scoring_weights': {'tse': 2.0, 'tra': 1.5, 'st2': -0.5}
                 },
                 't2fl': {
                     'markers': ['flair'],
@@ -500,8 +501,8 @@ class EnhancedModalityDetector:
                 't1': {
                     'markers': ['t1w', 't1-tse', 't1'],
                     'forbidden': ['thr', 'mpr', 'ce'],
-                    'prefer_order': ['tse', 'clear', '3d', 'se'],
-                    'scoring_weights': {'tse': 2.0, 'clear': 1.5, '3d': 1.3, 'se': 1.0}
+                    'prefer_order': ['tfe', 'tse', 'clear', '3d', 'se'],
+                    'scoring_weights': {'tfe' : 2.5,'tse': 2.0, 'clear': 1.5, '3d': 1.3, 'se': 1.0}
                 },
                 't1c': {
                     'required': ['c', 't1'],
@@ -512,8 +513,8 @@ class EnhancedModalityDetector:
                 't2': {
                     'markers': ['t2w', 't2-tse', 't2'],
                     'forbidden': ['mpr'],
-                    'prefer_order': ['tse', 'sense'],
-                    'scoring_weights': {'tse': 2.0, 'sense': 1.3}
+                    'prefer_order': ['tse', 'sense', 'axi'],
+                    'scoring_weights': {'tse': 2.0, 'sense': 1.3, 'axi': 1.2}
                 },
                 't2fl': {
                     'markers': ['flair'],
@@ -531,12 +532,12 @@ class EnhancedModalityDetector:
             keywords_config={
                 't1': {
                     'markers': ['t1-tfe', 't1-tse', 't1w', 't1'],
-                    'forbidden': ['mpr', 'ce'],
+                    'forbidden': ['mpr', 'ce', 'gd'],
                     'prefer_order': ['tfe', 'tse', '3d'],
                     'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
                 },
                 't1c': {
-                    'required': ['c', 't1'],
+                    'required': ['c', 't1'], # как-то надо учесть gd
                     'forbidden': ['mpr'],
                     'prefer_order': ['tfe', 'tse', '3d'],
                     'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}
