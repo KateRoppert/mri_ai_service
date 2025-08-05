@@ -16,6 +16,8 @@ from performance_profiler import profiler, measure, setup_profiling, measure_blo
 import mmap
 from itertools import islice
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 
 # --- Data Classes ---
@@ -919,11 +921,12 @@ class DicomScanner:
 class BidsOrganizer:
     """Enhanced BIDS organizer with proper naming conventions and missing modality handling."""
     
-    def __init__(self, output_dir: str, action_type: str = 'copy'):
+    def __init__(self, output_dir: str, action_type: str = 'copy', max_parallel_files: int = 32):
         self.output_dir = output_dir
         self.action_type = action_type
         self.detector = EnhancedModalityDetector()
         self.selection_log = []
+        self.max_parallel_files = max_parallel_files  # Максимальное количество параллельных операций
         
         # BIDS modality mapping
         self.bids_modality_map = {
@@ -943,6 +946,71 @@ class BidsOrganizer:
             'sessions_completely_missing': []
         }
         self.input_stats = {'total_patients': 0, 'total_sessions': 0}
+
+    def _parallel_copy_files(self, file_operations: List[Tuple[str, str]], operation_type: str = 'copy'):
+        """
+        Параллельное копирование/перемещение файлов.
+        
+        Args:
+            file_operations: Список кортежей (source_path, destination_path)
+            operation_type: 'copy' или 'move'
+        """
+        # Определяем количество потоков (для I/O операций можно использовать больше потоков чем CPU)
+        max_workers = min(self.max_parallel_files, os.cpu_count() * 4)
+        
+        # Счетчики для логирования прогресса
+        total_files = len(file_operations)
+        completed = 0
+        failed = 0
+        lock = threading.Lock()
+        
+        def copy_single_file(src_dst_pair):
+            """Копирование одного файла с обработкой ошибок."""
+            src, dst = src_dst_pair
+            try:
+                if operation_type == 'move':
+                    shutil.move(src, dst)
+                else:
+                    shutil.copyfile(src, dst)  # copyfile быстрее чем copy
+                
+                # Обновляем счетчик
+                nonlocal completed
+                with lock:
+                    completed += 1
+                    if completed % 100 == 0:  # Логируем каждые 100 файлов
+                        logger.debug(f"Progress: {completed}/{total_files} files processed")
+                
+                return True, src, dst
+            except Exception as e:
+                nonlocal failed
+                with lock:
+                    failed += 1
+                return False, src, dst, str(e)
+        
+        # Выполняем параллельное копирование
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Запускаем все задачи
+            futures = {executor.submit(copy_single_file, pair): pair 
+                    for pair in file_operations}
+            
+            # Собираем результаты
+            errors = []
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if not result[0]:  # Если была ошибка
+                        _, src, dst, error = result
+                        errors.append((src, dst, error))
+                        logger.error(f"Failed to {operation_type} {src} -> {dst}: {error}")
+                except Exception as e:
+                    pair = futures[future]
+                    errors.append((pair[0], pair[1], str(e)))
+                    logger.error(f"Unexpected error processing {pair[0]}: {e}")
+        
+        # Финальное логирование
+        logger.info(f"Parallel {operation_type} completed: {completed} successful, {failed} failed")
+        
+        return errors
     
     @measure(capture_args=True) 
     def organize_to_bids(self, collected_data: Dict[str, PatientData]):
@@ -1340,46 +1408,40 @@ class BidsOrganizer:
     
     @measure
     def _copy_series_files_enhanced(self, series_info: SeriesInfo, modality: str, bids_modality_dir: str,
-                                  bids_sub_id: str, bids_ses_id: str):
-        """Copy files with proper BIDS naming conventions."""
+                                bids_sub_id: str, bids_ses_id: str):
+        """Copy files with proper BIDS naming conventions using parallel processing."""
         sorted_files = self._sort_files_by_instance_number(series_info.files)
         
         # BIDS suffix mapping
         bids_suffix = self.bids_modality_map.get(modality, modality)
         
         logger.info(f"    Copying {len(sorted_files)} files for {modality} -> {bids_suffix} "
-                   f"(Series UID: {series_info.uid})")
+                f"(Series UID: {series_info.uid})")
         
-        # ДОБАВИТЬ: Измерение блока копирования
-        with profiler.measure_block(f"copy_{len(sorted_files)}_files"):
-            # --- Stage-2: batch copy/move ---
-            BATCH = 64
-
-            batch_ops = []
-            for slice_idx, src_file_path in enumerate(sorted_files, 1):
-                bids_filename = f"{bids_sub_id}_{bids_ses_id}_{bids_suffix}_instance-{slice_idx:03d}.dcm"
-                dst_file_path = os.path.join(bids_modality_dir, bids_filename)
-                batch_ops.append((src_file_path, dst_file_path))
-
-            # for src, dst in batch_ops:
-            #     try:
-            #         if self.action_type == 'move':
-            #             shutil.move(src, dst)
-            #         else:
-            #             shutil.copyfile(src, dst)   # copyfile is faster than copy
-            #     except Exception as e:
-            #         logger.error(f"      Cannot {self.action_type} {src} -> {dst}: {e}")
-            it = iter(batch_ops)
-
-            while True:
-                chunk = list(islice(it, BATCH))
-                if not chunk:
-                    break
-                for src, dst in chunk:
-                    if self.action_type == 'move':
-                        shutil.move(src, dst)
-                    else:
-                        shutil.copyfile(src, dst)
+        # Подготавливаем список операций копирования
+        file_operations = []
+        for slice_idx, src_file_path in enumerate(sorted_files, 1):
+            bids_filename = f"{bids_sub_id}_{bids_ses_id}_{bids_suffix}_instance-{slice_idx:03d}.dcm"
+            dst_file_path = os.path.join(bids_modality_dir, bids_filename)
+            file_operations.append((src_file_path, dst_file_path))
+        
+        # Измеряем время копирования
+        with profiler.measure_block(f"parallel_{self.action_type}_{len(sorted_files)}_files"):
+            # Используем параллельное копирование для больших серий
+            if len(file_operations) > 10:  # Порог для использования параллельного копирования
+                errors = self._parallel_copy_files(file_operations, self.action_type)
+                if errors:
+                    logger.warning(f"    {len(errors)} files failed during {self.action_type}")
+            else:
+                # Для маленьких серий используем последовательное копирование
+                for src_file_path, dst_file_path in file_operations:
+                    try:
+                        if self.action_type == 'move':
+                            shutil.move(src_file_path, dst_file_path)
+                        else:
+                            shutil.copyfile(src_file_path, dst_file_path)
+                    except Exception as e:
+                        logger.error(f"Failed to {self.action_type} {src_file_path} -> {dst_file_path}: {e}")
     
     @measure
     def _sort_files_by_instance_number(self, dicom_files_paths: List[str]) -> List[str]:
