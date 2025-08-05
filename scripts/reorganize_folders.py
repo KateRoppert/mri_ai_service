@@ -824,17 +824,16 @@ class DicomScanner:
                         # Периодический checkpoint
                         profiler.memory_checkpoint(f"after_{dicom_file_count}_files")
                     
-                    if is_dicom_file(file_path):
-                        ds = _cached_dicom_header(file_path)
-                        if ds is None:
-                            continue
+                    ds = _cached_dicom_header(file_path)
+                    if ds is None:
+                        continue
                             
-                        series_info = self._extract_series_info(ds, file_path)
-                        if series_info is None:
-                            continue
-                            
-                        self._add_to_collected_data(collected_data, series_info, file_path)
-                        processed_file_count += 1
+                    series_info = self._extract_series_info(ds, file_path)
+                    if series_info is None:
+                        continue
+                        
+                    self._add_to_collected_data(collected_data, series_info, file_path)
+                    processed_file_count += 1
 
         # Конец фазы
         profiler.record_phase("phase_1_scanning", "end")
@@ -1371,7 +1370,7 @@ class BidsOrganizer:
             #     except Exception as e:
             #         logger.error(f"      Cannot {self.action_type} {src} -> {dst}: {e}")
             it = iter(batch_ops)
-            
+
             while True:
                 chunk = list(islice(it, BATCH))
                 if not chunk:
