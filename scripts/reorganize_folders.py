@@ -16,8 +16,9 @@ from performance_profiler import profiler, measure, setup_profiling, measure_blo
 import mmap
 from itertools import islice
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import threading
+import multiprocessing as mp
 
 
 # --- Data Classes ---
@@ -917,6 +918,92 @@ class DicomScanner:
         collected_data[pat_id].studies[study_uid].series[series_uid].files.append(file_path)
 
 
+# --- Parallel Processing Functions ---
+def process_patient_worker(args):
+    """
+    Обработка одного пациента в отдельном процессе.
+    Функция верхнего уровня для использования с ProcessPoolExecutor.
+    """
+    patient_id, patient_files_info, bids_sub_id, output_dir, action_type = args
+    
+    # Настраиваем логирование для процесса
+    worker_logger = logging.getLogger(f"worker_{mp.current_process().pid}")
+    worker_logger.setLevel(logging.INFO)
+    
+    try:
+        # Создаем временный экземпляр органайзера для этого процесса
+        temp_organizer = BidsOrganizer(output_dir, action_type)
+        
+        # Восстанавливаем структуру данных пациента из файлов
+        patient_data = PatientData(original_id=patient_id, studies={})
+        
+        for study_uid, study_info in patient_files_info['studies'].items():
+            study = StudyInfo(
+                uid=study_uid,
+                series={},
+                study_datetime=datetime.fromisoformat(study_info['study_datetime'])
+            )
+            
+            for series_uid, series_info in study_info['series'].items():
+                # Читаем первый файл для получения Dataset
+                first_file = series_info['files'][0]
+                ds = _cached_dicom_header(first_file)
+                if ds is None:
+                    continue
+                
+                series = SeriesInfo(
+                    uid=series_uid,
+                    files=series_info['files'],
+                    series_number=series_info['series_number'],
+                    study_datetime=study.study_datetime,
+                    first_dataset=ds,
+                    protocol_name=series_info['protocol_name'],
+                    series_desc=series_info['series_desc']
+                )
+                study.series[series_uid] = series
+            
+            patient_data.studies[study_uid] = study
+        
+        # Обрабатываем пациента
+        session_bids_map = temp_organizer._create_session_bids_mapping(patient_data.studies)
+        
+        # Собираем результаты обработки
+        results = {
+            'patient_id': patient_id,
+            'bids_sub_id': bids_sub_id,
+            'sessions_processed': 0,
+            'missing_modalities': {},
+            'failed_sessions': [],
+            'errors': []
+        }
+        
+        # Обрабатываем каждую сессию
+        for study_info in patient_data.studies.values():
+            try:
+                has_missing, has_any = temp_organizer._process_study(
+                    study_info, bids_sub_id, session_bids_map, patient_id
+                )
+                results['sessions_processed'] += 1
+                
+                if has_missing:
+                    results['missing_modalities'][study_info.uid] = True
+                if not has_any:
+                    results['failed_sessions'].append(study_info.uid)
+                    
+            except Exception as e:
+                results['errors'].append(f"Error processing study {study_info.uid}: {str(e)}")
+                worker_logger.error(f"Error processing study {study_info.uid}: {e}")
+        
+        return results
+        
+    except Exception as e:
+        worker_logger.error(f"Error processing patient {patient_id}: {e}")
+        return {
+            'patient_id': patient_id,
+            'bids_sub_id': bids_sub_id,
+            'error': str(e)
+        }
+
 # --- Enhanced BIDS Organizer Class ---
 class BidsOrganizer:
     """Enhanced BIDS organizer with proper naming conventions and missing modality handling."""
@@ -1044,15 +1131,55 @@ class BidsOrganizer:
         # Create BIDS patient IDs
         patient_bids_map = self._create_patient_bids_mapping(collected_data)
         
-        # Process each patient
-        # Измерение обработки пациентов
-        with profiler.measure_block("process_all_patients"):
-            for idx, patient_data in enumerate(collected_data.values()):
-                # Checkpoint каждые 10 пациентов
-                if idx % 10 == 0 and idx > 0:
-                    profiler.memory_checkpoint(f"after_{idx}_patients")
+        #  ИЗМЕНЕНИЕ: Подготовка данных для параллельной обработки
+        # Конвертируем данные в сериализуемый формат
+        patient_tasks = []
+        
+        for patient_id, patient_data in collected_data.items():
+            bids_sub_id = patient_bids_map[patient_id]
+            
+            # Преобразуем в сериализуемый формат (только пути и метаданные)
+            patient_files_info = {
+                'studies': {}
+            }
+            
+            for study_uid, study_info in patient_data.studies.items():
+                patient_files_info['studies'][study_uid] = {
+                    'study_datetime': study_info.study_datetime.isoformat(),
+                    'series': {}
+                }
                 
-                self._process_patient(patient_data, patient_bids_map)
+                for series_uid, series_info in study_info.series.items():
+                    patient_files_info['studies'][study_uid]['series'][series_uid] = {
+                        'files': series_info.files,
+                        'series_number': series_info.series_number,
+                        'protocol_name': series_info.protocol_name,
+                        'series_desc': series_info.series_desc
+                    }
+            
+            patient_tasks.append((
+                patient_id,
+                patient_files_info,
+                bids_sub_id,
+                self.output_dir,
+                self.action_type
+            ))
+        
+        # ИЗМЕНЕНИЕ: Параллельная обработка пациентов
+        max_workers = min(mp.cpu_count(), len(patient_tasks))
+        logger.info(f"Processing {len(patient_tasks)} patients using {max_workers} workers")
+        
+        with profiler.measure_block("parallel_patient_processing"):
+            if max_workers > 1 and len(patient_tasks) > 1:
+                # Параллельная обработка
+                self._process_patients_parallel(patient_tasks, patient_bids_map)
+            else:
+                # Последовательная обработка для одного пациента
+                logger.info("Using sequential processing (only 1 patient)")
+                for idx, patient_data in enumerate(collected_data.values()):
+                    if idx % 10 == 0 and idx > 0:
+                        profiler.memory_checkpoint(f"after_{idx}_patients")
+                    self._process_patient(patient_data, patient_bids_map)
         
         # Generate selection summary
         self._generate_selection_summary()
