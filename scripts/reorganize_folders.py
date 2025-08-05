@@ -10,9 +10,12 @@ from collections import defaultdict
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Union, Any, Protocol, Tuple
-from functools import wraps
+from functools import wraps, lru_cache
 from abc import ABC, abstractmethod
 from performance_profiler import profiler, measure, setup_profiling, measure_block
+import mmap
+from itertools import islice
+import time
 
 
 # --- Data Classes ---
@@ -756,6 +759,27 @@ def safe_read_dicom(file_path: str, specific_tags: Optional[List] = None) -> Opt
     """Safely read DICOM file with error handling."""
     return pydicom.dcmread(file_path, stop_before_pixels=True, specific_tags=specific_tags)
 
+@lru_cache(maxsize=2048)
+def _cached_dicom_header(file_path: str) -> Optional[pydicom.Dataset]:
+    """
+    Read only the tags we need via mmap.
+    The Dataset is cached by absolute path.
+    """
+    tags = [
+        (0x0008, 0x0060), (0x0008, 0x103E), (0x0018, 0x1030), (0x0018, 0x0010),
+        (0x0008, 0x0020), (0x0008, 0x0030), (0x0020, 0x000D), (0x0020, 0x000E),
+        (0x0020, 0x0011), (0x0020, 0x0013), (0x0018, 0x0020), (0x0018, 0x0021),
+        (0x0008, 0x0008), (0x0018, 0x0080), (0x0018, 0x0081), (0x0018, 0x0082),
+        (0x0010, 0x0020), (0x0008, 0x0022), (0x0008, 0x0032)
+    ]
+    try:
+        with open(file_path, 'rb') as f:
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                return pydicom.filereader.dcmread(mm, stop_before_pixels=True,
+                                                  specific_tags=tags)
+    except Exception:
+        return None
+
 
 @measure 
 def is_dicom_file(file_path: str) -> bool:
@@ -801,7 +825,7 @@ class DicomScanner:
                         profiler.memory_checkpoint(f"after_{dicom_file_count}_files")
                     
                     if is_dicom_file(file_path):
-                        ds = safe_read_dicom(file_path)
+                        ds = _cached_dicom_header(file_path)
                         if ds is None:
                             continue
                             
@@ -1329,24 +1353,34 @@ class BidsOrganizer:
         
         # ДОБАВИТЬ: Измерение блока копирования
         with profiler.measure_block(f"copy_{len(sorted_files)}_files"):
+            # --- Stage-2: batch copy/move ---
+            BATCH = 64
+
+            batch_ops = []
             for slice_idx, src_file_path in enumerate(sorted_files, 1):
-                # Proper BIDS naming: sub-<label>_ses-<label>_<suffix>_<instance>.dcm
                 bids_filename = f"{bids_sub_id}_{bids_ses_id}_{bids_suffix}_instance-{slice_idx:03d}.dcm"
-                
                 dst_file_path = os.path.join(bids_modality_dir, bids_filename)
-                
-                # Copy or move file
-                try:
+                batch_ops.append((src_file_path, dst_file_path))
+
+            # for src, dst in batch_ops:
+            #     try:
+            #         if self.action_type == 'move':
+            #             shutil.move(src, dst)
+            #         else:
+            #             shutil.copyfile(src, dst)   # copyfile is faster than copy
+            #     except Exception as e:
+            #         logger.error(f"      Cannot {self.action_type} {src} -> {dst}: {e}")
+            it = iter(batch_ops)
+            
+            while True:
+                chunk = list(islice(it, BATCH))
+                if not chunk:
+                    break
+                for src, dst in chunk:
                     if self.action_type == 'move':
-                        shutil.move(src_file_path, dst_file_path)
+                        shutil.move(src, dst)
                     else:
-                        shutil.copy(src_file_path, dst_file_path)
-                        
-                    if slice_idx <= 3:  # Log first few files
-                        logger.debug(f"      {self.action_type.capitalize()}d: {os.path.basename(src_file_path)} -> {bids_filename}")
-                        
-                except Exception as e:
-                    logger.error(f"      Failed to {self.action_type} {src_file_path} to {dst_file_path}: {e}")
+                        shutil.copyfile(src, dst)
     
     @measure
     def _sort_files_by_instance_number(self, dicom_files_paths: List[str]) -> List[str]:
@@ -1557,6 +1591,8 @@ Examples:
     )
     
     args = parser.parse_args()
+
+    start_time = time.perf_counter()
     
     # Setup logging
     try:
@@ -1703,6 +1739,10 @@ Examples:
                 organizer = BidsOrganizer(args.output_dir, args.action)
                 organizer.organize_to_bids(collected_data)
             
+            elapsed = time.perf_counter() - start_time
+            logger.info("=" * 70)
+            logger.info(f"Script completed in {elapsed:.2f} seconds")
+            logger.info("=" * 70)
             logger.info("="*70)
             logger.info("Enhanced DICOM to BIDS Conversion Completed Successfully")
             logger.info("="*70)
