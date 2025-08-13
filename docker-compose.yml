@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  mri-ai-service:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    volumes:
+      # Mount source code for development
+      - ./scripts:/app/scripts
+      - ./webapp:/app/webapp
+      - ./pipeline:/app/pipeline
+      - ./config:/app/config
+      - ./mni_templates:/app/mni_templates
+      # Mount data directories
+      - ./tests:/app/tests
+      - ./data:/app/data:rw
+      - ./logs:/app/logs:rw
+      - ./output:/app/output:rw
+      
+      # Mount external data directories from your host
+      - /home/roppert/work/data/Ms/P000010/15.11/:rw
+      - /home/roppert/work/pipeline_results/:rw
+      - /home/roppert/abin:/external/abin:ro
+      
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  data:
+  logs:
+  output:

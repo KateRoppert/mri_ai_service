@@ -1,0 +1,21 @@
+======================================================================
+PERFORMANCE REPORT - dicom_reorg_P000010_20250805_160040
+======================================================================
+Total execution time: 330.76s
+Memory: 56.02MB → 161.59MB (Δ+105.56MB)
+
+TOP FUNCTIONS BY TIME:
+  total_execution: 330.76s total, 330.760s avg (1 calls)
+  DicomScanner.scan_directory: 277.04s total, 277.040s avg (1 calls)
+  directory_walk: 277.04s total, 277.038s avg (1 calls)
+  is_dicom_file: 137.67s total, 0.043s avg (3217 calls)
+  BidsOrganizer.organize_to_bids: 53.72s total, 53.717s avg (1 calls)
+  process_all_patients: 53.66s total, 53.660s avg (1 calls)
+  BidsOrganizer._process_patient: 53.66s total, 53.659s avg (1 calls)
+  BidsOrganizer._process_study: 53.66s total, 26.829s avg (2 calls)
+  BidsOrganizer._process_modality_group_enhanced: 53.16s total, 6.645s avg (8 calls)
+  BidsOrganizer._copy_series_files_enhanced: 53.12s total, 6.641s avg (8 calls)
+
+PHASE TIMINGS:
+  phase_1_scanning: 277.04s (83.8%)
+  phase_2_organizing: 53.72s (16.2%)

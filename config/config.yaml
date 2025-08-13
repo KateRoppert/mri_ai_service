@@ -40,7 +40,7 @@ executables:
 # Parameters for specific pipeline steps
 steps:
   reorganize_folders:
-    action: "move"  # Possible values: "copy" (default), "move"
+    action: "copy"  # Possible values: "copy" (default), "move"
   dicom_standard_check: {}
   extract_metadata: {}
   convert_dicom_to_nifti: {}
@@ -71,7 +71,7 @@ steps:
       n_sd: 2.5          # Width of the stripe
       threshold_at_zero: false  # Ignore zero voxels
     bias_field_correction:
-      enabled: true    
+      enabled: false    
       method: "N4BiasFieldCorrection"
       strategy: "ModalitySpecific"  # Options: "Standard", "ModalitySpecific", "T1Based"
       
@@ -125,7 +125,7 @@ steps:
       save_mask: true 
       border: 0
   segmentation:
-    enabled: true     
+    enabled: false      
     model_name: "Unet"
     modality_input_map:
       t1: "T1w"

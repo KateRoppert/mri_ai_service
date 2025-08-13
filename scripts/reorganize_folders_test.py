@@ -10,15 +10,9 @@ from collections import defaultdict
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Union, Any, Protocol, Tuple
-from functools import wraps, lru_cache
+from functools import wraps
 from abc import ABC, abstractmethod
-from performance_profiler import profiler, measure, setup_profiling, measure_block
-import mmap
-from itertools import islice
 import time
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-import threading
-import multiprocessing as mp
 
 
 # --- Data Classes ---
@@ -104,7 +98,7 @@ class EnhancedStandardDetectionStrategy(ModalityDetectionStrategy):
         self.modality_config = {
             't1': {
                 'keywords': ['t1', 't1w'],
-                'forbidden': ['thr', 'mpr', 'ce', 'pit', 'contrast', 'gad', 'c'],
+                'forbidden': ['thr', 'mpr', 'ce', 'pit', 'contrast', 'gad'],
                 'priority_sequences': ['tfe', 'tse', 'se'],
                 'priority_modifiers': ['3d', 'clear', 'brain'],
                 'scoring_weights': {
@@ -117,7 +111,7 @@ class EnhancedStandardDetectionStrategy(ModalityDetectionStrategy):
                 }
             },
             't1c': {
-                'keywords': ['t1', 'c'],  # Both must be present
+                'keywords': ['t1', 'ce'],  # Both must be present
                 'alt_keywords': ['t1', 'contrast', 'gad', 'postcontrast', '+c', 'post'],
                 'forbidden': ['mpr', 'dyn', 'pit', 'spir'],
                 'priority_sequences': ['tfe', 'tse', 'se'],
@@ -181,7 +175,6 @@ class EnhancedStandardDetectionStrategy(ModalityDetectionStrategy):
         """Enhanced standard detection is never exclusive - it's the fallback."""
         return False
     
-    @measure
     def detect_modality(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
         """Detect modality using enhanced workflow."""
         logger = logging.getLogger(__name__)
@@ -247,7 +240,6 @@ class EnhancedStandardDetectionStrategy(ModalityDetectionStrategy):
         
         return False
     
-    @measure
     def _analyze_text_for_modality(self, text: str, has_contrast: bool) -> Optional[str]:
         """Analyze text for modality with enhanced logic."""
         if not text:
@@ -405,7 +397,6 @@ class YearSpecificDetectionStrategy(ModalityDetectionStrategy):
                 pass
         return False
     
-    @measure
     def detect_modality(self, ds: pydicom.Dataset, file_path: str) -> Optional[str]:
         """Detect modality using year-specific rules."""
         logger = logging.getLogger(__name__)
@@ -522,7 +513,7 @@ class EnhancedModalityDetector:
                 },
                 't2': {
                     'markers': ['t2w', 't2-tse', 't2'],
-                    'forbidden': ['mpr', 'flair'],
+                    'forbidden': ['mpr'],
                     'prefer_order': ['tse', 'sense', 'axi'],
                     'scoring_weights': {'tse': 2.0, 'sense': 1.3, 'axi': 1.2}
                 },
@@ -554,7 +545,7 @@ class EnhancedModalityDetector:
                 },
                 't2': {
                     'markers': ['t2-tse', 't2_tse', 't2', 't2_ffe'],
-                    'forbidden': ['mpr', 'flair'],
+                    'forbidden': ['mpr'],
                     'prefer_order': ['tse', 'axi'],
                     'scoring_weights': {'tse': 2.0, 'axi': 1.2}
                 },
@@ -586,7 +577,7 @@ class EnhancedModalityDetector:
                 },
                 't2': {
                     'markers': ['t2-tse', 't2_tse'],
-                    'forbidden': ['ce', 'pit', 'mpr', 'flair'],
+                    'forbidden': ['ce', 'pit', 'mpr'],
                     'prefer_order': ['tse', 'axi'],
                     'scoring_weights': {'tse': 2.0, 'axi': 1.2}
                 },
@@ -612,7 +603,6 @@ class EnhancedModalityDetector:
         self.strategies.sort(key=lambda s: s.get_priority())
         self.logger.info(f"Added detection strategy: {strategy.get_name()}")
     
-    @measure(capture_args=True)
     def determine_modality_with_details(self, ds: pydicom.Dataset, file_path: str, session_id: str = "") -> Tuple[str, Optional[ModalityDetectionStrategy], Dict]:
         """Determine modality with detailed logging information."""
         self.logger.debug(f"Determining modality for {os.path.basename(file_path)}:")
@@ -660,7 +650,6 @@ class EnhancedModalityDetector:
         self.logger.warning(f"Could not determine modality for file: {os.path.basename(file_path)}")
         return 'unknown', None, details
     
-    @measure
     def determine_modality(self, ds: pydicom.Dataset, file_path: str) -> str:
         """Determine modality using registered strategies."""
         modality, _, _ = self.determine_modality_with_details(ds, file_path)
@@ -711,7 +700,7 @@ def setup_logging(log_file_path: str):
     except Exception as e:
         logger.error(f"Failed to configure file logging {log_file_path}: {e}")
 
-@measure
+
 def normalize_dicom_text(value: Any) -> str:
     """Convert DICOM value to normalized lowercase string."""
     if value is None:
@@ -731,7 +720,7 @@ def safe_float(value: Any, tag_name: str = "value") -> Optional[float]:
         logger.debug(f"Cannot convert {tag_name}='{value}' (type: {type(value)}) to float.")
         return None
 
-@measure
+
 def get_dicom_value(ds: pydicom.Dataset, tag: Union[tuple, str], default: Any = None) -> Any:
     """Safely extract value from DICOM dataset."""
     try:
@@ -756,35 +745,13 @@ def get_dicom_value(ds: pydicom.Dataset, tag: Union[tuple, str], default: Any = 
         logger.error(f"Exception in get_dicom_value for tag {tag}: {e}")
         return default
 
-@measure(capture_args=True) 
+
 @handle_dicom_error
 def safe_read_dicom(file_path: str, specific_tags: Optional[List] = None) -> Optional[pydicom.Dataset]:
     """Safely read DICOM file with error handling."""
     return pydicom.dcmread(file_path, stop_before_pixels=True, specific_tags=specific_tags)
 
-@lru_cache(maxsize=2048)
-def _cached_dicom_header(file_path: str) -> Optional[pydicom.Dataset]:
-    """
-    Read only the tags we need via mmap.
-    The Dataset is cached by absolute path.
-    """
-    tags = [
-        (0x0008, 0x0060), (0x0008, 0x103E), (0x0018, 0x1030), (0x0018, 0x0010),
-        (0x0008, 0x0020), (0x0008, 0x0030), (0x0020, 0x000D), (0x0020, 0x000E),
-        (0x0020, 0x0011), (0x0020, 0x0013), (0x0018, 0x0020), (0x0018, 0x0021),
-        (0x0008, 0x0008), (0x0018, 0x0080), (0x0018, 0x0081), (0x0018, 0x0082),
-        (0x0010, 0x0020), (0x0008, 0x0022), (0x0008, 0x0032)
-    ]
-    try:
-        with open(file_path, 'rb') as f:
-            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                return pydicom.filereader.dcmread(mm, stop_before_pixels=True,
-                                                  specific_tags=tags)
-    except Exception:
-        return None
 
-
-@measure 
 def is_dicom_file(file_path: str) -> bool:
     """Check if file is a valid DICOM file."""
     try:
@@ -801,51 +768,38 @@ def is_dicom_file(file_path: str) -> bool:
 # --- DICOM Scanner Class ---
 class DicomScanner:
     """Handles scanning and collecting DICOM files."""
-
-    @measure(capture_args=True)
+    
     def scan_directory(self, input_dir: str) -> Dict[str, PatientData]:
         """Scan directory and collect DICOM metadata."""
         logger.info("Phase 1: Scanning DICOM files and collecting metadata...")
-
-        # Начало фазы
-        profiler.record_phase("phase_1_scanning", "start")
-        profiler.memory_checkpoint("scan_start")
         
         collected_data = {}
         dicom_file_count = 0
         processed_file_count = 0
         
-        # Измерение блока сканирования директорий
-        with profiler.measure_block("directory_walk"):
-            for root, _, files in os.walk(input_dir):
-                for file_name in files:
-                    file_path = os.path.join(root, file_name)
-                    dicom_file_count += 1
-                    
-                    if dicom_file_count % 500 == 0:
-                        logger.info(f"  Scanned files: {dicom_file_count}...")
-                        # Периодический checkpoint
-                        profiler.memory_checkpoint(f"after_{dicom_file_count}_files")
-                    
-                    ds = _cached_dicom_header(file_path)
+        for root, _, files in os.walk(input_dir):
+            for file_name in files:
+                file_path = os.path.join(root, file_name)
+                dicom_file_count += 1
+                
+                if dicom_file_count % 500 == 0:
+                    logger.info(f"  Scanned files: {dicom_file_count}...")
+                
+                if is_dicom_file(file_path):
+                    ds = safe_read_dicom(file_path)
                     if ds is None:
                         continue
-                            
+                        
                     series_info = self._extract_series_info(ds, file_path)
                     if series_info is None:
                         continue
                         
                     self._add_to_collected_data(collected_data, series_info, file_path)
                     processed_file_count += 1
-
-        # Конец фазы
-        profiler.record_phase("phase_1_scanning", "end")
-        profiler.memory_checkpoint("scan_end")
         
         logger.info(f"Phase 1 completed. Total files scanned: {dicom_file_count}. DICOM files processed: {processed_file_count}.")
         return collected_data
     
-    @measure 
     def _extract_series_info(self, ds: pydicom.Dataset, file_path: str) -> Optional[Dict]:
         """Extract series information from DICOM dataset."""
         pat_id = get_dicom_value(ds, (0x0010, 0x0020), "UNKNOWN_PATIENT_ID")
@@ -883,7 +837,6 @@ class DicomScanner:
             'series_desc': normalize_dicom_text(get_dicom_value(ds, (0x0008, 0x103E), ""))
         }
     
-    @measure
     def _add_to_collected_data(self, collected_data: Dict, series_info: Dict, file_path: str):
         """Add series information to collected data structure."""
         pat_id = series_info['pat_id']
@@ -918,102 +871,15 @@ class DicomScanner:
         collected_data[pat_id].studies[study_uid].series[series_uid].files.append(file_path)
 
 
-# --- Parallel Processing Functions ---
-def process_patient_worker(args):
-    """
-    Обработка одного пациента в отдельном процессе.
-    Функция верхнего уровня для использования с ProcessPoolExecutor.
-    """
-    patient_id, patient_files_info, bids_sub_id, output_dir, action_type = args
-    
-    # Настраиваем логирование для процесса
-    worker_logger = logging.getLogger(f"worker_{mp.current_process().pid}")
-    worker_logger.setLevel(logging.INFO)
-    
-    try:
-        # Создаем временный экземпляр органайзера для этого процесса
-        temp_organizer = BidsOrganizer(output_dir, action_type)
-        
-        # Восстанавливаем структуру данных пациента из файлов
-        patient_data = PatientData(original_id=patient_id, studies={})
-        
-        for study_uid, study_info in patient_files_info['studies'].items():
-            study = StudyInfo(
-                uid=study_uid,
-                series={},
-                study_datetime=datetime.fromisoformat(study_info['study_datetime'])
-            )
-            
-            for series_uid, series_info in study_info['series'].items():
-                # Читаем первый файл для получения Dataset
-                first_file = series_info['files'][0]
-                ds = _cached_dicom_header(first_file)
-                if ds is None:
-                    continue
-                
-                series = SeriesInfo(
-                    uid=series_uid,
-                    files=series_info['files'],
-                    series_number=series_info['series_number'],
-                    study_datetime=study.study_datetime,
-                    first_dataset=ds,
-                    protocol_name=series_info['protocol_name'],
-                    series_desc=series_info['series_desc']
-                )
-                study.series[series_uid] = series
-            
-            patient_data.studies[study_uid] = study
-        
-        # Обрабатываем пациента
-        session_bids_map = temp_organizer._create_session_bids_mapping(patient_data.studies)
-        
-        # Собираем результаты обработки
-        results = {
-            'patient_id': patient_id,
-            'bids_sub_id': bids_sub_id,
-            'sessions_processed': 0,
-            'missing_modalities': {},
-            'failed_sessions': [],
-            'errors': []
-        }
-        
-        # Обрабатываем каждую сессию
-        for study_info in patient_data.studies.values():
-            try:
-                has_missing, has_any = temp_organizer._process_study(
-                    study_info, bids_sub_id, session_bids_map, patient_id
-                )
-                results['sessions_processed'] += 1
-                
-                if has_missing:
-                    results['missing_modalities'][study_info.uid] = True
-                if not has_any:
-                    results['failed_sessions'].append(study_info.uid)
-                    
-            except Exception as e:
-                results['errors'].append(f"Error processing study {study_info.uid}: {str(e)}")
-                worker_logger.error(f"Error processing study {study_info.uid}: {e}")
-        
-        return results
-        
-    except Exception as e:
-        worker_logger.error(f"Error processing patient {patient_id}: {e}")
-        return {
-            'patient_id': patient_id,
-            'bids_sub_id': bids_sub_id,
-            'error': str(e)
-        }
-
 # --- Enhanced BIDS Organizer Class ---
 class BidsOrganizer:
     """Enhanced BIDS organizer with proper naming conventions and missing modality handling."""
     
-    def __init__(self, output_dir: str, action_type: str = 'copy', max_parallel_files: int = 32):
+    def __init__(self, output_dir: str, action_type: str = 'copy'):
         self.output_dir = output_dir
         self.action_type = action_type
         self.detector = EnhancedModalityDetector()
         self.selection_log = []
-        self.max_parallel_files = max_parallel_files  # Максимальное количество параллельных операций
         
         # BIDS modality mapping
         self.bids_modality_map = {
@@ -1033,118 +899,10 @@ class BidsOrganizer:
             'sessions_completely_missing': []
         }
         self.input_stats = {'total_patients': 0, 'total_sessions': 0}
-
-    def _parallel_copy_files(self, file_operations: List[Tuple[str, str]], operation_type: str = 'copy'):
-        """
-        Параллельное копирование/перемещение файлов.
-        
-        Args:
-            file_operations: Список кортежей (source_path, destination_path)
-            operation_type: 'copy' или 'move'
-        """
-        # Определяем количество потоков (для I/O операций можно использовать больше потоков чем CPU)
-        max_workers = min(self.max_parallel_files, os.cpu_count() * 4)
-        
-        # Счетчики для логирования прогресса
-        total_files = len(file_operations)
-        completed = 0
-        failed = 0
-        lock = threading.Lock()
-        
-        def copy_single_file(src_dst_pair):
-            """Копирование одного файла с обработкой ошибок."""
-            src, dst = src_dst_pair
-            try:
-                if operation_type == 'move':
-                    shutil.move(src, dst)
-                else:
-                    shutil.copyfile(src, dst)  # copyfile быстрее чем copy
-                
-                # Обновляем счетчик
-                nonlocal completed
-                with lock:
-                    completed += 1
-                    if completed % 100 == 0:  # Логируем каждые 100 файлов
-                        logger.debug(f"Progress: {completed}/{total_files} files processed")
-                
-                return True, src, dst
-            except Exception as e:
-                nonlocal failed
-                with lock:
-                    failed += 1
-                return False, src, dst, str(e)
-        
-        # Выполняем параллельное копирование
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Запускаем все задачи
-            futures = {executor.submit(copy_single_file, pair): pair 
-                    for pair in file_operations}
-            
-            # Собираем результаты
-            errors = []
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    if not result[0]:  # Если была ошибка
-                        _, src, dst, error = result
-                        errors.append((src, dst, error))
-                        logger.error(f"Failed to {operation_type} {src} -> {dst}: {error}")
-                except Exception as e:
-                    pair = futures[future]
-                    errors.append((pair[0], pair[1], str(e)))
-                    logger.error(f"Unexpected error processing {pair[0]}: {e}")
-        
-        # Финальное логирование
-        logger.info(f"Parallel {operation_type} completed: {completed} successful, {failed} failed")
-        
-        return errors
     
-    def _process_patients_parallel(self, patient_tasks: List[tuple], patient_bids_map: Dict[str, str]):
-        """Параллельная обработка пациентов."""
-        results_collected = []
-        errors = []
-        
-        with ProcessPoolExecutor(max_workers=mp.cpu_count()) as executor:
-            # Запускаем задачи
-            future_to_patient = {
-                executor.submit(process_patient_worker, task): task[0]  # patient_id
-                for task in patient_tasks
-            }
-            
-            # Собираем результаты по мере готовности
-            for future in as_completed(future_to_patient):
-                patient_id = future_to_patient[future]
-                try:
-                    result = future.result(timeout=300)  # 5 минут таймаут на пациента
-                    results_collected.append(result)
-                    
-                    # Логируем прогресс
-                    logger.info(f"Completed processing patient {patient_id} "
-                            f"({len(results_collected)}/{len(patient_tasks)})")
-                    
-                    # Обновляем статистику failed cases на основе результатов
-                    if 'error' in result:
-                        errors.append(f"Patient {patient_id}: {result['error']}")
-                    else:
-                        self._update_failed_cases_from_result(result)
-                        
-                except Exception as e:
-                    logger.error(f"Failed to process patient {patient_id}: {e}")
-                    errors.append(f"Patient {patient_id}: {str(e)}")
-        
-        if errors:
-            logger.error(f"Errors during parallel processing: {len(errors)} patients failed")
-            for error in errors[:5]:  # Показываем первые 5 ошибок
-                logger.error(f"  - {error}")
-    
-    @measure(capture_args=True) 
     def organize_to_bids(self, collected_data: Dict[str, PatientData]):
         """Organize collected data into BIDS structure with enhanced logging."""
         logger.info("Phase 2: Creating BIDS structure and organizing files...")
-
-        # Начало фазы 2
-        profiler.record_phase("phase_2_organizing", "start")
-        profiler.memory_checkpoint("organize_start")
         
         try:
             os.makedirs(self.output_dir, exist_ok=True)
@@ -1169,69 +927,18 @@ class BidsOrganizer:
         # Create BIDS patient IDs
         patient_bids_map = self._create_patient_bids_mapping(collected_data)
         
-        #  ИЗМЕНЕНИЕ: Подготовка данных для параллельной обработки
-        # Конвертируем данные в сериализуемый формат
-        patient_tasks = []
-        
-        for patient_id, patient_data in collected_data.items():
-            bids_sub_id = patient_bids_map[patient_id]
-            
-            # Преобразуем в сериализуемый формат (только пути и метаданные)
-            patient_files_info = {
-                'studies': {}
-            }
-            
-            for study_uid, study_info in patient_data.studies.items():
-                patient_files_info['studies'][study_uid] = {
-                    'study_datetime': study_info.study_datetime.isoformat(),
-                    'series': {}
-                }
-                
-                for series_uid, series_info in study_info.series.items():
-                    patient_files_info['studies'][study_uid]['series'][series_uid] = {
-                        'files': series_info.files,
-                        'series_number': series_info.series_number,
-                        'protocol_name': series_info.protocol_name,
-                        'series_desc': series_info.series_desc
-                    }
-            
-            patient_tasks.append((
-                patient_id,
-                patient_files_info,
-                bids_sub_id,
-                self.output_dir,
-                self.action_type
-            ))
-        
-        # ИЗМЕНЕНИЕ: Параллельная обработка пациентов
-        max_workers = min(mp.cpu_count(), len(patient_tasks))
-        logger.info(f"Processing {len(patient_tasks)} patients using {max_workers} workers")
-        
-        with profiler.measure_block("parallel_patient_processing"):
-            if max_workers > 1 and len(patient_tasks) > 1:
-                # Параллельная обработка
-                self._process_patients_parallel(patient_tasks, patient_bids_map)
-            else:
-                # Последовательная обработка для одного пациента
-                logger.info("Using sequential processing (only 1 patient)")
-                for idx, patient_data in enumerate(collected_data.values()):
-                    if idx % 10 == 0 and idx > 0:
-                        profiler.memory_checkpoint(f"after_{idx}_patients")
-                    self._process_patient(patient_data, patient_bids_map)
+        # Process each patient
+        for patient_data in collected_data.values():
+            self._process_patient(patient_data, patient_bids_map)
         
         # Generate selection summary
         self._generate_selection_summary()
         
         # Write mapping and failed cases files
         self._write_mapping_files(logs_dir)
-
-        # Конец фазы 2
-        profiler.record_phase("phase_2_organizing", "end")
-        profiler.memory_checkpoint("organize_end")
         
         logger.info("Enhanced BIDS organization completed!")
     
-    @measure
     def _create_patient_bids_mapping(self, collected_data: Dict) -> Dict[str, str]:
         """Create mapping from original patient IDs to BIDS IDs."""
         sorted_patient_ids = sorted(collected_data.keys())
@@ -1242,7 +949,6 @@ class BidsOrganizer:
         
         return mapping
     
-    @measure(capture_args=True)
     def _process_patient(self, patient_data: PatientData, patient_bids_map: Dict[str, str]):
         """Process a single patient's data."""
         bids_sub_id = patient_bids_map[patient_data.original_id]
@@ -1299,7 +1005,6 @@ class BidsOrganizer:
         sorted_study_uids = sorted(studies.keys(), key=lambda uid: studies[uid].study_datetime)
         return {orig_id: f"ses-{i+1:03d}" for i, orig_id in enumerate(sorted_study_uids)}
     
-    @measure(capture_args=True)
     def _process_study(self, study_info: StudyInfo, bids_sub_id: str, session_bids_map: Dict[str, str], 
                       original_patient_id: str) -> Tuple[bool, bool]:
         """Process a single study/session with enhanced modality detection.
@@ -1377,7 +1082,6 @@ class BidsOrganizer:
         
         return has_missing_modalities, has_any_modalities
     
-    @measure
     def _group_series_by_modality_enhanced(self, series_dict: Dict[str, SeriesInfo], session_id: str) -> Tuple[Dict, Dict]:
         """Enhanced grouping with detailed logging."""
         modality_groups = defaultdict(list)
@@ -1405,7 +1109,6 @@ class BidsOrganizer:
         
         return dict(modality_groups), detection_details
     
-    @measure
     def _process_modality_group_enhanced(self, series_with_strategies: List[Tuple[SeriesInfo, ModalityDetectionStrategy]], 
                                        modality: str, bids_anat_path: str, bids_sub_id: str, bids_ses_id: str, session_id: str):
         """Enhanced modality group processing with priority scoring."""
@@ -1458,7 +1161,6 @@ class BidsOrganizer:
             self._copy_series_files_enhanced(series_info, modality, bids_modality_dir, 
                                            bids_sub_id, bids_ses_id)
     
-    @measure
     def _apply_enhanced_priority_selection(self, series_with_strategies: List[Tuple[SeriesInfo, ModalityDetectionStrategy]], 
                                          modality: str, session_id: str) -> Tuple[List[SeriesInfo], str, Dict]:
         """Enhanced priority selection with scoring system."""
@@ -1571,44 +1273,36 @@ class BidsOrganizer:
         
         return selected_series
     
-    @measure
     def _copy_series_files_enhanced(self, series_info: SeriesInfo, modality: str, bids_modality_dir: str,
-                                bids_sub_id: str, bids_ses_id: str):
-        """Copy files with proper BIDS naming conventions using parallel processing."""
+                                  bids_sub_id: str, bids_ses_id: str):
+        """Copy files with proper BIDS naming conventions."""
         sorted_files = self._sort_files_by_instance_number(series_info.files)
         
         # BIDS suffix mapping
         bids_suffix = self.bids_modality_map.get(modality, modality)
         
         logger.info(f"    Copying {len(sorted_files)} files for {modality} -> {bids_suffix} "
-                f"(Series UID: {series_info.uid})")
+                   f"(Series UID: {series_info.uid})")
         
-        # Подготавливаем список операций копирования
-        file_operations = []
         for slice_idx, src_file_path in enumerate(sorted_files, 1):
+            # Proper BIDS naming: sub-<label>_ses-<label>_<suffix>_<instance>.dcm
             bids_filename = f"{bids_sub_id}_{bids_ses_id}_{bids_suffix}_instance-{slice_idx:03d}.dcm"
+            
             dst_file_path = os.path.join(bids_modality_dir, bids_filename)
-            file_operations.append((src_file_path, dst_file_path))
-        
-        # Измеряем время копирования
-        with profiler.measure_block(f"parallel_{self.action_type}_{len(sorted_files)}_files"):
-            # Используем параллельное копирование для больших серий
-            if len(file_operations) > 10:  # Порог для использования параллельного копирования
-                errors = self._parallel_copy_files(file_operations, self.action_type)
-                if errors:
-                    logger.warning(f"    {len(errors)} files failed during {self.action_type}")
-            else:
-                # Для маленьких серий используем последовательное копирование
-                for src_file_path, dst_file_path in file_operations:
-                    try:
-                        if self.action_type == 'move':
-                            shutil.move(src_file_path, dst_file_path)
-                        else:
-                            shutil.copyfile(src_file_path, dst_file_path)
-                    except Exception as e:
-                        logger.error(f"Failed to {self.action_type} {src_file_path} -> {dst_file_path}: {e}")
+            
+            # Copy or move file
+            try:
+                if self.action_type == 'move':
+                    shutil.move(src_file_path, dst_file_path)
+                else:
+                    shutil.copy(src_file_path, dst_file_path)
+                    
+                if slice_idx <= 3:  # Log first few files
+                    logger.debug(f"      {self.action_type.capitalize()}d: {os.path.basename(src_file_path)} -> {bids_filename}")
+                    
+            except Exception as e:
+                logger.error(f"      Failed to {self.action_type} {src_file_path} to {dst_file_path}: {e}")
     
-    @measure
     def _sort_files_by_instance_number(self, dicom_files_paths: List[str]) -> List[str]:
         """Sort DICOM files by InstanceNumber."""
         sorted_files = []
@@ -1729,28 +1423,6 @@ class BidsOrganizer:
         except Exception as e:
             logger.error(f"Failed to save failed cases report: {e}")
 
-    def _update_failed_cases_from_result(self, result: Dict):
-        """Обновляет статистику failed cases из результата обработки пациента."""
-        patient_id = result['patient_id']
-        bids_sub_id = result['bids_sub_id']
-        
-        # Обновляем статистику пропущенных модальностей
-        if result.get('missing_modalities'):
-            if patient_id not in self.failed_cases['patients_with_missing_modalities']:
-                self.failed_cases['patients_with_missing_modalities'][patient_id] = {
-                    'bids_id': bids_sub_id,
-                    'sessions_with_issues': []
-                }
-        
-        # Обновляем полностью пропущенные сессии
-        for study_uid in result.get('failed_sessions', []):
-            self.failed_cases['sessions_completely_missing'].append({
-                'original_patient_id': patient_id,
-                'bids_patient_id': bids_sub_id,
-                'original_study_uid': study_uid,
-                'reason': 'No valid modalities detected'
-            })
-
 
 # --- CLI Interface ---
 def main():
@@ -1817,39 +1489,6 @@ Examples:
         action='version',
         version='Enhanced DICOM to BIDS Converter v3.0.0 (CSV-Analysis Based)'
     )
-
-    parser.add_argument(
-        '--profile',
-        action='store_true',
-        help='Enable performance profiling'
-    )
-    
-    parser.add_argument(
-        '--profile-output-dir',
-        type=str,
-        default='profiling_reports',
-        help='Directory for profiling reports (default: profiling_reports)'
-    )
-    
-    parser.add_argument(
-        '--profile-slow-threshold',
-        type=float,
-        default=1.0,
-        help='Log operations slower than this threshold in seconds (default: 1.0)'
-    )
-
-    parser.add_argument(
-        '--parallel',
-        action='store_true',
-        help='Enable parallel processing of patients'
-    )
-
-    parser.add_argument(
-        '--max-workers',
-        type=int,
-        default=None,
-        help='Maximum number of parallel workers (default: number of CPU cores)'
-    )
     
     args = parser.parse_args()
 
@@ -1869,18 +1508,6 @@ Examples:
     except Exception as e:
         print(f"Error setting up logging: {e}")
         sys.exit(1)
-
-    # Настройка профилирования
-    if args.profile:
-        setup_profiling(
-            enabled=True,
-            output_dir=args.profile_output_dir,
-            log_slow_operations=args.profile_slow_threshold
-        )
-        # Начинаем сессию профилирования
-        session_name = f"dicom_reorg_{os.path.basename(args.input_dir)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        profiler.start_session(session_name)
-        logger.info(f"Performance profiling enabled. Reports will be saved to: {args.profile_output_dir}")
     
     # Handle --list-strategies
     if args.list_strategies:
@@ -1928,88 +1555,85 @@ Examples:
     
     try:
         # Phase 1: Scan DICOM files
-        # Общий замер времени выполнения
-        with profiler.measure_block("total_execution"):
-            scanner = DicomScanner()
-            collected_data = scanner.scan_directory(args.input_dir)
+        scanner = DicomScanner()
+        collected_data = scanner.scan_directory(args.input_dir)
+        
+        if not collected_data:
+            logger.warning("No valid DICOM files found in input directory.")
+            print("Warning: No valid DICOM files found.")
+            sys.exit(0)
+        
+        # Log summary statistics
+        total_patients = len(collected_data)
+        total_studies = sum(len(patient.studies) for patient in collected_data.values())
+        total_series = sum(
+            len(study.series) 
+            for patient in collected_data.values() 
+            for study in patient.studies.values()
+        )
+        total_files = sum(
+            len(series.files)
+            for patient in collected_data.values()
+            for study in patient.studies.values()
+            for series in study.series.values()
+        )
+        
+        logger.info(f"Scan Summary:")
+        logger.info(f"  Patients: {total_patients}")
+        logger.info(f"  Studies: {total_studies}")
+        logger.info(f"  Series: {total_series}")
+        logger.info(f"  Files: {total_files}")
+        
+        if args.dry_run:
+            logger.info("DRY RUN MODE - No files will be copied or moved")
             
-            if not collected_data:
-                logger.warning("No valid DICOM files found in input directory.")
-                print("Warning: No valid DICOM files found.")
-                sys.exit(0)
+            # Show what would be processed
+            temp_organizer = BidsOrganizer(args.output_dir, args.action)
+            required_modalities = ['t1', 't1c', 't2', 't2fl']
             
-            # Log summary statistics
-            total_patients = len(collected_data)
-            total_studies = sum(len(patient.studies) for patient in collected_data.values())
-            total_series = sum(
-                len(study.series) 
-                for patient in collected_data.values() 
-                for study in patient.studies.values()
-            )
-            total_files = sum(
-                len(series.files)
-                for patient in collected_data.values()
-                for study in patient.studies.values()
-                for series in study.series.values()
-            )
-            
-            logger.info(f"Scan Summary:")
-            logger.info(f"  Patients: {total_patients}")
-            logger.info(f"  Studies: {total_studies}")
-            logger.info(f"  Series: {total_series}")
-            logger.info(f"  Files: {total_files}")
-            
-            if args.dry_run:
-                logger.info("DRY RUN MODE - No files will be copied or moved")
+            for patient_id, patient_data in collected_data.items():
+                logger.info(f"Patient: {patient_id}")
                 
-                # Show what would be processed
-                temp_organizer = BidsOrganizer(args.output_dir, args.action)
-                required_modalities = ['t1', 't1c', 't2', 't2fl']
-                
-                for patient_id, patient_data in collected_data.items():
-                    logger.info(f"Patient: {patient_id}")
+                for study_uid, study_info in patient_data.studies.items():
+                    session_id = f"patient_{patient_id}_study_{study_uid[:8]}"
+                    logger.info(f"  Study: {study_uid} ({study_info.study_datetime})")
                     
-                    for study_uid, study_info in patient_data.studies.items():
-                        session_id = f"patient_{patient_id}_study_{study_uid[:8]}"
-                        logger.info(f"  Study: {study_uid} ({study_info.study_datetime})")
-                        
-                        # Analyze what would be detected
-                        modality_groups, detection_details = temp_organizer._group_series_by_modality_enhanced(
-                            study_info.series, session_id
-                        )
-                        
-                        found_modalities = list(modality_groups.keys())
-                        missing_modalities = [m for m in required_modalities if m not in found_modalities]
-                        
-                        logger.info(f"    Would find: {', '.join(found_modalities) if found_modalities else 'None'}")
-                        if missing_modalities:
-                            logger.info(f"    Would be missing: {', '.join(missing_modalities)}")
-                        
-                        # Show selection details for found modalities
-                        for modality in found_modalities:
-                            series_list = [s for s, _ in modality_groups[modality]]
-                            if len(series_list) > 1:
-                                logger.info(f"    {modality}: {len(series_list)} candidates")
-                                for series in series_list:
-                                    logger.info(f"      - {series.uid}: '{series.protocol_name}'")
-                            else:
-                                series = series_list[0]
-                                logger.info(f"    {modality}: '{series.protocol_name}' ({len(series.files)} files)")
-            else:
-                # Phase 2: Organize to BIDS with enhanced processing
-                organizer = BidsOrganizer(args.output_dir, args.action)
-                organizer.use_parallel = args.parallel
-                organizer.max_workers = args.max_workers
-                organizer.organize_to_bids(collected_data)
-            
-            elapsed = time.perf_counter() - start_time
-            logger.info("=" * 70)
-            logger.info(f"Script completed in {elapsed:.2f} seconds")
-            logger.info("=" * 70)
-            logger.info("="*70)
-            logger.info("Enhanced DICOM to BIDS Conversion Completed Successfully")
-            logger.info("="*70)
-            
+                    # Analyze what would be detected
+                    modality_groups, detection_details = temp_organizer._group_series_by_modality_enhanced(
+                        study_info.series, session_id
+                    )
+                    
+                    found_modalities = list(modality_groups.keys())
+                    missing_modalities = [m for m in required_modalities if m not in found_modalities]
+                    
+                    logger.info(f"    Would find: {', '.join(found_modalities) if found_modalities else 'None'}")
+                    if missing_modalities:
+                        logger.info(f"    Would be missing: {', '.join(missing_modalities)}")
+                    
+                    # Show selection details for found modalities
+                    for modality in found_modalities:
+                        series_list = [s for s, _ in modality_groups[modality]]
+                        if len(series_list) > 1:
+                            logger.info(f"    {modality}: {len(series_list)} candidates")
+                            for series in series_list:
+                                logger.info(f"      - {series.uid}: '{series.protocol_name}'")
+                        else:
+                            series = series_list[0]
+                            logger.info(f"    {modality}: '{series.protocol_name}' ({len(series.files)} files)")
+        else:
+            # Phase 2: Organize to BIDS with enhanced processing
+            organizer = BidsOrganizer(args.output_dir, args.action)
+            organizer.organize_to_bids(collected_data)
+        
+
+        elapsed = time.perf_counter() - start_time
+        logger.info("=" * 70)
+        logger.info(f"Script completed in {elapsed:.2f} seconds")
+        logger.info("=" * 70)
+        logger.info("="*70)
+        logger.info("Enhanced DICOM to BIDS Conversion Completed Successfully")
+        logger.info("="*70)
+        
     except KeyboardInterrupt:
         logger.info("Conversion interrupted by user.")
         print("\nConversion interrupted by user.")
@@ -2020,14 +1644,6 @@ Examples:
         print(f"Error: Conversion failed. Check log file for details: {args.log_file}")
         sys.exit(1)
 
-    finally:
-        # Генерация отчета о производительности
-        if args.profile:
-            profiler.memory_checkpoint("final")
-            report_path = profiler.save_report()
-            if report_path:
-                print(f"\nPerformance report saved to: {report_path}")
-                print(f"Text summary: {report_path.with_suffix('.txt')}")
 
 if __name__ == "__main__":
     main()

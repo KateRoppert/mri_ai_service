@@ -1,0 +1,745 @@
+{
+  "session_name": "dicom_reorg_P000010_20250805_131638",
+  "total_execution_time": 403.80256032943726,
+  "memory_usage": {
+    "start_mb": 56.43359375,
+    "end_mb": 125.4453125,
+    "delta_mb": 69.01171875
+  },
+  "phase_timings": {
+    "phase_1_scanning": {
+      "start": 1754374598.3910964,
+      "end": 1754374909.2818632,
+      "duration": 310.89076685905457
+    },
+    "phase_2_organizing": {
+      "start": 1754374909.2862415,
+      "end": 1754375002.1859791,
+      "duration": 92.89973759651184
+    }
+  },
+  "function_statistics": {
+    "total_execution": {
+      "count": 1,
+      "total_time": 403.7983274459839,
+      "avg_time": 403.7983274459839,
+      "max_time": 403.7983274459839,
+      "total_memory": 69.01171875
+    },
+    "DicomScanner.scan_directory": {
+      "count": 1,
+      "total_time": 310.8928847312927,
+      "avg_time": 310.8928847312927,
+      "max_time": 310.8928847312927,
+      "total_memory": 68.13671875
+    },
+    "directory_walk": {
+      "count": 1,
+      "total_time": 310.8894383907318,
+      "avg_time": 310.8894383907318,
+      "max_time": 310.8894383907318,
+      "total_memory": 68.13671875
+    },
+    "is_dicom_file": {
+      "count": 3217,
+      "total_time": 141.99003219604492,
+      "avg_time": 0.044137405096687884,
+      "max_time": 0.1275954246520996,
+      "total_memory": 30.74609375
+    },
+    "safe_read_dicom": {
+      "count": 3216,
+      "total_time": 134.6159520149231,
+      "avg_time": 0.041858194034491016,
+      "max_time": 0.08679676055908203,
+      "total_memory": 9.125
+    },
+    "BidsOrganizer.organize_to_bids": {
+      "count": 1,
+      "total_time": 92.90112686157227,
+      "avg_time": 92.90112686157227,
+      "max_time": 92.90112686157227,
+      "total_memory": 0.875
+    },
+    "process_all_patients": {
+      "count": 1,
+      "total_time": 92.88940286636353,
+      "avg_time": 92.88940286636353,
+      "max_time": 92.88940286636353,
+      "total_memory": 0.875
+    },
+    "BidsOrganizer._process_patient": {
+      "count": 1,
+      "total_time": 92.88869142532349,
+      "avg_time": 92.88869142532349,
+      "max_time": 92.88869142532349,
+      "total_memory": 0.875
+    },
+    "BidsOrganizer._process_study": {
+      "count": 2,
+      "total_time": 92.88651061058044,
+      "avg_time": 46.44325530529022,
+      "max_time": 47.90639901161194,
+      "total_memory": 0.875
+    },
+    "BidsOrganizer._process_modality_group_enhanced": {
+      "count": 8,
+      "total_time": 92.46104121208191,
+      "avg_time": 11.557630151510239,
+      "max_time": 17.278285264968872,
+      "total_memory": 0.875
+    },
+    "BidsOrganizer._copy_series_files_enhanced": {
+      "count": 8,
+      "total_time": 92.42727518081665,
+      "avg_time": 11.553409397602081,
+      "max_time": 17.275965452194214,
+      "total_memory": 0.875
+    },
+    "BidsOrganizer._sort_files_by_instance_number": {
+      "count": 8,
+      "total_time": 48.77842378616333,
+      "avg_time": 6.097302973270416,
+      "max_time": 11.463732481002808,
+      "total_memory": 0.875
+    },
+    "DicomScanner._extract_series_info": {
+      "count": 3216,
+      "total_time": 24.85196018218994,
+      "avg_time": 0.007727599559138663,
+      "max_time": 0.018674135208129883,
+      "total_memory": 23.140625
+    },
+    "copy_150_files": {
+      "count": 2,
+      "total_time": 13.76024842262268,
+      "avg_time": 6.88012421131134,
+      "max_time": 11.179710149765015,
+      "total_memory": 0.0
+    },
+    "get_dicom_value": {
+      "count": 27120,
+      "total_time": 13.48234248161316,
+      "avg_time": 0.0004971365221833761,
+      "max_time": 0.0067920684814453125,
+      "total_memory": 9.375
+    },
+    "copy_145_files": {
+      "count": 2,
+      "total_time": 11.448687076568604,
+      "avg_time": 5.724343538284302,
+      "max_time": 7.340414762496948,
+      "total_memory": 0.0
+    },
+    "copy_290_files": {
+      "count": 2,
+      "total_time": 10.710386276245117,
+      "avg_time": 5.355193138122559,
+      "max_time": 5.88994836807251,
+      "total_memory": 0.0
+    },
+    "copy_21_files": {
+      "count": 2,
+      "total_time": 7.7129621505737305,
+      "avg_time": 3.8564810752868652,
+      "max_time": 4.050419807434082,
+      "total_memory": 0.0
+    },
+    "normalize_dicom_text": {
+      "count": 6492,
+      "total_time": 2.1946139335632324,
+      "avg_time": 0.00033804897313050405,
+      "max_time": 0.0010509490966796875,
+      "total_memory": 1.75
+    },
+    "DicomScanner._add_to_collected_data": {
+      "count": 3216,
+      "total_time": 1.8774757385253906,
+      "avg_time": 0.00058379220725292,
+      "max_time": 0.0017156600952148438,
+      "total_memory": 0.0
+    }
+  },
+  "memory_checkpoints": [
+    {
+      "label": "scan_start",
+      "timestamp": 1754374598.3913605,
+      "rss_mb": 56.43359375,
+      "vms_mb": 550.03125,
+      "percent": 0.3586900847652674
+    },
+    {
+      "label": "after_500_files",
+      "timestamp": 1754374646.4458785,
+      "rss_mb": 68.17578125,
+      "vms_mb": 561.984375,
+      "percent": 0.4333230462662292
+    },
+    {
+      "label": "after_1000_files",
+      "timestamp": 1754374694.4152346,
+      "rss_mb": 79.07421875,
+      "vms_mb": 572.61328125,
+      "percent": 0.5025931602341877
+    },
+    {
+      "label": "after_1500_files",
+      "timestamp": 1754374742.9861076,
+      "rss_mb": 89.32421875,
+      "vms_mb": 582.91015625,
+      "percent": 0.5677418265610418
+    },
+    {
+      "label": "after_2000_files",
+      "timestamp": 1754374791.150525,
+      "rss_mb": 101.9453125,
+      "vms_mb": 595.3125,
+      "percent": 0.6479610875755485
+    },
+    {
+      "label": "after_2500_files",
+      "timestamp": 1754374839.1448605,
+      "rss_mb": 110.8203125,
+      "vms_mb": 604.98046875,
+      "percent": 0.7043702986634345
+    },
+    {
+      "label": "after_3000_files",
+      "timestamp": 1754374887.77998,
+      "rss_mb": 121.0703125,
+      "vms_mb": 615.23046875,
+      "percent": 0.7695189649902886
+    },
+    {
+      "label": "scan_end",
+      "timestamp": 1754374909.282108,
+      "rss_mb": 124.5703125,
+      "vms_mb": 618.53515625,
+      "percent": 0.7917648510531167
+    },
+    {
+      "label": "organize_start",
+      "timestamp": 1754374909.2865224,
+      "rss_mb": 124.5703125,
+      "vms_mb": 618.53515625,
+      "percent": 0.7917648510531167
+    },
+    {
+      "label": "organize_end",
+      "timestamp": 1754375002.1863093,
+      "rss_mb": 125.4453125,
+      "vms_mb": 619.1796875,
+      "percent": 0.7973263225688239
+    },
+    {
+      "label": "final",
+      "timestamp": 1754375002.1883333,
+      "rss_mb": 125.4453125,
+      "vms_mb": 619.1796875,
+      "percent": 0.7973263225688239
+    }
+  ],
+  "slow_operations": [
+    {
+      "timestamp": 1754374909.2815237,
+      "function_name": "directory_walk",
+      "module_name": "code_block",
+      "execution_time": 310.8894383907318,
+      "memory_start": 56.43359375,
+      "memory_end": 124.5703125,
+      "memory_delta": 68.13671875,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374909.2832503,
+      "function_name": "DicomScanner.scan_directory",
+      "module_name": "__main__",
+      "execution_time": 310.8928847312927,
+      "memory_start": 56.43359375,
+      "memory_end": 124.5703125,
+      "memory_delta": 68.13671875,
+      "cpu_percent": 98.6,
+      "args_info": {
+        "args_count": 2,
+        "args_preview": [
+          "DicomScanner",
+          "/home/roppert/work/data/Ms/P000010/15.11/P000010"
+        ]
+      },
+      "error": null
+    },
+    {
+      "timestamp": 1754374920.9435995,
+      "function_name": "BidsOrganizer._sort_files_by_instance_number",
+      "module_name": "__main__",
+      "execution_time": 11.463732481002808,
+      "memory_start": 124.5703125,
+      "memory_end": 124.6953125,
+      "memory_delta": 0.125,
+      "cpu_percent": 99.7,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374925.7648718,
+      "function_name": "copy_290_files",
+      "module_name": "code_block",
+      "execution_time": 4.820437908172607,
+      "memory_start": 124.6953125,
+      "memory_end": 124.6953125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374925.7653084,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 16.286465406417847,
+      "memory_start": 124.5703125,
+      "memory_end": 124.6953125,
+      "memory_delta": 0.125,
+      "cpu_percent": 76.3,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374925.7659173,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 16.29006576538086,
+      "memory_start": 124.5703125,
+      "memory_end": 124.6953125,
+      "memory_delta": 0.125,
+      "cpu_percent": 76.3,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374931.418477,
+      "function_name": "BidsOrganizer._sort_files_by_instance_number",
+      "module_name": "__main__",
+      "execution_time": 5.648162126541138,
+      "memory_start": 124.6953125,
+      "memory_end": 124.9453125,
+      "memory_delta": 0.25,
+      "cpu_percent": 99.9,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374935.5275502,
+      "function_name": "copy_145_files",
+      "module_name": "code_block",
+      "execution_time": 4.108272314071655,
+      "memory_start": 124.9453125,
+      "memory_end": 124.9453125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374935.5282857,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 9.758415460586548,
+      "memory_start": 124.6953125,
+      "memory_end": 124.9453125,
+      "memory_delta": 0.25,
+      "cpu_percent": 63.3,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374935.5292628,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 9.762871265411377,
+      "memory_start": 124.6953125,
+      "memory_end": 124.9453125,
+      "memory_delta": 0.25,
+      "cpu_percent": 63.3,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374941.4720964,
+      "function_name": "BidsOrganizer._sort_files_by_instance_number",
+      "module_name": "__main__",
+      "execution_time": 5.940161466598511,
+      "memory_start": 124.9453125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.125,
+      "cpu_percent": 99.5,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374952.6525967,
+      "function_name": "copy_150_files",
+      "module_name": "code_block",
+      "execution_time": 11.179710149765015,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374952.6534932,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 17.122042179107666,
+      "memory_start": 124.9453125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.125,
+      "cpu_percent": 38.9,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374952.6551702,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 17.125117301940918,
+      "memory_start": 124.9453125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.125,
+      "cpu_percent": 38.9,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374957.1926734,
+      "function_name": "copy_21_files",
+      "module_name": "code_block",
+      "execution_time": 3.6625423431396484,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374957.1933885,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 4.5314881801605225,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 21.2,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374957.1942403,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 4.538058519363403,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 21.2,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374957.1952686,
+      "function_name": "BidsOrganizer._process_study",
+      "module_name": "__main__",
+      "execution_time": 47.90639901161194,
+      "memory_start": 124.5703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.5,
+      "cpu_percent": 55.1,
+      "args_info": {
+        "args_count": 5,
+        "args_preview": [
+          "BidsOrganizer",
+          "StudyInfo",
+          "sub-001"
+        ]
+      },
+      "error": null
+    },
+    {
+      "timestamp": 1754374962.4037263,
+      "function_name": "copy_21_files",
+      "module_name": "code_block",
+      "execution_time": 4.050419807434082,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374962.4045012,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 4.970152378082275,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 20.1,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374962.4053953,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 4.97713041305542,
+      "memory_start": 125.0703125,
+      "memory_end": 125.0703125,
+      "memory_delta": 0.0,
+      "cpu_percent": 20.1,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374973.7922683,
+      "function_name": "BidsOrganizer._sort_files_by_instance_number",
+      "module_name": "__main__",
+      "execution_time": 11.384012222290039,
+      "memory_start": 125.0703125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.25,
+      "cpu_percent": 99.9,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374979.6830277,
+      "function_name": "copy_290_files",
+      "module_name": "code_block",
+      "execution_time": 5.88994836807251,
+      "memory_start": 125.3203125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374979.6836758,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 17.275965452194214,
+      "memory_start": 125.0703125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.25,
+      "cpu_percent": 71.4,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374979.6844108,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 17.278285264968872,
+      "memory_start": 125.0703125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.25,
+      "cpu_percent": 71.4,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374986.3694408,
+      "function_name": "BidsOrganizer._sort_files_by_instance_number",
+      "module_name": "__main__",
+      "execution_time": 6.680255174636841,
+      "memory_start": 125.3203125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.0,
+      "cpu_percent": 99.5,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374993.710684,
+      "function_name": "copy_145_files",
+      "module_name": "code_block",
+      "execution_time": 7.340414762496948,
+      "memory_start": 125.3203125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374993.711466,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 14.02273678779602,
+      "memory_start": 125.3203125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.0,
+      "cpu_percent": 52.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374993.7123554,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 14.027356147766113,
+      "memory_start": 125.3203125,
+      "memory_end": 125.3203125,
+      "memory_delta": 0.0,
+      "cpu_percent": 52.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754374999.5928745,
+      "function_name": "BidsOrganizer._sort_files_by_instance_number",
+      "module_name": "__main__",
+      "execution_time": 5.877665996551514,
+      "memory_start": 125.3203125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.125,
+      "cpu_percent": 99.9,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1742074,
+      "function_name": "copy_150_files",
+      "module_name": "code_block",
+      "execution_time": 2.580538272857666,
+      "memory_start": 125.4453125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.0,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1746817,
+      "function_name": "BidsOrganizer._copy_series_files_enhanced",
+      "module_name": "__main__",
+      "execution_time": 8.460009336471558,
+      "memory_start": 125.3203125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.125,
+      "cpu_percent": 75.4,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1752315,
+      "function_name": "BidsOrganizer._process_modality_group_enhanced",
+      "module_name": "__main__",
+      "execution_time": 8.462156534194946,
+      "memory_start": 125.3203125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.125,
+      "cpu_percent": 75.4,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1760428,
+      "function_name": "BidsOrganizer._process_study",
+      "module_name": "__main__",
+      "execution_time": 44.980111598968506,
+      "memory_start": 125.0703125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.375,
+      "cpu_percent": 60.6,
+      "args_info": {
+        "args_count": 5,
+        "args_preview": [
+          "BidsOrganizer",
+          "StudyInfo",
+          "sub-001"
+        ]
+      },
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1766825,
+      "function_name": "BidsOrganizer._process_patient",
+      "module_name": "__main__",
+      "execution_time": 92.88869142532349,
+      "memory_start": 124.5703125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.875,
+      "cpu_percent": 57.8,
+      "args_info": {
+        "args_count": 3,
+        "args_preview": [
+          "BidsOrganizer",
+          "PatientData",
+          "dict(keys=1)"
+        ]
+      },
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1771097,
+      "function_name": "process_all_patients",
+      "module_name": "code_block",
+      "execution_time": 92.88940286636353,
+      "memory_start": 124.5703125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.875,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.1866698,
+      "function_name": "BidsOrganizer.organize_to_bids",
+      "module_name": "__main__",
+      "execution_time": 92.90112686157227,
+      "memory_start": 124.5703125,
+      "memory_end": 125.4453125,
+      "memory_delta": 0.875,
+      "cpu_percent": 57.8,
+      "args_info": {
+        "args_count": 2,
+        "args_preview": [
+          "BidsOrganizer",
+          "dict(keys=1)"
+        ]
+      },
+      "error": null
+    },
+    {
+      "timestamp": 1754375002.187795,
+      "function_name": "total_execution",
+      "module_name": "code_block",
+      "execution_time": 403.7983274459839,
+      "memory_start": 56.43359375,
+      "memory_end": 125.4453125,
+      "memory_delta": 69.01171875,
+      "cpu_percent": 0.0,
+      "args_info": null,
+      "error": null
+    }
+  ],
+  "memory_profile": [
+    "/home/roppert/work/mri_ai_service/scripts/performance_profiler.py:164: size=6915 KiB, count=93146, average=76 B",
+    "<string>:1: size=1993 KiB, count=17004, average=120 B",
+    "/home/roppert/work/mri_ai_service/venv/lib/python3.12/site-packages/psutil/__init__.py:1100: size=1092 KiB, count=46573, average=24 B",
+    "/home/roppert/work/mri_ai_service/scripts/performance_profiler.py:161: size=1092 KiB, count=46573, average=24 B",
+    "/home/roppert/work/mri_ai_service/scripts/performance_profiler.py:160: size=1092 KiB, count=46573, average=24 B",
+    "/home/roppert/work/mri_ai_service/scripts/performance_profiler.py:157: size=1092 KiB, count=46573, average=24 B",
+    "/home/roppert/work/mri_ai_service/scripts/performance_profiler.py:143: size=1092 KiB, count=46573, average=24 B",
+    "/home/roppert/work/mri_ai_service/scripts/performance_profiler.py:156: size=1092 KiB, count=46572, average=24 B",
+    "/home/roppert/work/mri_ai_service/venv/lib/python3.12/site-packages/pydicom/filereader.py:264: size=1081 KiB, count=17300, average=64 B",
+    "/home/roppert/work/mri_ai_service/venv/lib/python3.12/site-packages/pydicom/filereader.py:476: size=822 KiB, count=1023, average=823 B"
+  ]
+}

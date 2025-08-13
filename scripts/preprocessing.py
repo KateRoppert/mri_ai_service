@@ -40,8 +40,9 @@ import ants
 from typing import Dict, List, Tuple
 from scipy.stats import gaussian_kde
 import matplotlib.pyplot as plt
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # --- Logger Setup ---
 # A single logger instance is configured once and used throughout the application.
@@ -1156,6 +1157,10 @@ class PreprocessingPipeline:
         nifti_files = self._find_nifti_files()
         if not nifti_files:
             return
+        
+        # Определяем число ядер
+        num_workers = multiprocessing.cpu_count()
+        logger.info(f"Using up to {num_workers} parallel workers")
 
         success_count, error_count = 0, 0
         for nifti_file in nifti_files:

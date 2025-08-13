@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+tests/
+docs/
+README.md
