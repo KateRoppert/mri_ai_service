@@ -76,8 +76,22 @@ class Config:
         except Exception as e:
             raise ValueError(f"Failed to load or parse config {path}") from e
         
+        # Определяем, запущены ли мы в Docker
+        self._is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
+    
     def get_path(self, key: str) -> Path | None:
-        return Path(self._data['paths'][key]) if key in self._data.get('paths', {}) else None
+        """Получает путь из конфига в зависимости от окружения (Docker или хост)"""
+        # Сначала пробуем host_paths для локального запуска
+        if not self._is_docker and 'host_paths' in self._data:
+            host_paths = self._data['host_paths']
+            if key in host_paths:
+                return Path(host_paths[key])
+        
+        # Иначе используем paths (для Docker или если host_paths не определены)
+        if key in self._data.get('paths', {}):
+            return Path(self._data['paths'][key])
+        
+        return None
     
     def get_exec(self, key: str, default: str) -> str:
         return self._data.get('executables', {}).get(key, default)
