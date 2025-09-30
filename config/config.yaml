@@ -2,13 +2,7 @@
 host_paths:
   raw_input_dir: "/home/roppert/work/data/Ms/P000010/15.11/"
   output_base_dir: "/home/roppert/work/pipeline_results"
-  #template_path: "/home/roppert/work/mri_ai_service/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
-
-# REMOTE PATHS - Optional: paths on the remote server (used with -r flag)
-remote_paths:
-  raw_input_dir: "/media/datasets1/SibBMS/MS"
-  output_base_dir: "/media/storage/roppert/MS_preprocessed"
-  #template_path: "/media/storage/roppert/brain_tumour_project/mni_templates/mni_icbm152_t1_tal_nlin_sym
+  template_path: "/home/roppert/work/mri_ai_service/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
 
 # CONTAINER PATHS - Don't change these (they are fixed inside the Docker container)
 paths:
@@ -37,6 +31,22 @@ executables:
   bids_validator: "/usr/local/bin/bids-validator"
   aiaa_server_url: "http://172.16.71.222:5000"
 
+pipeline:
+  # Resume настройки
+  resume_by_default: true              # Включить resume по умолчанию
+  
+  resume:
+    check_output_integrity: true       # Проверять целостность выходных файлов
+    skip_failed_by_default: true       # Пропускать ранее failed файлы по умолчанию
+    cleanup_corrupted_on_resume: false # Автоматически удалять поврежденные файлы
+    detailed_status_logging: true      # Подробное логирование статуса
+    
+    # Критерии для определения "завершенного" файла
+    completion_criteria:
+      check_json_summary: true         # Проверять JSON с результатами
+      check_file_integrity: true       # Проверять целостность NIfTI файлов
+      min_file_size_mb: 1              # Минимальный размер файла (MB)
+
 # Parameters for specific pipeline steps
 steps:
   reorganize_folders:
@@ -58,6 +68,16 @@ steps:
   mriqc_interpretation:
     enabled: false
   preprocessing:
+    parallel_processing:
+      enabled: true
+      max_workers: 4
+      async_io: true
+      async_io_config:
+        preload_files: 8
+        max_cache_size: 8
+        max_cache_gb: 2
+        io_workers: 4
+        write_workers: 2
     keep_intermediate_files: false  
     intensity_normalization:
       enabled: false       
@@ -71,7 +91,7 @@ steps:
       n_sd: 2.5          # Width of the stripe
       threshold_at_zero: false  # Ignore zero voxels
     bias_field_correction:
-      enabled: true    
+      enabled: false   
       method: "N4BiasFieldCorrection"
       strategy: "ModalitySpecific"  # Options: "Standard", "ModalitySpecific", "T1Based"
       
@@ -111,7 +131,7 @@ steps:
           smoothing_factor: 0.25
           use_brain_mask: false 
     registration:
-      enabled: true  
+      enabled: true   
       method: "ANTsPy"
       ants_transform_type: "SyN"
       template_path: "/app/mni_templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
@@ -125,7 +145,7 @@ steps:
       save_mask: true 
       border: 0
   segmentation:
-    enabled: true     
+    enabled: true 
     model_name: "Unet"
     modality_input_map:
       t1: "T1w"

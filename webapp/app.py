@@ -55,20 +55,41 @@ flask_logger.info("Flask логгер настроен.")
 CONFIG_FILE_PATH = Path(__file__).parent.parent / "config/config.yaml"
 PIPELINE_RUN_SCRIPT = Path(__file__).parent.parent / "pipeline" / "run_pipeline.py"
 pipeline_config = None
+
+# Определяем окружение (Docker или хост)
+IS_DOCKER = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
+
 try:
     with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
         pipeline_config = yaml.safe_load(f)
     flask_logger.info(f"Конфигурация пайплайна успешно загружена из {CONFIG_FILE_PATH}")
-    # Сохраняем весь конфиг в app.config для доступа из потоков
+    
+    # Сохраняем весь config в app.config для доступа из потоков
     app.config['PIPELINE_CONFIG'] = pipeline_config
-    UPLOAD_FOLDER_BASE_STR = pipeline_config.get('paths', {}).get('output_base_dir')
+    
+    # ИСПРАВЛЕНИЕ: Читаем из правильной секции в зависимости от окружения
+    if IS_DOCKER:
+        # В Docker используем paths
+        UPLOAD_FOLDER_BASE_STR = pipeline_config.get('paths', {}).get('output_base_dir')
+        flask_logger.info(f"Запуск в Docker, используем paths.output_base_dir")
+    else:
+        # На хосте используем host_paths, если есть, иначе paths
+        UPLOAD_FOLDER_BASE_STR = pipeline_config.get('host_paths', {}).get('output_base_dir')
+        if not UPLOAD_FOLDER_BASE_STR:
+            UPLOAD_FOLDER_BASE_STR = pipeline_config.get('paths', {}).get('output_base_dir')
+            flask_logger.warning("host_paths.output_base_dir не найден, используем paths.output_base_dir")
+        else:
+            flask_logger.info(f"Запуск на хосте, используем host_paths.output_base_dir")
+    
     if not UPLOAD_FOLDER_BASE_STR:
-        flask_logger.critical("Ключ 'paths.output_base_dir' не найден в config.yaml!")
-        raise KeyError("'paths.output_base_dir' не найден в конфиге")
+        flask_logger.critical("Ключ 'output_base_dir' не найден ни в host_paths, ни в paths!")
+        raise KeyError("'output_base_dir' не найден в конфиге")
+    
     UPLOAD_FOLDER_BASE = Path(UPLOAD_FOLDER_BASE_STR)
     UPLOAD_FOLDER_BASE.mkdir(parents=True, exist_ok=True)
     app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER_BASE.resolve())
     flask_logger.info(f"Папка для загрузок и результатов: {app.config['UPLOAD_FOLDER']}")
+    
 except Exception as e:
     flask_logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА при загрузке config.yaml ({CONFIG_FILE_PATH}): {e}", exc_info=True)
     fallback_dir = Path(__file__).parent.parent / "PIPELINE_RESULTS_CONFIG_ERROR_CRITICAL"
@@ -76,7 +97,6 @@ except Exception as e:
     app.config['UPLOAD_FOLDER'] = str(fallback_dir.resolve())
     app.config['PIPELINE_CONFIG'] = {} # Пустой конфиг в случае ошибки
     flask_logger.error(f"Используется запасной путь для результатов: {app.config['UPLOAD_FOLDER']}")
-    # Для рабочего сервера здесь должен быть sys.exit(1) или аналогичная остановка
 
 app.config['ALLOWED_EXTENSIONS'] = {'zip'}
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
