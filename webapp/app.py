@@ -704,7 +704,7 @@ def upload_file():
     p_config = app.config.get('PIPELINE_CONFIG', {})
     subdirs_config = p_config.get('paths', {}).get('subdirs', {})
     logs_subdir_name = subdirs_config.get('logs', 'logs')
-    pipeline_log_path_for_run = run_specific_dir / logs_subdir_name / 'pipeline.log'
+    pipeline_log_path_for_run = run_specific_dir / logs_subdir_name / 'pipeline_main.log'
 
     # Определяем пути для MRIQC сразу
     mriqc_output_subdir_name = subdirs_config.get('mriqc_output', 'mriqc_output')
