@@ -1096,8 +1096,12 @@ class FileProcessor:
                 if enabled_steps:
                     final_path = self.final_output_dir / self.input_file.name
                     final_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(self.current_input_path), str(final_path))
-                    logger.info(f"Final result saved to {final_path}")
+                    # Only copy if source and destination are different
+                    if self.current_input_path.resolve() != final_path.resolve():
+                        shutil.copy2(str(self.current_input_path), str(final_path))
+                        logger.info(f"Final result saved to {final_path}")
+                    else:
+                        logger.info(f"Input and output paths are the same, skipping copy: {final_path}")
                 
                 all_steps_succeeded = True
                 
