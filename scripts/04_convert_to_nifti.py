@@ -796,7 +796,13 @@ class NiftiConverter:
         # Calculate speedup and efficiency for parallel mode
         speedup = None
         efficiency = None
-        if mode == 'parallel' and workers > 1:
+
+        if mode == 'sequential' and workers == 1:
+            # Sequential mode is the baseline
+            speedup = 1.0
+            efficiency = 1.0
+
+        elif mode == 'parallel' and workers > 1:
             # Theoretical baseline: sequential time
             sequential_time_estimate = avg_time_per_series * total_processed
             speedup = sequential_time_estimate / elapsed_time if elapsed_time > 0 else 0
