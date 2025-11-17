@@ -39,7 +39,7 @@ from quality_metrics import (
     AVAILABLE_METRICS
 )
 
-from research.stage2.performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 
 
 class QualityAssessor:
