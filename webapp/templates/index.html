@@ -38,15 +38,131 @@
             {% endif %}
         {% endwith %}
 
-        <form method="post" action="{{ url_for('upload_file') }}" enctype="multipart/form-data">
+        <form id="uploadForm" enctype="multipart/form-data">
             <p>
                 <label for="dicom_archive">Выберите ZIP-архив с DICOM данными:</label>
                 <input type="file" name="dicom_archive" id="dicom_archive" accept=".zip" required>
             </p>
+            
+            <!-- Прогресс-бар загрузки (скрыт по умолчанию) -->
+            <div id="uploadProgressContainer" style="display: none; margin: 15px 0;">
+                <div style="background-color: #f0f0f0; border-radius: 10px; padding: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);">
+                    <div id="uploadProgressBar" style="height: 25px; border-radius: 8px; background: linear-gradient(90deg, #3498db 0%, #2980b9 100%); width: 0%; transition: width 0.3s; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 0.9em;">
+                        <span id="uploadProgressText">0%</span>
+                    </div>
+                </div>
+                <p id="uploadStatusText" style="margin-top: 10px; color: #555;">Подготовка к загрузке...</p>
+            </div>
+            
             <p>
-                <input type="submit" value="Загрузить и Начать Обработку">
+                <input type="submit" id="uploadButton" value="Загрузить и Начать Обработку">
             </p>
         </form>
+
+        <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('dicom_archive');
+            const uploadButton = document.getElementById('uploadButton');
+            const progressContainer = document.getElementById('uploadProgressContainer');
+            const progressBar = document.getElementById('uploadProgressBar');
+            const progressText = document.getElementById('uploadProgressText');
+            const statusText = document.getElementById('uploadStatusText');
+            
+            if (!fileInput.files || fileInput.files.length === 0) {
+                alert('Пожалуйста, выберите файл');
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            
+            // Проверка расширения
+            if (!file.name.toLowerCase().endsWith('.zip')) {
+                alert('Пожалуйста, выберите ZIP-архив');
+                return;
+            }
+            
+            // Показываем прогресс-бар
+            progressContainer.style.display = 'block';
+            uploadButton.disabled = true;
+            uploadButton.value = 'Загрузка...';
+            statusText.textContent = 'Загрузка файла на сервер...';
+            
+            // Создаем FormData
+            const formData = new FormData();
+            formData.append('dicom_archive', file);
+            
+            try {
+                // XMLHttpRequest для отслеживания прогресса
+                const xhr = new XMLHttpRequest();
+                
+                // Обработчик прогресса загрузки
+                xhr.upload.addEventListener('progress', function(e) {
+                    if (e.lengthComputable) {
+                        const percentComplete = Math.round((e.loaded / e.total) * 100);
+                        progressBar.style.width = percentComplete + '%';
+                        progressText.textContent = percentComplete + '%';
+                        
+                        const loadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
+                        const totalMB = (e.total / (1024 * 1024)).toFixed(1);
+                        statusText.textContent = `Загружено ${loadedMB} МБ из ${totalMB} МБ (${percentComplete}%)`;
+                    }
+                });
+                
+                // Обработчик завершения
+                xhr.addEventListener('load', function() {
+                    if (xhr.status === 200) {
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            if (response.success && response.run_id) {
+                                statusText.textContent = 'Загрузка завершена! Перенаправление...';
+                                progressBar.style.background = 'linear-gradient(90deg, #2ecc71 0%, #27ae60 100%)';
+                                
+                                // Перенаправляем на страницу статуса
+                                setTimeout(() => {
+                                    window.location.href = `/status/${response.run_id}`;
+                                }, 500);
+                            } else {
+                                throw new Error(response.error || 'Неизвестная ошибка сервера');
+                            }
+                        } catch (e) {
+                            statusText.textContent = 'Ошибка обработки ответа сервера';
+                            statusText.style.color = 'red';
+                            uploadButton.disabled = false;
+                            uploadButton.value = 'Загрузить и Начать Обработку';
+                            console.error('Parse error:', e);
+                        }
+                    } else {
+                        statusText.textContent = `Ошибка загрузки: ${xhr.status} ${xhr.statusText}`;
+                        statusText.style.color = 'red';
+                        uploadButton.disabled = false;
+                        uploadButton.value = 'Загрузить и Начать Обработку';
+                    }
+                });
+                
+                // Обработчик ошибок
+                xhr.addEventListener('error', function() {
+                    statusText.textContent = 'Ошибка сети при загрузке файла';
+                    statusText.style.color = 'red';
+                    progressBar.style.background = 'linear-gradient(90deg, #e74c3c 0%, #c0392b 100%)';
+                    uploadButton.disabled = false;
+                    uploadButton.value = 'Загрузить и Начать Обработку';
+                });
+                
+                // Отправляем запрос
+                xhr.open('POST', '/upload', true);
+                xhr.send(formData);
+                
+            } catch (error) {
+                console.error('Upload error:', error);
+                statusText.textContent = 'Ошибка при загрузке: ' + error.message;
+                statusText.style.color = 'red';
+                uploadButton.disabled = false;
+                uploadButton.value = 'Загрузить и Начать Обработку';
+            }
+        });
+        </script>
 
         <hr>
 

@@ -16,6 +16,114 @@ from flask import (Flask, render_template, request, redirect, url_for,
 from werkzeug.utils import secure_filename
 import sys
 
+# Карта этапов основного пайплайна для расчета прогресса
+PIPELINE_STEPS_MAP = {
+    'uploading': 0,              
+    'unpacking': 3,
+    'queued': 5,
+    'reorganize_folders': 14,      # ~14% (1/7)
+    'dicom_check': 28,              # ~28% (2/7)
+    'extract_metadata': 42,         # ~42% (3/7)
+    'convert_to_nifti': 57,         # ~57% (4/7)
+    'fast_quality_metrics': 71,     # ~71% (5/7)
+    'preprocessing': 85,            # ~85% (6/7)
+    'segmentation': 95,             # ~95% (7/7) - почти готово
+    'completed': 100
+}
+
+def calculate_progress_from_status(status_str: str, step_type: str = 'generic', is_requested: bool = False) -> int:
+    """
+    Конвертирует текстовый статус в процент прогресса (0-100).
+    
+    Args:
+        status_str: Текущий статус
+        step_type: Тип этапа ('pipeline', 'mriqc', 'segmentation')
+        is_requested: Был ли этап запрошен пользователем (для опциональных шагов)
+    
+    Returns:
+        Процент прогресса от 0 до 100
+    """
+    if not status_str:
+        return 0
+    
+    # Для MRIQC и Segmentation: если не запрошен, всегда 0%
+    if step_type in ['mriqc', 'segmentation'] and not is_requested:
+        return 0
+    
+    status_lower = status_str.lower()
+    
+    # Not Started - всегда 0%
+    if 'not' in status_lower and 'started' in status_lower:
+        return 0
+    
+    # Завершенные состояния
+    if 'completed' in status_lower or 'success' in status_lower:
+        return 100
+    
+    # Ошибки - показываем процент на момент ошибки
+    if 'error' in status_lower or 'failed' in status_lower:
+        if 'pipeline' in step_type:
+            if 'conversion' in status_lower or 'dicom' in status_lower:
+                return 15
+            elif 'validation' in status_lower or 'bids' in status_lower:
+                return 40
+            elif 'preproc' in status_lower or 'preprocessing' in status_lower:
+                return 70
+            return 25
+        elif 'mriqc' in step_type:
+            if 'upload' in status_lower or 'copying' in status_lower:
+                return 30
+            elif 'server' in status_lower or 'exec' in status_lower:
+                return 60
+            return 20
+        return 10
+    
+    # Специфичные статусы для Pipeline
+    if 'pipeline' in step_type:
+        if 'queued' in status_lower:
+            return 5
+        elif 'in progress' in status_lower or 'running' in status_lower:
+            return 50  # Будет уточнено позже по этапам
+        return 10
+    
+    # Специфичные статусы для MRIQC
+    if 'mriqc' in step_type:
+        if 'queued' in status_lower:
+            return 5
+        elif 'preparing' in status_lower or 'server_dir' in status_lower:
+            return 15
+        elif 'copying_to_server' in status_lower or 'upload' in status_lower:
+            return 30
+        elif 'running_on_server' in status_lower or 'monitoring' in status_lower:
+            return 60
+        elif 'copying_from_server' in status_lower or 'download' in status_lower:
+            return 85
+        return 10
+    
+    # Специфичные статусы для Segmentation
+    if 'segmentation' in step_type:
+        if 'queued' in status_lower:
+            return 5
+        elif 'init' in status_lower or 'preparing' in status_lower:
+            return 10
+        elif 'running' in status_lower:
+            import re
+            match = re.search(r'(\d+)/(\d+)', status_str)
+            if match:
+                current, total = int(match.group(1)), int(match.group(2))
+                if total > 0:
+                    return int(10 + (current / total * 80))
+            return 50
+        return 10
+    
+    # Общие статусы
+    if 'queued' in status_lower or 'pending' in status_lower:
+        return 5
+    elif 'running' in status_lower or 'processing' in status_lower:
+        return 50
+    
+    return 0
+
 # --- Конфигурация приложения ---
 app = Flask(__name__)
 
@@ -672,6 +780,119 @@ def execute_remote_mriqc_task(flask_app_instance, run_id: str):
             # после проверки thread.is_alive() или thread.join().
             logger_from_app.info(f"[{run_id}] (MRIQC_Thread) Поток execute_remote_mriqc_task завершает работу со статусом: {current_status_mriqc}.")
 
+def process_uploaded_file_thread(
+    run_id: str, 
+    temp_file_path: Path, 
+    filename: str,
+    run_specific_dir: Path,
+    input_archive_dir: Path,
+    input_raw_data_dir: Path,
+    effective_input_data_dir: Path
+):
+    """Обрабатывает загруженный файл в отдельном потоке."""
+    flask_logger.info(f"[{run_id}] (UploadThread) Начало обработки файла {filename}")
+    
+    try:
+        # Файл уже сохранен в temp_file_path, просто перемещаем его
+        archive_path = input_archive_dir / filename
+        
+        with active_runs_lock:
+            run_data = active_runs.get(run_id)
+            if run_data:
+                run_data['status_pipeline'] = 'Unpacking'
+                run_data['pipeline_progress'] = 3
+                run_data['user_log'].append(f"[{datetime.now().strftime('%H:%M:%S')}] Распаковка архива...")
+        
+        # Перемещаем (быстро) вместо копирования
+        shutil.move(str(temp_file_path), str(archive_path))
+        flask_logger.info(f"[{run_id}] Архив перемещен в {archive_path}")
+        
+        # === РАСПАКОВКА (остальное без изменений) ===
+        flask_logger.info(f"[{run_id}] Начало распаковки архива")
+        
+        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            members = zip_ref.namelist()
+            total_files = len(members)
+            
+            for i, member in enumerate(members):
+                zip_ref.extract(member, input_raw_data_dir)
+                
+                if i % max(1, total_files // 20) == 0 or i == total_files - 1:
+                    progress = 3 + int((i / total_files) * 2)
+                    with active_runs_lock:
+                        if run_id in active_runs:
+                            active_runs[run_id]['pipeline_progress'] = progress
+        
+        flask_logger.info(f"[{run_id}] Архив успешно распакован")
+        
+        # Удаляем архив
+        if input_archive_dir.exists():
+            try:
+                shutil.rmtree(input_archive_dir)
+                flask_logger.info(f"[{run_id}] Исходный архив удален")
+            except Exception as e:
+                flask_logger.error(f"[{run_id}] Ошибка удаления архива: {e}")
+        
+        # === ЗАПУСК ПАЙПЛАЙНА (без изменений) ===
+        with active_runs_lock:
+            run_data = active_runs.get(run_id)
+            if run_data:
+                run_data['status_pipeline'] = 'Queued'
+                run_data['pipeline_progress'] = 5
+                run_data['user_log'].append(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск основного пайплайна...")
+        
+        items_in_raw = list(input_raw_data_dir.iterdir())
+        if len(items_in_raw) == 1 and items_in_raw[0].is_dir():
+            effective_input = items_in_raw[0]
+        else:
+            effective_input = input_raw_data_dir
+        
+        p_config = app.config.get('PIPELINE_CONFIG', {})
+        console_log_lvl = p_config.get("logging", {}).get("pipeline_console_level", "INFO")
+        
+        cmd = [
+            sys.executable, str(PIPELINE_RUN_SCRIPT.resolve()),
+            "--config", str(CONFIG_FILE_PATH.resolve()),
+            "--run_id", run_id,
+            "--input_data_dir", str(effective_input.resolve()),
+            "--output_base_dir", app.config['UPLOAD_FOLDER'],
+            "--console_log_level", console_log_lvl
+        ]
+        
+        flask_logger.info(f"[{run_id}] Команда пайплайна: {' '.join(cmd)}")
+        
+        project_root_dir = Path(__file__).parent.parent
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding='utf-8', cwd=str(project_root_dir)
+        )
+        
+        flask_logger.info(f"[{run_id}] Пайплайн запущен (PID: {process.pid})")
+        
+        pipeline_log_path = run_data['pipeline_log_path']
+        monitor_thread = threading.Thread(
+            target=monitor_pipeline_process,
+            args=(run_id, process, pipeline_log_path)
+        )
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        
+        with active_runs_lock:
+            if run_id in active_runs:
+                active_runs[run_id]['process_pipeline'] = process
+                active_runs[run_id]['thread_pipeline'] = monitor_thread
+        
+        flask_logger.info(f"[{run_id}] (UploadThread) Обработка файла завершена успешно")
+        
+    except Exception as e:
+        flask_logger.critical(f"[{run_id}] (UploadThread) Критическая ошибка: {e}", exc_info=True)
+        with active_runs_lock:
+            if run_id in active_runs:
+                active_runs[run_id]['status_pipeline'] = f'Error (Upload/Unpack: {str(e)[:50]})'
+                active_runs[run_id]['user_log'].append(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] ОШИБКА при обработке: {e}"
+                )
+
 # --- Маршруты Flask ---
 @app.route('/')
 def index():
@@ -683,47 +904,49 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Обрабатывает загрузку ZIP-архива и запускает основной пайплайн."""
+    """Обрабатывает загрузку ZIP-архива и НЕМЕДЛЕННО возвращает JSON с run_id."""
     flask_logger.info(f"Запрос POST /upload от {request.remote_addr}")
-    # (Код проверки файла, генерации run_id, создания папок, сохранения и распаковки архива - как в предыдущем ответе)
-    # ...
-    if 'dicom_archive' not in request.files: flash('Файл не выбран.', 'error'); return redirect(url_for('index'))
+    
+    # Проверка наличия файла
+    if 'dicom_archive' not in request.files:
+        return jsonify({'success': False, 'error': 'Файл не выбран'}), 400
+    
     file = request.files['dicom_archive']
-    if file.filename == '': flash('Файл не выбран.', 'error'); return redirect(url_for('index'))
-    if not (file and allowed_file(file.filename)): flash('Недопустимый тип файла. Только .zip.', 'error'); return redirect(url_for('index'))
-
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'Файл не выбран'}), 400
+    
+    if not (file and allowed_file(file.filename)):
+        return jsonify({'success': False, 'error': 'Недопустимый тип файла. Только .zip'}), 400
+    
     filename = secure_filename(file.filename)
     run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     flask_logger.info(f"Генерация run_id: {run_id} для файла {filename}")
-
+    
+    # Создаем структуру директорий
     run_specific_dir = Path(app.config['UPLOAD_FOLDER']) / run_id
     input_archive_dir = run_specific_dir / "input_archive"
     input_raw_data_dir = run_specific_dir / "input_raw_data"
-
-    # Используем app.config для доступа к pipeline_config
+    
     p_config = app.config.get('PIPELINE_CONFIG', {})
     subdirs_config = p_config.get('paths', {}).get('subdirs', {})
     logs_subdir_name = subdirs_config.get('logs', 'logs')
     pipeline_log_path_for_run = run_specific_dir / logs_subdir_name / 'pipeline_main.log'
-
-    # Определяем пути для MRIQC сразу
+    
+    # Создаем все необходимые пути
     mriqc_output_subdir_name = subdirs_config.get('mriqc_output', 'mriqc_output')
     mriqc_interpret_subdir_name = subdirs_config.get('mriqc_interpret', 'mriqc_interpretation')
     bids_nifti_subdir_name = subdirs_config.get('bids_nifti', 'bids_data_nifti')
     preprocessed_subdir_name = subdirs_config.get('preprocessed', 'preprocessed_data')
-
+    
     local_paths_for_run = {
         'base': str(run_specific_dir.resolve()),
         'input_archive': str(input_archive_dir.resolve()),
         'input_raw': str(input_raw_data_dir.resolve()),
-        'pipeline_log': pipeline_log_path_for_run, # Оставляем как Path объект для parse_pipeline_user_log
+        'pipeline_log': pipeline_log_path_for_run,
         'bids_nifti': str((run_specific_dir / bids_nifti_subdir_name).resolve()),
-        # --- NEW: Добавляем путь к preprocessed_data ---
         'preprocessed': str((run_specific_dir / preprocessed_subdir_name).resolve()),
         'mriqc_output': str((run_specific_dir / mriqc_output_subdir_name).resolve()),
         'mriqc_interpretation': str((run_specific_dir / mriqc_interpret_subdir_name).resolve()),
-        # Добавьте другие пути, если они нужны для других опциональных шагов или отчетов
-        # Например, для dciodvfy_reports, dicom_metadata и т.д., если они нужны в 'paths'
         'dicom_checks': str((run_specific_dir / subdirs_config.get('dicom_checks', 'dciodvfy_reports')).resolve()),
         'dicom_meta': str((run_specific_dir / subdirs_config.get('dicom_meta', 'dicom_metadata')).resolve()),
         'validation_reports': str((run_specific_dir / subdirs_config.get('validation_reports', 'validation_results')).resolve()),
@@ -731,72 +954,110 @@ def upload_file():
         'transforms': str((run_specific_dir / subdirs_config.get('transforms', 'transformations')).resolve()),
         'segmentation_masks': str((run_specific_dir / subdirs_config.get('segmentation_masks', 'segmentation_masks')).resolve()),
     }
-
+    
     try:
+        # Создаем директории
         run_specific_dir.mkdir(parents=True, exist_ok=True)
-        input_archive_dir.mkdir(exist_ok=True); input_raw_data_dir.mkdir(exist_ok=True)
+        input_archive_dir.mkdir(exist_ok=True)
+        input_raw_data_dir.mkdir(exist_ok=True)
         (run_specific_dir / logs_subdir_name).mkdir(parents=True, exist_ok=True)
-        archive_path = input_archive_dir / filename
-        file.save(str(archive_path)); flask_logger.info(f"Архив '{filename}' сохранен в {archive_path}")
-        with zipfile.ZipFile(archive_path, 'r') as zip_ref: zip_ref.extractall(input_raw_data_dir)
-        flask_logger.info(f"Архив успешно распакован.")
-    except Exception as e:
-        flask_logger.error(f"Ошибка подготовки данных для {run_id}: {e}", exc_info=True)
-        flash(f"Ошибка сервера при подготовке данных: {e}", "error"); return redirect(url_for('index'))
-    
-    # удаляем архив после успешной распаковки
-    if input_archive_dir.exists(): # Проверяем, что папка еще существует
-            try:
-                shutil.rmtree(input_archive_dir)
-                flask_logger.info(f"Папка с исходным архивом {input_archive_dir} успешно удалена.")
-            except Exception as e_rm_archive:
-                flask_logger.error(f"Не удалось удалить папку с архивом {input_archive_dir}: {e_rm_archive}", exc_info=True)
-
-    effective_input_data_dir = input_raw_data_dir
-    items_in_raw = list(input_raw_data_dir.iterdir())
-    if len(items_in_raw) == 1 and items_in_raw[0].is_dir(): effective_input_data_dir = items_in_raw[0]
-    
-    console_log_lvl_pipe = p_config.get("logging", {}).get("pipeline_console_level", "INFO")
-
-    cmd = [ sys.executable, str(PIPELINE_RUN_SCRIPT.resolve()),
-            "--config", str(CONFIG_FILE_PATH.resolve()), "--run_id", run_id,
-            "--input_data_dir", str(effective_input_data_dir.resolve()),
-            "--output_base_dir", app.config['UPLOAD_FOLDER'],
-            "--console_log_level", console_log_lvl_pipe ]
-    flask_logger.info(f"Команда для пайплайна ({run_id}): {' '.join(cmd)}")
-
-    try:
-        project_root_dir = Path(__file__).parent.parent
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', cwd=str(project_root_dir))
-        flask_logger.info(f"Пайплайн для {run_id} запущен (PID: {process.pid})")
-        monitor_thread = threading.Thread(target=monitor_pipeline_process, args=(run_id, process, pipeline_log_path_for_run))
-        monitor_thread.daemon = True; monitor_thread.start()
+        
+        # Путь для временного файла
+        temp_dir = Path(app.config['UPLOAD_FOLDER']) / "_temp_uploads"
+        temp_dir.mkdir(exist_ok=True)
+        temp_file_path = temp_dir / f"{run_id}_{filename}"
+        
+        # Создаем запись в active_runs ПЕРЕД сохранением
         with active_runs_lock:
             active_runs[run_id] = {
-                'status_pipeline': 'Queued', 'status_mriqc': 'Not Started', 'status_segmentation': 'Not Started',
-                'start_time_obj': datetime.now(), 'start_time_iso': datetime.now().isoformat(),
+                'status_pipeline': 'Uploading',
+                'status_mriqc': 'Not Started',
+                'status_segmentation': 'Not Started',
+                'start_time_obj': datetime.now(),
+                'start_time_iso': datetime.now().isoformat(),
                 'start_time_display': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'pipeline_log_path': pipeline_log_path_for_run,
-                'user_log': [f"[{datetime.now().strftime('%H:%M:%S')}] Запуск {run_id} добавлен в очередь."],
-                'process_pipeline': process, 'thread_pipeline': monitor_thread,
-                'reports': [], 
+                'user_log': [f"[{datetime.now().strftime('%H:%M:%S')}] Получение файла {filename}..."],
+                'process_pipeline': None,
+                'thread_pipeline': None,
+                'reports': [],
                 'paths': local_paths_for_run,
-                'can_run_mriqc': False, 
+                'can_run_mriqc': False,
                 'can_run_segmentation': False,
-                'mriqc_requested': False, 
+                'mriqc_requested': False,
                 'segmentation_requested': False,
-                'thread_mriqc_trigger': None, 'thread_segmentation': None, # для хранения потоков опц. шагов
-                'optional_steps_eligibility_checked': False # флаг для проверки готовности опц. шагов
+                'thread_mriqc_trigger': None,
+                'thread_segmentation': None,
+                'optional_steps_eligibility_checked': False,
+                'pipeline_progress': 0,
+                'pipeline_current_step': 'uploading',
+                'pipeline_total_steps': 7,
             }
-        flash(f'Файл загружен. Обработка запущена (ID: {run_id})', 'success')
-        return redirect(url_for('processing_status', run_id=run_id))
+        
+        flask_logger.info(f"[{run_id}] Запись в active_runs создана, запускаем фоновое сохранение файла")
+        
+        # Создаем функцию для сохранения файла в фоновом потоке
+        def save_file_in_background():
+            """Сохраняет файл в фоне и запускает обработку"""
+            try:
+                flask_logger.info(f"[{run_id}] (SaveThread) Начало сохранения файла")
+                
+                # Сохраняем файл
+                file.save(str(temp_file_path))
+                
+                flask_logger.info(f"[{run_id}] (SaveThread) Файл сохранён, запускаем обработку")
+                
+                # Обновляем статус
+                with active_runs_lock:
+                    if run_id in active_runs:
+                        active_runs[run_id]['user_log'].append(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] Файл получен, начинается распаковка..."
+                        )
+                
+                # Запускаем обработку
+                process_uploaded_file_thread(
+                    run_id, temp_file_path, filename,
+                    run_specific_dir, input_archive_dir, input_raw_data_dir,
+                    input_raw_data_dir
+                )
+                
+            except Exception as e:
+                flask_logger.critical(f"[{run_id}] (SaveThread) Ошибка сохранения: {e}", exc_info=True)
+                with active_runs_lock:
+                    if run_id in active_runs:
+                        active_runs[run_id]['status_pipeline'] = f'Error (Save: {str(e)[:50]})'
+                        active_runs[run_id]['user_log'].append(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] ОШИБКА сохранения файла: {e}"
+                        )
+        
+        # Запускаем сохранение в отдельном потоке
+        save_thread = threading.Thread(target=save_file_in_background)
+        save_thread.daemon = True
+        save_thread.start()
+        
+        flask_logger.info(f"[{run_id}] Поток сохранения файла запущен, возвращаем ответ клиенту")
+        
+        # НЕМЕДЛЕННО возвращаем JSON с run_id (не ждём сохранения файла!)
+        return jsonify({
+            'success': True,
+            'run_id': run_id,
+            'message': f'Файл принят, обработка начата'
+        }), 200
+        
     except Exception as e:
-        flask_logger.critical(f"Ошибка запуска пайплайна {run_id}: {e}", exc_info=True)
-        flash(f"Ошибка сервера при запуске обработки: {e}", "error")
-        if run_specific_dir.exists(): 
-            try: shutil.rmtree(run_specific_dir)
-            except Exception as e_clean: flask_logger.error(f"Ошибка очистки {run_specific_dir}: {e_clean}")
-        return redirect(url_for('index'))
+        flask_logger.critical(f"Ошибка при обработке {run_id}: {e}", exc_info=True)
+        
+        # Очистка при ошибке
+        if run_specific_dir.exists():
+            try:
+                shutil.rmtree(run_specific_dir)
+            except Exception as e_clean:
+                flask_logger.error(f"Ошибка очистки {run_specific_dir}: {e_clean}")
+        
+        return jsonify({
+            'success': False,
+            'error': f'Ошибка сервера: {str(e)}'
+        }), 500
     
 @app.route('/download_file_from_run/<run_id>/<path:subpath>')
 def download_file_from_run(run_id: str, subpath: str):
@@ -850,12 +1111,8 @@ def api_status(run_id: str):
     """
     flask_logger.debug(f"API запрос статуса для run_id: {run_id}")
     
-    # Получаем конфигурацию пайплайна из app.config
-    # Это безопаснее, так как app.config['PIPELINE_CONFIG'] инициализируется при старте приложения
     p_config = app.config.get('PIPELINE_CONFIG', {})
     if not p_config:
-        # Эта ситуация не должна возникать, если приложение стартовало корректно,
-        # но на всякий случай логируем и возвращаем ошибку.
         flask_logger.error(f"[{run_id}] Критическая ошибка: Конфигурация пайплайна не найдена в app.config.")
         return jsonify({'error': 'Server configuration error: Pipeline config not loaded.'}), 500
 
@@ -868,27 +1125,21 @@ def api_status(run_id: str):
 
         # --- Обновление пользовательского лога из файла лога пайплайна ---
         current_pipeline_status = run_data.get('status_pipeline', 'Unknown')
-        pipeline_log_path = run_data.get('pipeline_log_path') # Должен быть объектом Path
+        pipeline_log_path = run_data.get('pipeline_log_path')
 
-        # Определяем, завершен ли пайплайн, чтобы не парсить лог без надобности
         is_pipeline_final = "Completed" in current_pipeline_status or "Error" in current_pipeline_status
-        # Проверяем, добавлено ли уже финальное сообщение о статусе пайплайна в user_log
         user_log_list = run_data.get('user_log', [])
         final_log_msg_present = any("Локальный пайплайн" in msg for msg in user_log_list)
 
-
         if pipeline_log_path and isinstance(pipeline_log_path, Path):
             if not (is_pipeline_final and final_log_msg_present):
-                # Парсим лог, если пайплайн не завершен ИЛИ если завершен, но финальное сообщение еще не добавлено
                 run_data['user_log'] = parse_pipeline_user_log(pipeline_log_path)
         elif not pipeline_log_path:
-            # Если путь к логу не определен, добавляем сообщение об этом, если его еще нет
             no_log_path_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Путь к логу пайплайна не определен."
             if not any("Путь к логу пайплайна не определен" in msg for msg in user_log_list):
                  run_data.setdefault('user_log', []).append(no_log_path_msg)
         
         # --- Поиск готовых отчетов ---
-        # Используем базовый путь из сохраненных 'paths' этого run_id
         run_specific_dir_str = run_data.get('paths', {}).get('base', str(Path(app.config['UPLOAD_FOLDER']) / run_id))
         run_specific_dir = Path(run_specific_dir_str)
         run_data['reports'] = find_reports(run_specific_dir, run_id)
@@ -896,29 +1147,25 @@ def api_status(run_id: str):
         # --- Проверка и установка флагов для запуска опциональных шагов ---
         subdirs_cfg = p_config.get('paths', {}).get('subdirs', {})
 
-        # Проверка для MRIQC: становится доступно, как только есть NIfTI файлы
-        if not run_data.get('can_run_mriqc'): # Проверяем только если флаг еще не установлен
+        # Проверка для MRIQC
+        if not run_data.get('can_run_mriqc'):
             bids_nifti_subdir_name = subdirs_cfg.get('bids_nifti', 'bids_data_nifti')
-            # Путь к bids_nifti должен быть в run_data['paths']
             bids_nifti_path_str = run_data.get('paths', {}).get('bids_nifti')
             
             if bids_nifti_path_str:
                 bids_nifti_path = Path(bids_nifti_path_str)
-                if bids_nifti_path.is_dir() and any(f.name != '.DS_Store' for f in bids_nifti_path.iterdir() if f.is_file()): # Проверяем наличие файлов
+                if bids_nifti_path.is_dir() and any(f.name != '.DS_Store' for f in bids_nifti_path.iterdir() if f.is_file()):
                     run_data['can_run_mriqc'] = True
                     flask_logger.info(f"[{run_id}] Условие для запуска MRIQC выполнено (найдена непустая папка NIfTI: {bids_nifti_path}).")
                     run_data.setdefault('user_log',[]).append(f"[{datetime.now().strftime('%H:%M:%S')}] Данные NIfTI готовы, MRIQC можно запускать.")
             else:
                 flask_logger.warning(f"[{run_id}] Путь 'bids_nifti' не найден в run_data['paths'] для проверки can_run_mriqc.")
 
-        # Проверка для Сегментации:
-        # Зависит от завершения основного пайплайна И наличия предобработанных данных.
-        # (Можно изменить условие, если предобработка может завершиться раньше всего пайплайна)
-        if not run_data.get('can_run_segmentation'): # Проверяем только если флаг еще не установлен
-            if current_pipeline_status == 'Completed': # Основной пайплайн должен быть завершен
+        # Проверка для Сегментации
+        if not run_data.get('can_run_segmentation'):
+            if current_pipeline_status == 'Completed':
                 preprocessed_subdir_name = subdirs_cfg.get('preprocessed', 'preprocessed_data')
-                # Путь к preprocessed_data должен быть в run_data['paths']
-                preprocessed_path_str = run_data.get('paths', {}).get('preprocessed') # Предполагаем, что такой ключ будет добавлен в 'paths'
+                preprocessed_path_str = run_data.get('paths', {}).get('preprocessed')
                 
                 if preprocessed_path_str:
                     preprocessed_path = Path(preprocessed_path_str)
@@ -928,20 +1175,104 @@ def api_status(run_id: str):
                         run_data.setdefault('user_log',[]).append(f"[{datetime.now().strftime('%H:%M:%S')}] Данные для сегментации готовы.")
                 else:
                     flask_logger.warning(f"[{run_id}] Путь 'preprocessed' не найден в run_data['paths'] для проверки can_run_segmentation.")
-            # else: # Если пайплайн еще не завершен, то и сегментацию запускать нельзя (по текущей логике)
-            #    pass
+
+        # --- НОВОЕ: Расчет прогресса ---
+        status_pipeline = run_data.get('status_pipeline', 'Not Started')
+        status_mriqc = run_data.get('status_mriqc', 'Not Started')
+        status_segmentation = run_data.get('status_segmentation', 'Not Started')
+        
+        # Получаем флаги запроса
+        mriqc_requested = run_data.get('mriqc_requested', False)
+        segmentation_requested = run_data.get('segmentation_requested', False)
+        
+        # Детальный прогресс пайплайна (если есть)
+        pipeline_detail_progress = run_data.get('pipeline_progress', None)
+        
+        if pipeline_detail_progress is not None:
+            # Используем детальный прогресс, если он есть
+            progress_pipeline = pipeline_detail_progress
+        else:
+            # Иначе используем базовый расчет по статусу
+            progress_pipeline = calculate_progress_from_status(status_pipeline, 'pipeline', True)
+        
+        # Рассчитываем прогресс для опциональных этапов
+        progress_mriqc = calculate_progress_from_status(status_mriqc, 'mriqc', mriqc_requested)
+        progress_segmentation = calculate_progress_from_status(status_segmentation, 'segmentation', segmentation_requested)
+        
+        # Общий прогресс - считаем только те этапы, которые запущены
+        active_steps = [progress_pipeline]  # Пайплайн всегда активен
+        
+        if mriqc_requested:
+            active_steps.append(progress_mriqc)
+        
+        if segmentation_requested:
+            active_steps.append(progress_segmentation)
+        
+        progress_overall = sum(active_steps) // len(active_steps) if active_steps else 0
 
         # --- Сбор данных для ответа ---
-        # Ключи, которые мы хотим всегда возвращать клиенту
         response_keys = [
             'status_pipeline', 'status_mriqc', 'status_segmentation',
             'user_log', 'reports', 'can_run_mriqc', 'can_run_segmentation',
             'mriqc_requested', 'segmentation_requested'
         ]
         response_data = {key: run_data.get(key) for key in response_keys}
-        response_data['run_id'] = run_id # Всегда добавляем run_id для полноты
+        response_data['run_id'] = run_id
+        
+        # Добавляем данные о прогрессе
+        response_data['progress_pipeline'] = progress_pipeline
+        response_data['progress_mriqc'] = progress_mriqc
+        response_data['progress_segmentation'] = progress_segmentation
+        response_data['progress_overall'] = progress_overall
 
         return jsonify(response_data)
+    
+@app.route('/api/update_progress/<run_id>', methods=['POST'])
+def update_pipeline_progress(run_id: str):
+    """
+    Эндпоинт для обновления прогресса пайплайна из run_pipeline.py.
+    Ожидает JSON с полями: step_name, progress, status (опционально)
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        step_name = data.get('step_name')
+        progress = data.get('progress')
+        new_status = data.get('status')  # Опционально
+        
+        if progress is None:
+            return jsonify({'error': 'progress field is required'}), 400
+        
+        with active_runs_lock:
+            run_data = active_runs.get(run_id)
+            if not run_data:
+                return jsonify({'error': f'Run ID {run_id} not found'}), 404
+            
+            # Обновляем прогресс
+            run_data['pipeline_progress'] = int(progress)
+            
+            if step_name:
+                run_data['pipeline_current_step'] = step_name
+                flask_logger.info(f"[{run_id}] Pipeline progress updated: {step_name} - {progress}%")
+            
+            # Обновляем статус, если передан (например, с Queued на In Progress)
+            if new_status:
+                run_data['status_pipeline'] = new_status
+                flask_logger.info(f"[{run_id}] Pipeline status updated to: {new_status}")
+            
+            # Добавляем запись в пользовательский лог
+            if step_name:
+                run_data.setdefault('user_log', []).append(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Этап: {step_name} ({progress}%)"
+                )
+        
+        return jsonify({'success': True, 'message': 'Progress updated'}), 200
+        
+    except Exception as e:
+        flask_logger.error(f"[{run_id}] Error updating pipeline progress: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/run_mriqc_remote/<run_id>', methods=['POST'])
 def trigger_mriqc_on_server(run_id: str):
