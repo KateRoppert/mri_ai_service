@@ -20,7 +20,7 @@ except ImportError:
     print("Warning: matplotlib not available. Plots will be skipped.")
 
 
-class PerformanceMonitor:
+class BenchmarkAnalyzer:
     """Analyzes benchmark results and generates visualizations."""
     
     def __init__(self, metrics_file: Path, output_dir: Path):
