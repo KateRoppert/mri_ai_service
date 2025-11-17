@@ -580,7 +580,7 @@ def main():
     parser.add_argument(
         "--workers",
         type=int,
-        default=None,
+        default=1,
         help="Number of worker processes for parallel mode (default: CPU count)"
     )
     
