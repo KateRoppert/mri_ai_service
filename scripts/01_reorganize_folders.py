@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import pydicom
-from research.stage2.performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+from scripts.performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 import multiprocessing as mp
 from functools import partial
 
