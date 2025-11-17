@@ -1,0 +1,39 @@
+# DICOM tags configuration for metadata extraction
+# Format: tag_name: [group, element, required]
+
+identification:
+  PatientID: ["0010", "0020", true]
+  PatientName: ["0010", "0010", false]
+  PatientAge: ["0010", "1010", false]
+  PatientSex: ["0010", "0040", false]
+  StudyInstanceUID: ["0020", "000D", true]
+  SeriesInstanceUID: ["0020", "000E", true]
+  StudyDate: ["0008", "0020", false]
+  StudyTime: ["0008", "0030", false]
+  SeriesNumber: ["0020", "0011", false]
+  SeriesDescription: ["0008", "103E", true]
+
+equipment:
+  Manufacturer: ["0008", "0070", false]
+  ManufacturerModelName: ["0008", "1090", false]
+  MagneticFieldStrength: ["0018", "0087", false]
+  DeviceSerialNumber: ["0018", "1000", false]
+  SoftwareVersions: ["0018", "1020", false]
+
+protocol:
+  Modality: ["0008", "0060", true]
+  ScanningSequence: ["0018", "0020", false]
+  SequenceVariant: ["0018", "0021", false]
+  SequenceName: ["0018", "0024", false]
+  EchoTime: ["0018", "0081", false]
+  RepetitionTime: ["0018", "0080", false]
+  FlipAngle: ["0018", "1314", false]
+  InversionTime: ["0018", "0082", false]
+
+geometry:
+  SliceThickness: ["0018", "0050", false]
+  PixelSpacing: ["0028", "0030", false]
+  ImageOrientationPatient: ["0020", "0037", false]
+  Rows: ["0028", "0010", false]
+  Columns: ["0028", "0011", false]
+  SpacingBetweenSlices: ["0018", "0088", false]
