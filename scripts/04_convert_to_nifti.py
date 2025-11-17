@@ -1006,8 +1006,8 @@ def main():
     parser.add_argument(
         "--results_dir",
         type=Path,
-        default=Path("results_conversion"),
-        help="Directory to save benchmark results (default: ./results_conversion)"
+        default=Path("results"),
+        help="Directory to save benchmark results (default: ./results)"
     )
     parser.add_argument(
         "--mode",
