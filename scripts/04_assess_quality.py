@@ -533,8 +533,8 @@ class QualityAssessor:
         benchmark_logger = None
         if benchmark:
             monitor = PerformanceMonitor(enabled=True)
-            actual_results_dir = output_dir / "results"
-            benchmark_logger = BenchmarkLogger(actual_results_dir)
+            results_dir.mkdir(parents=True, exist_ok=True)
+            benchmark_logger = BenchmarkLogger(results_dir)
             monitor.start()
         
         self.logger.info("Starting quality assessment")
