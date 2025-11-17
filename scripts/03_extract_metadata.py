@@ -49,7 +49,7 @@ class MetadataExtractor:
             self.logger.error(f"Failed to load tags config: {e}")
             raise
     
-    def find_dicom_series(self, input_dir: Path) -> List[Tuple[Path, str, str]]:
+    def find_dicom_series(self, input_dir: Path) -> List[Tuple[Path, str, str, str]]:
         """
         Find all DICOM series in BIDS structure.
         
@@ -57,13 +57,13 @@ class MetadataExtractor:
             input_dir: Root directory with BIDS structure
             
         Returns:
-            List of tuples (series_path, patient_id, modality)
+            List of tuples (series_path, patient_id, session_id, modality)
         """
         series_list = []
 
         subject_dirs = sorted(input_dir.glob("sub-*"))
         
-        # BIDS structure: sub-<patientID>/ses-<session>/<modality>/
+        # BIDS structure: sub-<patientID>/ses-<session>/anat/<modality>/
         for subject_dir in subject_dirs:
             if not subject_dir.is_dir():
                 continue
@@ -75,38 +75,40 @@ class MetadataExtractor:
                 if not session_dir.is_dir():
                     continue
                 
-                # Look for modality directories (anat, func, etc.)
-                for modality_type_dir in session_dir.iterdir():
-                    if not modality_type_dir.is_dir():
+                session_id = session_dir.name.replace("ses-", "")
+                
+                # Look for anat directory within session
+                anat_dir = session_dir / "anat"
+                if not anat_dir.exists():
+                    continue
+                
+                # Look for modality directories within anat
+                for modality_dir in anat_dir.iterdir():
+                    if not modality_dir.is_dir():
                         continue
                     
-                    # Each subdirectory might contain DICOM files
-                    # Check if there are DICOM files directly or in subdirectories
-                    dicom_dirs = []
-                    
-                    # Check direct DICOM files
-                    dicom_files = list(modality_type_dir.glob("*.dcm")) + \
-                                  list(modality_type_dir.glob("*.DCM")) + \
-                                  list(modality_type_dir.glob("*.dicom"))
+                    # Check if there are DICOM files directly
+                    dicom_files = list(modality_dir.glob("*.dcm")) + \
+                                list(modality_dir.glob("*.DCM")) + \
+                                list(modality_dir.glob("*.dicom"))
                     
                     if dicom_files:
-                        # Determine modality from parent directory name
-                        modality = modality_type_dir.name
-                        series_list.append((modality_type_dir, patient_id, modality))
+                        modality = modality_dir.name
+                        series_list.append((modality_dir, patient_id, session_id, modality))
                     else:
                         # Check subdirectories for DICOM files
-                        for subdir in modality_type_dir.iterdir():
+                        for subdir in modality_dir.iterdir():
                             if not subdir.is_dir():
                                 continue
                             
                             dicom_files = list(subdir.glob("*.dcm")) + \
-                                          list(subdir.glob("*.DCM")) + \
-                                          list(subdir.glob("*.dicom"))
+                                        list(subdir.glob("*.DCM")) + \
+                                        list(subdir.glob("*.dicom"))
                             
                             if dicom_files:
                                 # Use subdirectory name as modality hint
                                 modality = subdir.name
-                                series_list.append((subdir, patient_id, modality))
+                                series_list.append((subdir, patient_id, session_id, modality))
         
         self.logger.info(f"Found {len(series_list)} DICOM series")
         return series_list
@@ -218,7 +220,8 @@ class MetadataExtractor:
             # Create BIDS-compliant directory structure
             subject_dir = output_dir / f"sub-{patient_id}"
             session_dir = subject_dir / f"ses-{session}"
-            modality_dir = session_dir / modality
+            anat_dir = session_dir / "anat"
+            modality_dir = anat_dir / modality
             modality_dir.mkdir(parents=True, exist_ok=True)
             
             # BIDS naming: sub-<label>_ses-<label>_<modality>.json
@@ -237,7 +240,7 @@ class MetadataExtractor:
             return False
     
     def process_series(self, series_path: Path, patient_id: str, 
-                       modality: str, output_dir: Path, session: str = "01") -> bool:
+                       modality: str, output_dir: Path, session: str = "001") -> bool:
         """
         Process a single DICOM series.
         
@@ -454,9 +457,9 @@ class MetadataExtractor:
 
     def _process_sequential(self, series_list, output_dir):
         """Process series sequentially."""
-        for series_path, patient_id, modality in series_list:
-            self.logger.info(f"Processing: {patient_id} - {modality}")
-            self.process_series(series_path, patient_id, modality, output_dir)
+        for series_path, patient_id, session_id, modality in series_list:
+            self.logger.info(f"Processing: {patient_id}/ses-{session_id} - {modality}")
+            self.process_series(series_path, patient_id, modality, output_dir, session_id)
     
     def _process_parallel(self, series_list, output_dir, workers):
         """Process series in parallel using multiprocessing."""
@@ -464,8 +467,8 @@ class MetadataExtractor:
         
         # Prepare arguments for workers
         tasks = [
-            (series_path, patient_id, modality, output_dir, "01", self.tags_config)
-            for series_path, patient_id, modality in series_list
+            (series_path, patient_id, modality, output_dir, session_id, self.tags_config)
+            for series_path, patient_id, session_id, modality in series_list
         ]
         
         # Process in parallel
