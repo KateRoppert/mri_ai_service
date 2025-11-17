@@ -1620,11 +1620,17 @@ def main():
     # Aggregate performance metrics (average)
     performance_metrics = None
     if all_performance_metrics:
+        # Filter valid metrics for averaging
+        cpu_avg_values = [m.get('cpu_avg', 0) for m in all_performance_metrics if m.get('cpu_avg')]
+        memory_avg_values = [m.get('memory_avg_mb', 0) for m in all_performance_metrics if m.get('memory_avg_mb')]
+        cpu_max_values = [m.get('cpu_max', 0) for m in all_performance_metrics if m.get('cpu_max')]
+        memory_peak_values = [m.get('memory_peak_mb', 0) for m in all_performance_metrics if m.get('memory_peak_mb')]
+        
         performance_metrics = {
-            'cpu_avg': sum(m.get('cpu_avg', 0) for m in all_performance_metrics if m.get('cpu_avg')) / len([m for m in all_performance_metrics if m.get('cpu_avg')]),
-            'cpu_max': max(m.get('cpu_max', 0) for m in all_performance_metrics if m.get('cpu_max')),
-            'memory_avg_mb': sum(m.get('memory_avg_mb', 0) for m in all_performance_metrics if m.get('memory_avg_mb')) / len([m for m in all_performance_metrics if m.get('memory_avg_mb')]),
-            'memory_peak_mb': max(m.get('memory_peak_mb', 0) for m in all_performance_metrics if m.get('memory_peak_mb')),
+            'cpu_avg': sum(cpu_avg_values) / len(cpu_avg_values) if cpu_avg_values else 0.0,
+            'cpu_max': max(cpu_max_values) if cpu_max_values else 0.0,
+            'memory_avg_mb': sum(memory_avg_values) / len(memory_avg_values) if memory_avg_values else 0.0,
+            'memory_peak_mb': max(memory_peak_values) if memory_peak_values else 0.0,
             'duration': total_time
         }
 
