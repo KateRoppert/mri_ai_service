@@ -447,6 +447,31 @@ def validate_converted_dataset(output_dir: Path, expected_modalities: Set[str] =
     
     return validation_report
 
+def process_series_worker(args):
+    """
+    Worker function for multiprocessing conversion.
+    
+    Args:
+        args: Tuple of (series_path, patient_id, modality, output_dir, session, dcm2niix_cmd)
+    
+    Returns:
+        Tuple of (success, stats)
+    """
+    series_path, patient_id, modality, output_dir, session, dcm2niix_base_cmd = args
+    
+    # Create temporary converter instance for this process
+    import logging
+    temp_logger = logging.getLogger(f"converter_worker_{patient_id}_{modality}")
+    temp_logger.setLevel(logging.WARNING)  # Minimize logging in workers
+    
+    temp_converter = NiftiConverter.__new__(NiftiConverter)
+    temp_converter.logger = temp_logger
+    temp_converter.dcm2niix_base_cmd = dcm2niix_base_cmd
+    temp_converter.stats = {'total_series': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
+    
+    success = temp_converter.convert_series(series_path, patient_id, modality, output_dir, session)
+    return success, temp_converter.stats
+
 
 class NiftiConverter:
     """Handles DICOM to NIfTI conversion using dcm2niix."""
@@ -670,28 +695,28 @@ class NiftiConverter:
             self.logger.error(f"Error converting {patient_id}/{modality}: {e}")
             self.stats['failed'] += 1
             return False
-    
-    def process_series_wrapper(self, args):
-        """
-        Wrapper for multiprocessing conversion.
+    # @staticmethod
+    # def process_series_wrapper(self, args):
+    #     """
+    #     Wrapper for multiprocessing conversion.
         
-        Args:
-            args: Tuple of (series_path, patient_id, modality, output_dir, session, dcm2niix_cmd)
+    #     Args:
+    #         args: Tuple of (series_path, patient_id, modality, output_dir, session, dcm2niix_cmd)
         
-        Returns:
-            Tuple of (success, stats)
-        """
-        series_path, patient_id, modality, output_dir, session, dcm2niix_base_cmd = args
+    #     Returns:
+    #         Tuple of (success, stats)
+    #     """
+    #     series_path, patient_id, modality, output_dir, session, dcm2niix_base_cmd = args
         
-        # Create temporary converter instance for this process
-        temp_logger = logging.getLogger(f"converter_worker_{patient_id}_{modality}")
-        temp_converter = NiftiConverter.__new__(NiftiConverter)
-        temp_converter.logger = temp_logger
-        temp_converter.dcm2niix_base_cmd = dcm2niix_base_cmd
-        temp_converter.stats = {'total_series': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
+    #     # Create temporary converter instance for this process
+    #     temp_logger = logging.getLogger(f"converter_worker_{patient_id}_{modality}")
+    #     temp_converter = NiftiConverter.__new__(NiftiConverter)
+    #     temp_converter.logger = temp_logger
+    #     temp_converter.dcm2niix_base_cmd = dcm2niix_base_cmd
+    #     temp_converter.stats = {'total_series': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
         
-        success = temp_converter.convert_series(series_path, patient_id, modality, output_dir, session)
-        return success, temp_converter.stats
+    #     success = temp_converter.convert_series(series_path, patient_id, modality, output_dir, session)
+    #     return success, temp_converter.stats
     
     def run(self, input_dir: Path, output_dir: Path, max_subjects: Optional[int] = None,
             benchmark: bool = False, results_dir: Optional[Path] = None,
@@ -868,7 +893,7 @@ class NiftiConverter:
         
         # Process in parallel
         with Pool(processes=workers) as pool:
-            results = pool.map(self.process_series_wrapper, tasks)
+            results = pool.map(process_series_worker, tasks)
         
         # Aggregate results
         for success, worker_stats in results:
