@@ -23,6 +23,7 @@ mriqc_output/
 preprocessed_data/
 transformations/
 output/
+results/
 
 # Шаблоны для предобработки
 mni_templates/
