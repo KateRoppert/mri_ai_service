@@ -1,0 +1,168 @@
+# Quality Assessment Configuration
+# Thresholds and weights for quality metrics
+
+# Thresholds per modality
+thresholds:
+  t1:
+    snr:
+      good: 15.0
+      acceptable: 10.0
+      poor: 5.0
+    cnr:
+      good: 8.0
+      acceptable: 5.0
+      poor: 2.0
+    efc:
+      good: 0.5    # Lower is better (less entropy = sharper)
+      acceptable: 0.6
+      poor: 0.7
+    fber:
+      good: 50.0   # Higher is better (better foreground/background ratio)
+      acceptable: 25.0
+      poor: 10.0
+    gradient_sharpness:
+      good: 1000.0  # Higher is better (sharper gradients)
+      acceptable: 500.0
+      poor: 200.0
+    voxel_anisotropy:
+      good: 1.2     # Lower is better (closer to 1.0 = isotropic)
+      acceptable: 2.0
+      poor: 3.0
+    intensity_variance:
+      good: 5000.0  # Higher is better (good contrast)
+      acceptable: 2000.0
+      poor: 500.0
+    coefficient_of_variation:
+      good: 0.15    # Lower is better (stable signal)
+      acceptable: 0.25
+      poor: 0.40
+  
+  t1c:
+    snr:
+      good: 18.0
+      acceptable: 12.0
+      poor: 6.0
+    cnr:
+      good: 10.0
+      acceptable: 6.0
+      poor: 3.0
+    efc:
+      good: 0.5
+      acceptable: 0.6
+      poor: 0.7
+    fber:
+      good: 60.0
+      acceptable: 30.0
+      poor: 12.0
+    gradient_sharpness:
+      good: 1200.0
+      acceptable: 600.0
+      poor: 250.0
+    voxel_anisotropy:
+      good: 1.2
+      acceptable: 2.0
+      poor: 3.0
+    intensity_variance:
+      good: 6000.0
+      acceptable: 2500.0
+      poor: 600.0
+    coefficient_of_variation:
+      good: 0.15
+      acceptable: 0.25
+      poor: 0.40
+  
+  t2:
+    snr:
+      good: 12.0
+      acceptable: 8.0
+      poor: 4.0
+    cnr:
+      good: 7.0
+      acceptable: 4.5
+      poor: 2.0
+    efc:
+      good: 0.5
+      acceptable: 0.6
+      poor: 0.7
+    fber:
+      good: 40.0
+      acceptable: 20.0
+      poor: 8.0
+    gradient_sharpness:
+      good: 800.0
+      acceptable: 400.0
+      poor: 150.0
+    voxel_anisotropy:
+      good: 1.2
+      acceptable: 2.0
+      poor: 3.0
+    intensity_variance:
+      good: 4000.0
+      acceptable: 1800.0
+      poor: 400.0
+    coefficient_of_variation:
+      good: 0.15
+      acceptable: 0.25
+      poor: 0.40
+  
+  t2fl:
+    snr:
+      good: 14.0
+      acceptable: 9.0
+      poor: 5.0
+    cnr:
+      good: 8.5
+      acceptable: 5.5
+      poor: 2.5
+    efc:
+      good: 0.5
+      acceptable: 0.6
+      poor: 0.7
+    fber:
+      good: 45.0
+      acceptable: 22.0
+      poor: 9.0
+    gradient_sharpness:
+      good: 900.0
+      acceptable: 450.0
+      poor: 180.0
+    voxel_anisotropy:
+      good: 1.2
+      acceptable: 2.0
+      poor: 3.0
+    intensity_variance:
+      good: 4500.0
+      acceptable: 2000.0
+      poor: 450.0
+    coefficient_of_variation:
+      good: 0.15
+      acceptable: 0.25
+      poor: 0.40
+
+# Scoring weights (sum = 1.0)
+weights:
+  snr: 0.20                      # Signal-to-noise ratio
+  cnr: 0.20                      # Contrast-to-noise ratio  
+  efc: 0.15                      # Entropy focus criterion
+  fber: 0.15                     # Foreground-background energy ratio
+  gradient_sharpness: 0.15       # Image sharpness
+  voxel_anisotropy: 0.05         # Voxel uniformity
+  intensity_variance: 0.05       # Intensity distribution
+  coefficient_of_variation: 0.05 # Signal stability
+
+# Quality categories (based on final score 0-100)
+categories:
+  good:
+    min: 80
+    max: 100
+  acceptable:
+    min: 50
+    max: 79
+  poor:
+    min: 0
+    max: 49
+
+# Foreground mask parameters
+foreground_mask:
+  method: "otsu"           # Options: "otsu", "percentile"
+  percentile_threshold: 5  # If using percentile method
