@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import json 
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Set
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
@@ -793,9 +794,22 @@ class NiftiConverter:
         avg_time_per_series = elapsed_time / total_processed if total_processed > 0 else 0
         throughput = total_processed / elapsed_time if elapsed_time > 0 else 0
         
-        # Calculate speedup and efficiency for parallel mode
+        # Calculate speedup and efficiency
         speedup = None
         efficiency = None
+        baseline_time = None
+
+        # Load baseline from sequential run
+        if results_dir:
+            baseline_file = results_dir / "sequential_workers_1.json"
+            if baseline_file.exists():
+                try:
+                    with open(baseline_file, 'r') as f:
+                        baseline_data = json.load(f)
+                        baseline_time = baseline_data.get('total_time')
+                        self.logger.debug(f"Loaded baseline time: {baseline_time:.2f}s from {baseline_file}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load baseline: {e}")
 
         if mode == 'sequential' and workers == 1:
             # Sequential mode is the baseline
@@ -803,10 +817,14 @@ class NiftiConverter:
             efficiency = 1.0
 
         elif mode == 'parallel' and workers > 1:
-            # Theoretical baseline: sequential time
-            sequential_time_estimate = avg_time_per_series * total_processed
-            speedup = sequential_time_estimate / elapsed_time if elapsed_time > 0 else 0
-            efficiency = speedup / workers if workers > 0 else 0
+            if baseline_time is not None:
+                # Calculate speedup relative to baseline
+                speedup = baseline_time / elapsed_time if elapsed_time > 0 else 0
+                efficiency = speedup / workers if workers > 0 else 0
+            else:
+                self.logger.warning("No baseline found! Run 'python 03_convert_to_nifti.py <input> <output> --benchmark --mode sequential' first.")
+                speedup = None
+                efficiency = None
         
         # Final statistics
         self.logger.info("=" * 60)
