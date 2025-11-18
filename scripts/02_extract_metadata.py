@@ -345,13 +345,13 @@ class MetadataExtractor:
             # Limit to first N subjects
             unique_patients = []
             filtered_series = []
-            for series_path, patient_id, modality in series_list:
+            for series_path, patient_id, session_id, modality in series_list:
                 if patient_id not in unique_patients:
                     if len(unique_patients) >= max_subjects:
                         break
                     unique_patients.append(patient_id)
                 if patient_id in unique_patients:
-                    filtered_series.append((series_path, patient_id, modality))
+                    filtered_series.append((series_path, patient_id, session_id, modality))
             series_list = filtered_series
             self.logger.info(f"Limited to first {max_subjects} subjects ({len(unique_patients)} found)")
         
