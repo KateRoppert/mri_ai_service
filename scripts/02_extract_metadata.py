@@ -239,48 +239,84 @@ class MetadataExtractor:
             self.logger.error(f"Failed to save metadata: {e}")
             return False
     
-    def process_series(self, series_path: Path, patient_id: str, 
-                       modality: str, output_dir: Path, session: str = "001") -> bool:
+    def process_series(self, series_path: Path, patient_id: str, modality: str, 
+                   output_dir: Path, session: str) -> bool:
         """
-        Process a single DICOM series.
+        Process a single DICOM series and extract metadata.
         
         Args:
-            series_path: Path to series directory
-            patient_id: Patient identifier
-            modality: Modality name
-            output_dir: Output directory
-            session: Session identifier
+            series_path: Path to DICOM series directory
+            patient_id: Patient ID (e.g., "001")
+            modality: Modality name (e.g., "t1")
+            output_dir: Root output directory
+            session: Session ID (e.g., "001")
             
         Returns:
-            True if successful, False otherwise
+            bool: True if processing was successful, False otherwise
         """
-        self.stats['total_series'] += 1
-        
-        # Find first DICOM file
-        dicom_file = self.get_first_dicom_file(series_path)
-        
-        if dicom_file is None:
-            self.logger.warning(f"No DICOM files found in {series_path}")
-            self.stats['skipped'] += 1
-            return False
-        
-        # Extract metadata
-        metadata = self.extract_metadata(dicom_file)
-        
-        if metadata is None:
-            self.logger.warning(f"Failed to extract metadata from {series_path}")
+        try:
+            # Create expected output path
+            expected_output_path = self._get_output_path(output_dir, patient_id, session, modality)
+            
+            # Check if output already exists (skip if exists)
+            if expected_output_path.exists():
+                self.logger.info(f"Skipping existing output: {expected_output_path.relative_to(output_dir)}")
+                self.stats['skipped'] += 1
+                return True  # Consider as success since file exists
+            
+            # Find first DICOM file
+            dicom_file = self.get_first_dicom_file(series_path)
+            
+            if not dicom_file:
+                self.logger.warning(f"No DICOM files found in {series_path}")
+                self.stats['skipped'] += 1
+                return False
+            
+            # Extract metadata
+            metadata = self.extract_metadata(dicom_file)
+            
+            if metadata is None:
+                self.logger.warning(f"Failed to extract metadata from {dicom_file}")
+                self.stats['failed'] += 1
+                return False
+            
+            # Save metadata
+            success = self.save_metadata(metadata, output_dir, patient_id, session, modality)
+            
+            if success:
+                self.stats['successful'] += 1
+                return True
+            else:
+                self.stats['failed'] += 1
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error processing series {series_path}: {e}")
             self.stats['failed'] += 1
             return False
         
-        # Save metadata
-        success = self.save_metadata(metadata, output_dir, patient_id, session, modality)
+    def _get_output_path(self, output_dir: Path, patient_id: str, session: str, modality: str) -> Path:
+        """
+        Get expected output JSON file path.
         
-        if success:
-            self.stats['successful'] += 1
-            return True
-        else:
-            self.stats['failed'] += 1
-            return False
+        Args:
+            output_dir: Root output directory
+            patient_id: Patient ID
+            session: Session ID
+            modality: Modality name
+            
+        Returns:
+            Expected path to JSON file
+        """
+        # Create BIDS-compliant directory structure
+        subject_dir = output_dir / f"sub-{patient_id}"
+        session_dir = subject_dir / f"ses-{session}"
+        anat_dir = session_dir / "anat"
+        modality_dir = anat_dir / modality
+        
+        # JSON filename following BIDS convention
+        json_filename = f"sub-{patient_id}_ses-{session}_{modality}_metadata.json"
+        return modality_dir / json_filename
         
     @staticmethod
     def process_series_wrapper(args):
@@ -323,6 +359,12 @@ class MetadataExtractor:
             mode: Processing mode ('sequential' or 'parallel')
             workers: Number of worker processes (for parallel mode)
         """
+        self.stats = {
+            'total_series': 0,
+            'successful': 0,
+            'failed': 0,
+            'skipped': 0
+        }
 
         self.benchmark_mode = benchmark
 
@@ -358,6 +400,9 @@ class MetadataExtractor:
         if not series_list:
             self.logger.warning("No DICOM series found")
             return
+        
+        self.stats['total_series'] = len(series_list)
+        self.logger.info(f"Found {len(series_list)} series to process")
         
         # Process series based on mode
         if mode == 'sequential':
@@ -586,6 +631,11 @@ def main():
         default=1,
         help="Number of worker processes for parallel mode (default: CPU count)"
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force overwrite existing output directory"
+    )
     
     args = parser.parse_args()
     
@@ -597,12 +647,18 @@ def main():
     if not args.config.exists():
         print(f"Error: Config file does not exist: {args.config}")
         sys.exit(1)
+
+    # Setup logging
+    logger = setup_logging(args.log_file)
+
+    # Handle output directory
+    if args.force and args.output_dir.exists():
+        logger.info(f"Force mode: clearing existing output directory {args.output_dir}")
+        import shutil
+        shutil.rmtree(args.output_dir)
     
     # Create output directory
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Setup logging
-    logger = setup_logging(args.log_file)
     
     try:
         # Load tags configuration
