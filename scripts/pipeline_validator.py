@@ -155,7 +155,8 @@ class InputOutputValidator:
 
     def _scan_bids_metadata(self, directory: Path) -> Dict[str, Dict[str, Set[str]]]:
         """
-        Scan BIDS metadata structure: sub-*/ses-*/metadata/*.json
+        Scan BIDS metadata structure: sub-*/ses-*/anat/{modality}/*.json
+        (or sub-*/ses-*/metadata/*.json as alternative)
         
         Args:
             directory: Root directory
@@ -176,26 +177,44 @@ class InputOutputValidator:
                     continue
                 
                 session_id = session_dir.name.replace("ses-", "")
+                
+                # Try two possible locations:
+                # 1. sub-*/ses-*/anat/{modality}/*.json (primary)
+                # 2. sub-*/ses-*/metadata/*.json (alternative)
+                
+                anat_dir = session_dir / "anat"
                 metadata_dir = session_dir / "metadata"
                 
-                if not metadata_dir.exists():
-                    continue
+                # Check anat directory first
+                if anat_dir.exists():
+                    # Look for modality subdirectories
+                    for modality_dir in anat_dir.iterdir():
+                        if not modality_dir.is_dir():
+                            continue
+                        
+                        # Find JSON files in modality directory
+                        json_files = list(modality_dir.glob("*.json"))
+                        
+                        if json_files:
+                            modality = modality_dir.name.lower()
+                            structure[patient_id][session_id].add(modality)
                 
-                # Find metadata JSON files
-                for json_file in metadata_dir.glob("*.json"):
-                    # Extract modality from filename
-                    # Expected format: sub-{patient}_ses-{session}_{modality}_metadata.json
-                    filename = json_file.stem
-                    parts = filename.split('_')
-                    
-                    # Find modality (part before _metadata)
-                    if len(parts) >= 3:
-                        # Remove 'metadata' suffix if present
-                        if parts[-1] == 'metadata':
-                            modality = parts[-2].lower()
-                        else:
-                            modality = parts[-1].lower()
-                        structure[patient_id][session_id].add(modality)
+                # Check metadata directory as fallback
+                if metadata_dir.exists():
+                    for json_file in metadata_dir.glob("*.json"):
+                        # Extract modality from filename
+                        # Expected format: sub-{patient}_ses-{session}_{modality}_metadata.json
+                        filename = json_file.stem
+                        parts = filename.split('_')
+                        
+                        # Find modality (part before _metadata)
+                        if len(parts) >= 3:
+                            # Remove 'metadata' suffix if present
+                            if parts[-1] == 'metadata':
+                                modality = parts[-2].lower()
+                            else:
+                                modality = parts[-1].lower()
+                            structure[patient_id][session_id].add(modality)
         
         return structure
 
