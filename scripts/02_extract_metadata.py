@@ -16,6 +16,7 @@ import yaml
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
+from pipeline_validator import InputOutputValidator
 
 
 class MetadataExtractor:
@@ -425,6 +426,36 @@ class MetadataExtractor:
         self.logger.info(f"Skipped: {self.stats['skipped']}")
         self.logger.info(f"Total time: {elapsed_time:.2f}s")
         self.logger.info(f"Average time per series: {avg_time_per_series:.3f}s")
+        self.logger.info("=" * 60)
+
+        self.logger.info("=" * 60)
+        self.logger.info("Validating input-output correspondence...")
+        
+        try:
+            validator = InputOutputValidator(logger=self.logger)
+            
+            # Сканируем входную структуру (DICOM в BIDS)
+            self.logger.info("Scanning input structure (DICOM)...")
+            input_structure = validator.scan_structure(input_dir, format_type='bids-dicom')
+            
+            # Сканируем выходную структуру (метаданные JSON)
+            self.logger.info("Scanning output structure (metadata)...")
+            output_structure = validator.scan_structure(output_dir, format_type='bids-metadata')
+            
+            # Сравниваем структуры
+            self.logger.info("Comparing structures...")
+            comparison_result = validator.compare_structures(input_structure, output_structure)
+            
+            # Генерируем отчет
+            validator.generate_incomplete_report(
+                comparison_result=comparison_result,
+                stage_name="02_extract_metadata",
+                output_dir=output_dir
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Validation failed: {e}", exc_info=True)
+        
         self.logger.info("=" * 60)
 
         # Save benchmark results
