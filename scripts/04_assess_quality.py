@@ -288,7 +288,7 @@ class QualityAssessor:
             return "POOR"
     
     def assess_image(self, nifti_path: Path, patient_id: str, 
-                    modality: str, output_dir: Path) -> bool:
+                    modality: str, output_dir: Path, skip_existing: bool = True) -> bool:
         """
         Assess quality of a single NIfTI image.
         
@@ -297,6 +297,7 @@ class QualityAssessor:
             patient_id: Patient identifier
             modality: Modality name
             output_dir: Output directory for reports
+            skip_existing: Skip if output file already exists
             
         Returns:
             True if successful, False otherwise
@@ -345,6 +346,12 @@ class QualityAssessor:
             report_dir.mkdir(parents=True, exist_ok=True)
             
             report_file = report_dir / f"sub-{patient_id}_ses-01_{modality}_quality.json"
+
+            if skip_existing and report_file.exists():
+                self.logger.debug(f"Skipping {patient_id}/{modality}: output already exists")
+                self.stats['skipped'] += 1
+                return True
+            
             with open(report_file, 'w') as f:
                 json.dump(report, f, indent=2)
             
@@ -359,19 +366,19 @@ class QualityAssessor:
             self.stats['failed'] += 1
             return False
     
-    def _process_sequential(self, images, output_dir):
+    def _process_sequential(self, images, output_dir, skip_existing=True):
         """Process images sequentially."""
         for nifti_path, patient_id, modality in images:
             self.logger.info(f"Assessing: {patient_id} - {modality}")
-            self.assess_image(nifti_path, patient_id, modality, output_dir)
+            self.assess_image(nifti_path, patient_id, modality, output_dir, skip_existing)
     
-    def _process_parallel(self, images, output_dir, workers):
+    def _process_parallel(self, images, output_dir, workers, skip_existing=True):
         """Process images in parallel using multiprocessing."""
         self.logger.info(f"Starting parallel processing with {workers} workers")
         
         # Prepare arguments for workers
         tasks = [
-            (nifti_path, patient_id, modality, output_dir, self.config)
+            (nifti_path, patient_id, modality, output_dir, self.config, skip_existing)
             for nifti_path, patient_id, modality in images
         ]
         
@@ -389,6 +396,9 @@ class QualityAssessor:
 
         for success, category in results:
             if success:
+                if category == "SKIPPED":
+                    # Don't count skipped files in successful/category counts
+                    continue
                 successful_count += 1
                 if category in category_counts:
                     category_counts[category] += 1
@@ -406,7 +416,7 @@ class QualityAssessor:
     @staticmethod
     def _assess_image_wrapper(args):
         """Static wrapper for multiprocessing."""
-        nifti_path, patient_id, modality, output_dir, config = args
+        nifti_path, patient_id, modality, output_dir, config, skip_existing = args
         
         try:
             # Create metrics calculators
@@ -501,6 +511,10 @@ class QualityAssessor:
             report_dir.mkdir(parents=True, exist_ok=True)
             
             report_file = report_dir / f"sub-{patient_id}_ses-01_{modality}_quality.json"
+
+            if skip_existing and report_file.exists():
+                return True, "SKIPPED"  # Return success but mark as skipped
+            
             with open(report_file, 'w') as f:
                 json.dump(report, f, indent=2)
             
@@ -512,7 +526,8 @@ class QualityAssessor:
     
     def run(self, input_dir: Path, output_dir: Path, max_subjects: Optional[int] = None, 
             input_format: str = 'bids', benchmark: bool = False, 
-            results_dir: Optional[Path] = None, mode: str = 'sequential', workers: int = 1):
+            results_dir: Optional[Path] = None, mode: str = 'sequential', workers: int = 1,
+            skip_existing: bool = True):
         """
         Run quality assessment on all images.
         
@@ -525,6 +540,7 @@ class QualityAssessor:
             results_dir: Directory to save benchmark results
             mode: Processing mode ('sequential' or 'parallel')
             workers: Number of workers for parallel processing
+            skip_existing: Skip processing if output file exists
         """
         start_time = time.time()
         
@@ -568,9 +584,9 @@ class QualityAssessor:
         
         # Process images based on mode
         if mode == 'sequential':
-            self._process_sequential(images, output_dir)
+            self._process_sequential(images, output_dir, skip_existing)
         else:  # parallel
-            self._process_parallel(images, output_dir, workers)
+            self._process_parallel(images, output_dir, workers, skip_existing)
         
         # Calculate statistics
         elapsed_time = time.time() - start_time
@@ -763,6 +779,17 @@ def main():
         default=Path("results_quality"),
         help="Directory to save benchmark results (default: ./results_quality)"
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        default=True,
+        help="Skip processing if output file already exists (default: True)"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reprocessing: clear output directory before starting"
+    )
     
     args = parser.parse_args()
     
@@ -780,6 +807,17 @@ def main():
     
     # Setup logging
     logger = setup_logging(args.log_file)
+
+    # Handle --force flag: clear output directory
+    if args.force:
+        if args.output_dir.exists():
+            import shutil
+            logger_temp = logging.getLogger("temp")
+            logger_temp.addHandler(logging.StreamHandler(sys.stdout))
+            logger_temp.setLevel(logging.INFO)
+            logger_temp.info(f"--force flag: clearing output directory {args.output_dir}")
+            shutil.rmtree(args.output_dir)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         # Determine number of workers
@@ -806,7 +844,8 @@ def main():
             benchmark=args.benchmark,
             results_dir=args.results_dir if args.benchmark else None,
             mode=args.mode,
-            workers=args.workers
+            workers=args.workers,
+            skip_existing=args.skip_existing
         )
         
     except KeyboardInterrupt:
