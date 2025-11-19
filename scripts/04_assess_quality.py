@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
+from pipeline_validator import InputOutputValidator
 
 import numpy as np
 import yaml
@@ -669,6 +670,38 @@ class QualityAssessor:
         self.logger.info(f"POOR: {self.category_counts['POOR']}")
         self.logger.info(f"Total time: {elapsed_time:.2f}s")
         self.logger.info(f"Average time per image: {avg_time_per_image:.3f}s")
+        self.logger.info("=" * 60)
+
+        self.logger.info("=" * 60)
+        self.logger.info("Validating input-output correspondence...")
+        
+        try:
+            validator = InputOutputValidator(logger=self.logger)
+            
+            # Сканируем входную структуру (NIfTI)
+            self.logger.info("Scanning input structure (NIfTI)...")
+            input_structure = validator.scan_structure(input_dir, format_type='bids-nifti')
+            self.logger.info(f"Found {len(input_structure)} patients in input")
+            
+            # Сканируем выходную структуру (качество JSON)
+            self.logger.info("Scanning output structure (quality metrics)...")
+            output_structure = validator.scan_structure(output_dir, format_type='bids-quality')
+            self.logger.info(f"Found {len(output_structure)} patients in output")
+            
+            # Сравниваем структуры
+            self.logger.info("Comparing structures...")
+            comparison_result = validator.compare_structures(input_structure, output_structure)
+            
+            # Генерируем отчет
+            validator.generate_incomplete_report(
+                comparison_result=comparison_result,
+                stage_name="04_assess_quality",
+                output_dir=output_dir
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Validation failed: {e}", exc_info=True)
+        
         self.logger.info("=" * 60)
 
 
