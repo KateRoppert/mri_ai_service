@@ -220,7 +220,10 @@ class InputOutputValidator:
 
     def _scan_bids_quality(self, directory: Path) -> Dict[str, Dict[str, Set[str]]]:
         """
-        Scan BIDS quality assessment structure: sub-*/ses-*/quality/*.json
+        Scan BIDS quality assessment structure.
+        Quality JSON files can be in two locations:
+        - sub-*/ses-*/anat/*_quality.json (primary)
+        - sub-*/ses-*/quality/*.json (alternative)
         
         Args:
             directory: Root directory
@@ -241,26 +244,39 @@ class InputOutputValidator:
                     continue
                 
                 session_id = session_dir.name.replace("ses-", "")
-                quality_dir = session_dir / "quality"
                 
-                if not quality_dir.exists():
-                    continue
-                
-                # Find quality JSON files
-                for json_file in quality_dir.glob("*.json"):
-                    # Extract modality from filename
-                    # Expected format: sub-{patient}_ses-{session}_{modality}_quality.json
-                    filename = json_file.stem
-                    parts = filename.split('_')
-                    
-                    # Find modality (part before _quality)
-                    if len(parts) >= 3:
-                        # Remove 'quality' suffix if present
-                        if parts[-1] == 'quality':
+                # Try two possible locations:
+                # 1. sub-*/ses-*/anat/*_quality.json (primary location)
+                anat_dir = session_dir / "anat"
+                if anat_dir.exists():
+                    for json_file in anat_dir.glob("*_quality.json"):
+                        # Extract modality from filename
+                        # Expected format: sub-{patient}_ses-{session}_{modality}_quality.json
+                        filename = json_file.stem
+                        parts = filename.split('_')
+                        
+                        # Find modality (part before _quality)
+                        if len(parts) >= 4 and parts[-1] == 'quality':
                             modality = parts[-2].lower()
-                        else:
-                            modality = parts[-1].lower()
-                        structure[patient_id][session_id].add(modality)
+                            structure[patient_id][session_id].add(modality)
+                
+                # 2. sub-*/ses-*/quality/*.json (alternative location)
+                quality_dir = session_dir / "quality"
+                if quality_dir.exists():
+                    for json_file in quality_dir.glob("*.json"):
+                        # Extract modality from filename
+                        # Expected format: sub-{patient}_ses-{session}_{modality}_quality.json
+                        filename = json_file.stem
+                        parts = filename.split('_')
+                        
+                        # Find modality (part before _quality)
+                        if len(parts) >= 3:
+                            # Remove 'quality' suffix if present
+                            if parts[-1] == 'quality':
+                                modality = parts[-2].lower()
+                            else:
+                                modality = parts[-1].lower()
+                            structure[patient_id][session_id].add(modality)
         
         return structure
 
