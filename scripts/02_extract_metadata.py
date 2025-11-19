@@ -553,9 +553,10 @@ class MetadataExtractor:
         
         # Aggregate results
         for success, worker_stats in results:
-            self.stats['total_series'] += 1
             if success:
                 self.stats['successful'] += 1
+            else:
+                self.stats['failed'] += 1
             # Note: worker stats already updated, we just count here
 
 
