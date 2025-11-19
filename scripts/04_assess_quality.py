@@ -290,7 +290,7 @@ class QualityAssessor:
         else:
             return "POOR"
     
-    def assess_image(self, nifti_path: Path, patient_id: str, 
+    def assess_image(self, nifti_path: Path, patient_id: str, session_id: str,
                     modality: str, output_dir: Path, skip_existing: bool = True) -> bool:
         """
         Assess quality of a single NIfTI image.
@@ -298,6 +298,7 @@ class QualityAssessor:
         Args:
             nifti_path: Path to NIfTI file
             patient_id: Patient identifier
+            session_id: Session identifier
             modality: Modality name
             output_dir: Output directory for reports
             skip_existing: Skip if output file already exists
@@ -345,10 +346,10 @@ class QualityAssessor:
             }
             
             # Save report
-            report_dir = output_dir / f"sub-{patient_id}" / "ses-01"
+            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat"
             report_dir.mkdir(parents=True, exist_ok=True)
-            
-            report_file = report_dir / f"sub-{patient_id}_ses-01_{modality}_quality.json"
+
+            report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
 
             if skip_existing and report_file.exists():
                 self.logger.debug(f"Skipping {patient_id}/{modality}: output already exists")
@@ -510,7 +511,7 @@ class QualityAssessor:
             }
             
             # Save report
-            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat" / "quality"
+            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat"
             report_dir.mkdir(parents=True, exist_ok=True)
             
             report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
