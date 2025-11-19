@@ -19,7 +19,6 @@ steps:
       shrink_factor: 4
       n_iterations: [50, 50, 50, 50]
       convergence_threshold: 0.001
-      number_of_fitting_levels: 4
       use_for_registration_only: true  # Применяется временно, финальные данные без correction
   
   - name: registration
