@@ -108,7 +108,7 @@ class QualityAssessor:
             input_dir: Root directory with BIDS NIfTI structure
             
         Returns:
-            List of tuples (nifti_path, patient_id, modality)
+            List of tuples (nifti_path, patient_id, session_id, modality)
         """
         images = []
         
@@ -122,6 +122,8 @@ class QualityAssessor:
             for session_dir in sorted(subject_dir.glob("ses-*")):
                 if not session_dir.is_dir():
                     continue
+
+                session_id = session_dir.name.replace("ses-", "")
                 
                 # Look in anat directory
                 anat_dir = session_dir / "anat"
@@ -135,7 +137,7 @@ class QualityAssessor:
                     parts = nifti_file.stem.replace('.nii', '').split('_')
                     if len(parts) >= 3:
                         modality = parts[-1]  # Last part is modality
-                        images.append((nifti_file, patient_id, modality))
+                        images.append((nifti_file, patient_id, session_id, modality))
         
         self.logger.info(f"Found {len(images)} NIfTI images")
         return images
@@ -150,7 +152,7 @@ class QualityAssessor:
             input_dir: Root directory with UPENN-flat structure
             
         Returns:
-            List of tuples (nifti_path, patient_id, modality)
+            List of tuples (nifti_path, patient_id, session_id, modality)
         """
         images = []
         
@@ -369,9 +371,9 @@ class QualityAssessor:
     
     def _process_sequential(self, images, output_dir, skip_existing=True):
         """Process images sequentially."""
-        for nifti_path, patient_id, modality in images:
-            self.logger.info(f"Assessing: {patient_id} - {modality}")
-            self.assess_image(nifti_path, patient_id, modality, output_dir, skip_existing)
+        for nifti_path, patient_id, session_id, modality in images:
+            self.logger.info(f"Assessing: {patient_id}/ses-{session_id} - {modality}")
+            self.assess_image(nifti_path, patient_id, session_id, modality, output_dir, skip_existing)
     
     def _process_parallel(self, images, output_dir, workers, skip_existing=True):
         """Process images in parallel using multiprocessing."""
@@ -379,8 +381,8 @@ class QualityAssessor:
         
         # Prepare arguments for workers
         tasks = [
-            (nifti_path, patient_id, modality, output_dir, self.config, skip_existing)
-            for nifti_path, patient_id, modality in images
+            (nifti_path, patient_id, session_id, modality, output_dir, self.config, skip_existing)
+            for nifti_path, patient_id, session_id, modality in images
         ]
         
         # Update total_images counter BEFORE processing
@@ -417,7 +419,7 @@ class QualityAssessor:
     @staticmethod
     def _assess_image_wrapper(args):
         """Static wrapper for multiprocessing."""
-        nifti_path, patient_id, modality, output_dir, config, skip_existing = args
+        nifti_path, patient_id, session_id, modality, output_dir, config, skip_existing = args
         
         try:
             # Create metrics calculators
@@ -508,10 +510,10 @@ class QualityAssessor:
             }
             
             # Save report
-            report_dir = output_dir / f"sub-{patient_id}" / "ses-01"
+            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat" / "quality"
             report_dir.mkdir(parents=True, exist_ok=True)
             
-            report_file = report_dir / f"sub-{patient_id}_ses-01_{modality}_quality.json"
+            report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
 
             if skip_existing and report_file.exists():
                 return True, "SKIPPED"  # Return success but mark as skipped
