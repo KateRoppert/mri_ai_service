@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 DICOM to NIfTI Conversion Script (Baseline Version)
 Converts DICOM files to NIfTI format using dcm2niix.
@@ -17,436 +16,7 @@ from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentM
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from collections import defaultdict
-
-
-class DatasetValidator:
-    """Validates dataset completeness and generates report."""
-    
-    def __init__(self, expected_modalities: Set[str] = {'t1', 't1c', 't2', 't2fl'}):
-        self.expected_modalities = expected_modalities
-        self.patients_data = defaultdict(lambda: defaultdict(set))
-        
-    def add_series(self, patient_id: str, session: str, modality: str):
-        """Add found series to validation data."""
-        self.patients_data[patient_id][session].add(modality.lower())
-    
-    def scan_converted_data(self, output_dir: Path):
-        """Scan already converted NIfTI files for validation."""
-        self.patients_data = defaultdict(lambda: defaultdict(set))  # Reset data
-        
-        # BIDS structure: output_dir/sub-*/ses-*/anat/*.nii.gz
-        subject_dirs = sorted(output_dir.glob("sub-*"))
-        
-        for subject_dir in subject_dirs:
-            if not subject_dir.is_dir():
-                continue
-            
-            patient_id = subject_dir.name.replace("sub-", "")
-            
-            # Look for session directories
-            for session_dir in sorted(subject_dir.glob("ses-*")):
-                if not session_dir.is_dir():
-                    continue
-                
-                session_id = session_dir.name.replace("ses-", "")
-                anat_dir = session_dir / "anat"
-                
-                if not anat_dir.exists():
-                    continue
-                
-                # Find NIfTI files
-                nifti_files = list(anat_dir.glob("*.nii.gz"))
-                
-                # Extract modalities from filenames
-                # Pattern: sub-{patient_id}_ses-{session_id}_{modality}.nii.gz
-                for nifti_file in nifti_files:
-                    filename = nifti_file.stem.replace('.nii', '')  # Remove .nii from .nii.gz
-                    parts = filename.split('_')
-                    if len(parts) >= 3:
-                        modality = parts[-1]  # Last part is modality
-                        self.patients_data[patient_id][session_id].add(modality.lower())
-    
-    def validate_and_report(self, output_dir: Path) -> Dict:
-        """Validate dataset and create incomplete data report."""
-        total_patients = len(self.patients_data)
-        total_sessions = sum(len(sessions) for sessions in self.patients_data.values())
-        
-        complete_patients = 0
-        complete_sessions = 0
-        incomplete_details = []
-        
-        for patient_id, sessions in self.patients_data.items():
-            patient_complete = True
-            
-            for session_id, modalities in sessions.items():
-                missing_modalities = self.expected_modalities - modalities
-                
-                if missing_modalities:
-                    patient_complete = False
-                    # Extract session date from session_id if available
-                    session_display = session_id
-                    
-                    incomplete_details.append({
-                        'patient_id': patient_id,
-                        'session_id': session_id,
-                        'session_display': session_display,
-                        'missing': sorted(missing_modalities),
-                        'available': sorted(modalities)
-                    })
-                else:
-                    complete_sessions += 1
-            
-            if patient_complete:
-                complete_patients += 1
-        
-        # Generate report
-        report_data = {
-            'total_patients': total_patients,
-            'complete_patients': complete_patients,
-            'incomplete_patients': total_patients - complete_patients,
-            'total_sessions': total_sessions,
-            'complete_sessions': complete_sessions,
-            'incomplete_sessions': total_sessions - complete_sessions,
-            'incomplete_details': incomplete_details
-        }
-        
-        self._write_report(output_dir, report_data)
-        return report_data
-    
-    def _write_report(self, output_dir: Path, data: Dict):
-        """Write incomplete data report to file."""
-        report_file = output_dir / "incomplete_data.txt"
-        
-        with open(report_file, 'w') as f:
-            f.write("=== Incomplete Data Report ===\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Total patients: {data['total_patients']}\n")
-            f.write(f"Complete patients: {data['complete_patients']} ")
-            f.write(f"({data['complete_patients']/data['total_patients']*100:.1f}%)\n" if data['total_patients'] > 0 else "(0.0%)\n")
-            f.write(f"Incomplete patients: {data['incomplete_patients']} ")
-            f.write(f"({data['incomplete_patients']/data['total_patients']*100:.1f}%)\n" if data['total_patients'] > 0 else "(0.0%)\n")
-            f.write(f"Total sessions: {data['total_sessions']}\n")
-            f.write(f"Complete sessions: {data['complete_sessions']} ")
-            f.write(f"({data['complete_sessions']/data['total_sessions']*100:.1f}%)\n" if data['total_sessions'] > 0 else "(0.0%)\n")
-            f.write(f"Incomplete sessions: {data['incomplete_sessions']} ")
-            f.write(f"({data['incomplete_sessions']/data['total_sessions']*100:.1f}%)\n" if data['total_sessions'] > 0 else "(0.0%)\n")
-            f.write("\n=== Details ===\n")
-            
-            for detail in data['incomplete_details']:
-                f.write(f"Patient: sub-{detail['patient_id']}\n")
-                f.write(f"  Session: ses-{detail['session_id']}\n")
-                f.write(f"    Missing: {', '.join(detail['missing'])}\n")
-                f.write(f"    Available: {', '.join(detail['available'])}\n")
-
-
-class ConversionValidator:
-    """Validates conversion completeness by comparing input DICOM with output NIfTI."""
-    
-    def __init__(self):
-        self.input_data = defaultdict(lambda: defaultdict(set))
-        self.output_data = defaultdict(lambda: defaultdict(set))
-    
-    def scan_dicom_data(self, input_dir: Path):
-        """Scan input DICOM directory structure."""
-        self.input_data = defaultdict(lambda: defaultdict(set))
-        
-        subject_dirs = sorted(input_dir.glob("sub-*"))
-        print(f"Scanning DICOM: Found {len(subject_dirs)} subjects in {input_dir}")
-        
-        for subject_dir in subject_dirs:
-            if not subject_dir.is_dir():
-                continue
-            
-            patient_id = subject_dir.name.replace("sub-", "")
-            
-            for session_dir in sorted(subject_dir.glob("ses-*")):
-                if not session_dir.is_dir():
-                    continue
-                
-                session_id = session_dir.name.replace("ses-", "")
-                # НЕ нормализуем session_id - используем как есть!
-                
-                for modality_type_dir in session_dir.iterdir():
-                    if not modality_type_dir.is_dir():
-                        continue
-                    
-                    # Check if there are DICOM files
-                    dicom_files = list(modality_type_dir.glob("*.dcm")) + \
-                                  list(modality_type_dir.glob("*.DCM")) + \
-                                  list(modality_type_dir.glob("*.dicom"))
-                    
-                    if dicom_files:
-                        modality = modality_type_dir.name
-                        self.input_data[patient_id][session_id].add(modality.lower())
-                    else:
-                        # Check subdirectories
-                        for subdir in modality_type_dir.iterdir():
-                            if not subdir.is_dir():
-                                continue
-                            
-                            dicom_files = list(subdir.glob("*.dcm")) + \
-                                          list(subdir.glob("*.DCM")) + \
-                                          list(subdir.glob("*.dicom"))
-                            
-                            if dicom_files:
-                                modality = subdir.name
-                                self.input_data[patient_id][session_id].add(modality.lower())
-    
-    def scan_nifti_data(self, output_dir: Path):
-        """Scan output NIfTI directory structure."""
-        self.output_data = defaultdict(lambda: defaultdict(set))
-        
-        subject_dirs = sorted(output_dir.glob("sub-*"))
-        print(f"Scanning NIfTI: Found {len(subject_dirs)} subjects in {output_dir}")
-        
-        for subject_dir in subject_dirs:
-            if not subject_dir.is_dir():
-                continue
-            
-            patient_id = subject_dir.name.replace("sub-", "")
-            
-            for session_dir in sorted(subject_dir.glob("ses-*")):
-                if not session_dir.is_dir():
-                    continue
-                
-                session_id = session_dir.name.replace("ses-", "")
-                # НЕ нормализуем session_id - используем как есть!
-                anat_dir = session_dir / "anat"
-                
-                if not anat_dir.exists():
-                    continue
-                
-                # Find NIfTI files
-                nifti_files = list(anat_dir.glob("*.nii.gz"))
-                
-                # Extract modalities from filenames
-                for nifti_file in nifti_files:
-                    filename = nifti_file.stem.replace('.nii', '')
-                    parts = filename.split('_')
-                    if len(parts) >= 3:
-                        modality = parts[-1]
-                        self.output_data[patient_id][session_id].add(modality.lower())
-    
-    def compare_and_report(self, output_dir: Path) -> Dict:
-        """Compare input and output data and create conversion report."""
-        # Calculate statistics
-        input_patients_count = len(self.input_data)
-        input_sessions_count = 0
-        input_modalities_count = 0
-        
-        for patient_id, sessions in self.input_data.items():
-            input_sessions_count += len(sessions)
-            for session_id, modalities_set in sessions.items():
-                input_modalities_count += len(modalities_set)
-        
-        output_patients_count = len(self.output_data)
-        output_sessions_count = 0
-        output_modalities_count = 0
-        
-        for patient_id, sessions in self.output_data.items():
-            output_sessions_count += len(sessions)
-            for session_id, modalities_set in sessions.items():
-                output_modalities_count += len(modalities_set)
-        
-        # Find losses
-        missing_patients = []
-        missing_sessions = []
-        missing_modalities = []
-        
-        for patient_id, patient_input_sessions in self.input_data.items():
-            if patient_id not in self.output_data:
-                # Entire patient missing
-                patient_modalities_total = sum(len(modalities_set) for modalities_set in patient_input_sessions.values())
-                missing_patients.append({
-                    'patient_id': patient_id,
-                    'sessions': len(patient_input_sessions),
-                    'modalities': patient_modalities_total
-                })
-            else:
-                # Check sessions
-                output_sessions_for_patient = self.output_data[patient_id]
-                
-                for session_id, session_input_modalities_set in patient_input_sessions.items():
-                    if session_id not in output_sessions_for_patient:
-                        # Entire session missing
-                        missing_sessions.append({
-                            'patient_id': patient_id,
-                            'session_id': session_id,
-                            'modalities': len(session_input_modalities_set)
-                        })
-                    else:
-                        # Check modalities
-                        session_output_modalities_set = output_sessions_for_patient[session_id]
-                        lost_modalities_set = session_input_modalities_set - session_output_modalities_set
-                        
-                        if lost_modalities_set:
-                            missing_modalities.append({
-                                'patient_id': patient_id,
-                                'session_id': session_id,
-                                'missing': sorted(lost_modalities_set),
-                                'expected': sorted(session_input_modalities_set),
-                                'found': sorted(session_output_modalities_set)
-                            })
-        
-        # Debug: Check variable types and data alignment
-        print(f"Input: {input_patients_count} patients, {input_sessions_count} sessions, {input_modalities_count} modalities")
-        print(f"Output: {output_patients_count} patients, {output_sessions_count} sessions, {output_modalities_count} modalities")
-        
-        # Debug: Show sample data structures
-        if self.input_data and self.output_data:
-            sample_patient = list(self.input_data.keys())[0]
-            print(f"Sample patient {sample_patient}:")
-            print(f"  Input sessions: {dict(self.input_data[sample_patient])}")
-            if sample_patient in self.output_data:
-                print(f"  Output sessions: {dict(self.output_data[sample_patient])}")
-            else:
-                print(f"  Output sessions: MISSING")
-        
-        # Generate report data
-        report_data = {
-            'input_patients': input_patients_count,
-            'input_sessions': input_sessions_count,
-            'input_modalities': input_modalities_count,
-            'output_patients': output_patients_count,
-            'output_sessions': output_sessions_count,
-            'output_modalities': output_modalities_count,
-            'missing_patients': missing_patients,
-            'missing_sessions': missing_sessions,
-            'missing_modalities': missing_modalities,
-            'conversion_success_rate': {
-                'patients': (output_patients_count / input_patients_count * 100) if input_patients_count > 0 else 0,
-                'sessions': (output_sessions_count / input_sessions_count * 100) if input_sessions_count > 0 else 0,
-                'modalities': (output_modalities_count / input_modalities_count * 100) if input_modalities_count > 0 else 0
-            }
-        }
-        
-        self._write_comparison_report(output_dir, report_data)
-        return report_data
-    
-    def _write_comparison_report(self, output_dir: Path, data: Dict):
-        """Write conversion comparison report to file."""
-        report_file = output_dir / "conversion_validation.txt"
-        
-        with open(report_file, 'w') as f:
-            f.write("=== Conversion Validation Report ===\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            
-            f.write("=== Input DICOM Summary ===\n")
-            f.write(f"Patients: {data['input_patients']}\n")
-            f.write(f"Sessions: {data['input_sessions']}\n")
-            f.write(f"Modalities: {data['input_modalities']}\n\n")
-            
-            f.write("=== Output NIfTI Summary ===\n")
-            f.write(f"Patients: {data['output_patients']}\n")
-            f.write(f"Sessions: {data['output_sessions']}\n")
-            f.write(f"Modalities: {data['output_modalities']}\n\n")
-            
-            f.write("=== Conversion Success Rate ===\n")
-            f.write(f"Patients: {data['conversion_success_rate']['patients']:.1f}% ")
-            f.write(f"({data['output_patients']}/{data['input_patients']})\n")
-            f.write(f"Sessions: {data['conversion_success_rate']['sessions']:.1f}% ")
-            f.write(f"({data['output_sessions']}/{data['input_sessions']})\n")
-            f.write(f"Modalities: {data['conversion_success_rate']['modalities']:.1f}% ")
-            f.write(f"({data['output_modalities']}/{data['input_modalities']})\n\n")
-            
-            f.write("=== Conversion Losses ===\n")
-            
-            if data['missing_patients']:
-                f.write(f"\nMissing Patients ({len(data['missing_patients'])}):\n")
-                for patient in data['missing_patients']:
-                    f.write(f"  sub-{patient['patient_id']} ")
-                    f.write(f"({patient['sessions']} sessions, {patient['modalities']} modalities)\n")
-            
-            if data['missing_sessions']:
-                f.write(f"\nMissing Sessions ({len(data['missing_sessions'])}):\n")
-                for session in data['missing_sessions']:
-                    f.write(f"  sub-{session['patient_id']}/ses-{session['session_id']} ")
-                    f.write(f"({session['modalities']} modalities)\n")
-            
-            if data['missing_modalities']:
-                f.write(f"\nMissing Modalities ({len(data['missing_modalities'])}):\n")
-                for item in data['missing_modalities']:
-                    f.write(f"  sub-{item['patient_id']}/ses-{item['session_id']}\n")
-                    f.write(f"    Missing: {', '.join(item['missing'])}\n")
-                    f.write(f"    Expected: {', '.join(item['expected'])}\n")
-                    f.write(f"    Found: {', '.join(item['found'])}\n")
-            
-            if not any([data['missing_patients'], data['missing_sessions'], data['missing_modalities']]):
-                f.write("\n🎉 No conversion losses detected! All data converted successfully.\n")
-
-
-def validate_conversion(input_dir: Path, output_dir: Path):
-    """Validate conversion by comparing input DICOM with output NIfTI."""
-    logger = logging.getLogger("conversion_validator")
-    
-    logger.info(f"Comparing DICOM input: {input_dir}")
-    logger.info(f"With NIfTI output: {output_dir}")
-    
-    validator = ConversionValidator()
-    
-    logger.info("Scanning input DICOM data...")
-    validator.scan_dicom_data(input_dir)
-    
-    logger.info("Scanning output NIfTI data...")
-    validator.scan_nifti_data(output_dir)
-    
-    logger.info("Comparing and generating report...")
-    comparison_report = validator.compare_and_report(output_dir)
-    
-    logger.info("=" * 60)
-    logger.info("CONVERSION VALIDATION SUMMARY:")
-    logger.info(f"Input:  {comparison_report['input_patients']} patients, "
-               f"{comparison_report['input_sessions']} sessions, "
-               f"{comparison_report['input_modalities']} modalities")
-    logger.info(f"Output: {comparison_report['output_patients']} patients, "
-               f"{comparison_report['output_sessions']} sessions, "
-               f"{comparison_report['output_modalities']} modalities")
-    logger.info(f"Success rate: "
-               f"P:{comparison_report['conversion_success_rate']['patients']:.1f}% "
-               f"S:{comparison_report['conversion_success_rate']['sessions']:.1f}% "
-               f"M:{comparison_report['conversion_success_rate']['modalities']:.1f}%")
-    
-    total_losses = (len(comparison_report['missing_patients']) + 
-                   len(comparison_report['missing_sessions']) + 
-                   len(comparison_report['missing_modalities']))
-    
-    if total_losses > 0:
-        logger.warning(f"⚠️  Found {total_losses} conversion issues!")
-        logger.warning(f"Missing: {len(comparison_report['missing_patients'])} patients, "
-                      f"{len(comparison_report['missing_sessions'])} sessions, "
-                      f"{len(comparison_report['missing_modalities'])} modalities")
-    else:
-        logger.info("✅ Perfect conversion! No data losses detected.")
-    
-    logger.info(f"Detailed report saved to: {output_dir}/conversion_validation.txt")
-    logger.info("=" * 60)
-    
-    return comparison_report
-
-
-def validate_converted_dataset(output_dir: Path, expected_modalities: Set[str] = {'t1', 't1c', 't2', 't2fl'}):
-    """Validate already converted dataset (legacy function for backward compatibility)."""
-    logger = logging.getLogger("dataset_validator")
-    
-    validator = DatasetValidator(expected_modalities)
-    validator.scan_converted_data(output_dir)
-    
-    logger.info(f"Validating converted dataset in: {output_dir}")
-    validation_report = validator.validate_and_report(output_dir)
-    
-    logger.info("=" * 60)
-    logger.info("CONVERTED DATASET VALIDATION:")
-    if validation_report['total_patients'] > 0:
-        logger.info(f"Complete patients: {validation_report['complete_patients']}/{validation_report['total_patients']} "
-                   f"({validation_report['complete_patients']/validation_report['total_patients']*100:.1f}%)")
-        logger.info(f"Complete sessions: {validation_report['complete_sessions']}/{validation_report['total_sessions']} "
-                   f"({validation_report['complete_sessions']/validation_report['total_sessions']*100:.1f}%)")
-    else:
-        logger.info("No patients found in dataset!")
-    logger.info(f"Report saved to: {output_dir}/incomplete_data.txt")
-    logger.info("=" * 60)
-    
-    return validation_report
+from pipeline_validator import InputOutputValidator
 
 def process_series_worker(args):
     """
@@ -495,9 +65,6 @@ class NiftiConverter:
         # Performance monitoring
         self.monitor = None
         self.benchmark_mode = False
-        
-        # Dataset validation
-        self.validator = DatasetValidator()
         
         # dcm2niix base command with optimal parameters
         self.dcm2niix_base_cmd = [
@@ -574,8 +141,7 @@ class NiftiConverter:
                     if dicom_files:
                         modality = modality_type_dir.name
                         series_list.append((modality_type_dir, patient_id, session_id, modality))
-                        # Add to validator
-                        self.validator.add_series(patient_id, session_id, modality)
+
                     else:
                         # Check subdirectories
                         for subdir in modality_type_dir.iterdir():
@@ -589,8 +155,6 @@ class NiftiConverter:
                             if dicom_files:
                                 modality = subdir.name
                                 series_list.append((subdir, patient_id, session_id, modality))
-                                # Add to validator
-                                self.validator.add_series(patient_id, session_id, modality)
         
         self.logger.info(f"Found {len(series_list)} DICOM series")
         return series_list
@@ -840,7 +404,39 @@ class NiftiConverter:
             self.logger.info(f"Parallel speedup: {speedup:.3f}x")
             self.logger.info(f"Parallel efficiency: {efficiency:.3f}")
         self.logger.info("=" * 60)
+
+        self.logger.info("=" * 60)
+        self.logger.info("Validating input-output correspondence...")
         
+        try:
+            validator = InputOutputValidator(logger=self.logger)
+            
+            # Сканируем входную структуру (DICOM в BIDS)
+            self.logger.info("Scanning input structure (DICOM)...")
+            input_structure = validator.scan_structure(input_dir, format_type='bids-dicom')
+            self.logger.info(f"Found {len(input_structure)} patients in input")
+            
+            # Сканируем выходную структуру (NIfTI)
+            self.logger.info("Scanning output structure (NIfTI)...")
+            output_structure = validator.scan_structure(output_dir, format_type='bids-nifti')
+            self.logger.info(f"Found {len(output_structure)} patients in output")
+            
+            # Сравниваем структуры
+            self.logger.info("Comparing structures...")
+            comparison_result = validator.compare_structures(input_structure, output_structure)
+            
+            # Генерируем отчет
+            validator.generate_incomplete_report(
+                comparison_result=comparison_result,
+                stage_name="03_convert_to_nifti",
+                output_dir=output_dir
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Validation failed: {e}", exc_info=True)
+        
+        self.logger.info("=" * 60)
+       
         # Save benchmark results
         if benchmark and benchmark_logger:
             metrics = ExperimentMetrics(
@@ -881,23 +477,6 @@ class NiftiConverter:
                     if efficiency is not None:
                         self.logger.info(f"Efficiency: {efficiency:.3f}")
                 self.logger.info("=" * 60)
-
-        # Generate validation report
-        self.logger.info("Generating dataset validation report...")
-        validation_report = self.validator.validate_and_report(output_dir)
-
-        # Log validation summary
-        self.logger.info("=" * 60)
-        self.logger.info("DATASET VALIDATION SUMMARY:")
-        if validation_report['total_patients'] > 0:
-            self.logger.info(f"Complete patients: {validation_report['complete_patients']}/{validation_report['total_patients']} "
-                           f"({validation_report['complete_patients']/validation_report['total_patients']*100:.1f}%)")
-            self.logger.info(f"Complete sessions: {validation_report['complete_sessions']}/{validation_report['total_sessions']} "
-                           f"({validation_report['complete_sessions']/validation_report['total_sessions']*100:.1f}%)")
-        else:
-            self.logger.info("No patients found for validation!")
-        self.logger.info(f"Incomplete data report saved to: {output_dir}/incomplete_data.txt")
-        self.logger.info("=" * 60)
 
     def _process_sequential(self, series_list, output_dir):
         """Process series sequentially."""
@@ -989,15 +568,6 @@ def main():
         help="Output directory for NIfTI files"
     )
     
-    # Validation-only mode
-    mode_group.add_argument(
-        "--validate-only",
-        type=Path,
-        nargs=2,
-        metavar=('INPUT_DIR', 'OUTPUT_DIR'),
-        help="Compare input DICOM with output NIfTI (provide input_dir output_dir)"
-    )
-    
     # Optional arguments
     parser.add_argument(
         "--log_file",
@@ -1040,30 +610,8 @@ def main():
         default=1,
         help="Number of worker processes for parallel mode (default: 1)"
     )
-    parser.add_argument(
-        "--expected-modalities",
-        type=str,
-        nargs='+',
-        default=['t1', 't1c', 't2', 't2fl'],
-        help="Expected modalities for validation (default: t1 t1c t2 t2fl)"
-    )
     
     args = parser.parse_args()
-    
-    # Handle validation-only mode
-    if args.validate_only:
-        input_dir, output_dir = args.validate_only
-        
-        if not input_dir.exists():
-            print(f"Error: Input directory does not exist: {input_dir}")
-            sys.exit(1)
-        if not output_dir.exists():
-            print(f"Error: Output directory does not exist: {output_dir}")
-            sys.exit(1)
-        
-        logger = setup_logging(args.log_file)
-        validate_conversion(input_dir, output_dir)
-        sys.exit(0)
     
     # Validate regular conversion arguments
     if not args.input_dir or not args.output_dir:
@@ -1107,9 +655,6 @@ def main():
 
         # Create converter and run
         converter = NiftiConverter(logger)
-        # Set expected modalities if specified
-        if args.expected_modalities:
-            converter.validator.expected_modalities = set(args.expected_modalities)
 
         converter.run(
             args.input_dir,
