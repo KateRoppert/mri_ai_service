@@ -1,3 +1,7 @@
+# FSL configuration
+fsl:
+  fsl_dir: "/media/storage/roppert/fsl/share/fsl"  # Путь к FSL
+
 # Atlas configuration
 atlas:
   name: "SRI24"
