@@ -14,6 +14,34 @@ from typing import Tuple, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+def load_ants_image(path: Path):
+    """
+    Load image with ANTsPy (compatible with different versions).
+    """
+    try:
+        # Try newer API
+        return ants.image_read(str(path))
+    except AttributeError:
+        # Try older API
+        try:
+            nib_img = nib.load(str(path))
+            return ants.from_nibabel(nib_img)
+        except:
+            # Last resort: use ANTsImage constructor
+            return ants.ANTsImage(str(path))
+
+
+def save_ants_image(image, path: Path):
+    """
+    Save image with ANTsPy (compatible with different versions).
+    """
+    try:
+        # Try newer API
+        ants.image_write(image, str(path))
+    except AttributeError:
+        # Try older API
+        image.to_file(str(path))
+
 
 def download_sri24_atlas(cache_dir: Path, atlas_url: str, atlas_filename: str) -> Path:
     """
@@ -113,8 +141,8 @@ def register_to_atlas(
         logger.info(f"Registering {moving_path.name} to atlas")
         
         # Load images with ANTs
-        fixed = ants.image_read(str(atlas_path))
-        moving = ants.image_read(str(moving_path))
+        fixed = load_ants_image(str(atlas_path))
+        moving = load_ants_image(str(moving_path))
         
         logger.debug(f"Fixed (atlas) shape: {fixed.shape}, spacing: {fixed.spacing}")
         logger.debug(f"Moving image shape: {moving.shape}, spacing: {moving.spacing}")
@@ -157,7 +185,7 @@ def register_to_atlas(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save registered image
-        ants.image_write(warped_moving, str(output_path))
+        save_ants_image(warped_moving, str(output_path))
         logger.info(f"Saved registered image to {output_path}")
         
         # Save transformation matrix
@@ -218,8 +246,8 @@ def apply_transform(
         logger.info(f"Applying transform to {moving_path.name}")
         
         # Load images
-        fixed = ants.image_read(str(fixed_path))
-        moving = ants.image_read(str(moving_path))
+        fixed = load_ants_image(str(fixed_path))
+        moving = load_ants_image(str(moving_path))
         
         # Set interpolation type
         interp_map = {
@@ -243,7 +271,7 @@ def apply_transform(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save transformed image
-        ants.image_write(warped, str(output_path))
+        save_ants_image(warped, str(output_path))
         logger.info(f"Saved transformed image to {output_path}")
         
         return {
@@ -283,8 +311,8 @@ def register_modalities(
         logger.info(f"Registering {moving_path.name} to {reference_path.name}")
         
         # Load images
-        fixed = ants.image_read(str(reference_path))
-        moving = ants.image_read(str(moving_path))
+        fixed = load_ants_image(str(reference_path))
+        moving = load_ants_image(str(moving_path))
         
         # Perform registration
         registration_result = ants.registration(
@@ -302,7 +330,7 @@ def register_modalities(
         transform_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save registered image
-        ants.image_write(warped_moving, str(output_path))
+        save_ants_image(warped_moving, str(output_path))
         logger.info(f"Saved registered image to {output_path}")
         
         # Save transformation
@@ -455,18 +483,18 @@ def process_subject_registration(
         
         # Apply transformation (modality -> ref, then ref -> atlas)
         # ANTs will apply transforms in reverse order
-        combined_result = ants.image_read(str(original_file))
+        combined_result = load_ants_image(str(original_file))
         
         # First apply modality to reference transform
         combined_result = ants.apply_transforms(
-            fixed=ants.image_read(str(ref_output)),
+            fixed=load_ants_image(str(ref_output)),
             moving=combined_result,
             transformlist=[str(modal_transform)],
             interpolator="linear"
         )
         
         # Save final result
-        ants.image_write(combined_result, str(modal_output_final))
+        save_ants_image(combined_result, str(modal_output_final))
         
         # Clean up temp file
         if modal_output_temp.exists():
