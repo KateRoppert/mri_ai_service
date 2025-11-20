@@ -7,7 +7,7 @@ atlas:
   name: "SRI24"
   # NITRC direct download link for SRI24 T1 atlas
   url: "https://www.nitrc.org/frs/download.php/6267/sri24_t1.nii.gz"
-  cache_dir: "data/atlases"  # Относительно корня проекта
+  cache_dir: "data/templates"  # Относительно корня проекта
   filename: "sri24_t1.nii.gz"
 
 # Processing steps
