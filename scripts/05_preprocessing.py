@@ -18,6 +18,7 @@ import yaml
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+from pipeline_validator import InputOutputValidator
 
 # Import preprocessing steps
 from preprocessing_steps.reorient import process_subject_reorient
@@ -328,6 +329,7 @@ def process_single_subject(
             skull_strip_results = process_subject_skull_stripping(
                 subject_dir=registered_anat,
                 output_dir=output_dir,
+                transform_dir=transform_dir,
                 modalities=modalities,
                 params=step_params
             )
@@ -469,6 +471,11 @@ def main():
         default=Path("results_preprocessing"),
         help="Directory to save benchmark results (default: ./results_preprocessing)"
     )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Enable input-output validation and generate completeness report"
+    )
     
     args = parser.parse_args()
     
@@ -509,10 +516,10 @@ def main():
         atlas_path = prepare_atlas(config)
         
         # Create output directories
-        preprocessed_dir = args.output_dir / "preprocessed"
-        transform_dir = args.output_dir / "transformations"
-        temp_dir = args.output_dir / "temp"
-        
+        preprocessed_dir = args.output_dir
+        transform_dir = args.output_dir.parent / "transformations" 
+        temp_dir = args.output_dir.parent / "temp" 
+
         preprocessed_dir.mkdir(parents=True, exist_ok=True)
         transform_dir.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -697,6 +704,84 @@ def main():
             benchmark_logger.log_metrics(metrics)
             
             logger.info(f"✓ Benchmark metrics saved to {args.results_dir}")
+
+        # Validation: compare input and output structures
+        if args.validate:
+            logger.info("\n" + "=" * 70)
+            logger.info("VALIDATING INPUT-OUTPUT CORRESPONDENCE")
+            logger.info("=" * 70)
+            
+            try:
+                validator = InputOutputValidator(logger=logger)
+                
+                # Scan input structure
+                logger.info("Scanning input structure...")
+                input_structure = validator.scan_structure(
+                    directory=args.input_dir,
+                    format_type='bids-nifti'
+                )
+                
+                # Scan output structure
+                logger.info("Scanning output structure...")
+                output_structure = validator.scan_structure(
+                    directory=preprocessed_dir,
+                    format_type='bids-nifti'
+                )
+                
+                # Compare structures
+                logger.info("Comparing input and output structures...")
+                comparison_result = validator.compare_structures(
+                    input_structure=input_structure,
+                    output_structure=output_structure
+                )
+                
+                # Generate report
+                report_path = validator.generate_incomplete_report(
+                    comparison_result=comparison_result,
+                    stage_name="05_preprocessing",
+                    output_dir=args.output_dir,
+                    filename="preprocessing_incomplete_data.json"
+                )
+                
+                # Also save simple text file with incomplete data list
+                if comparison_result['incomplete_data']:
+                    incomplete_txt_path = args.output_dir / "incomplete_data.txt"
+                    with open(incomplete_txt_path, 'w') as f:
+                        f.write(f"# Preprocessing Incomplete Data Report\n")
+                        f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(f"# Total patients: {comparison_result['statistics']['total_patients']}\n")
+                        f.write(f"# Incomplete patients: {comparison_result['statistics']['incomplete_patients']}\n")
+                        f.write(f"# Success rate: {comparison_result['statistics']['success_rate_percent']}%\n\n")
+                        
+                        for item in comparison_result['incomplete_data']:
+                            patient_id = item['patient_id']
+                            for session in item['incomplete_sessions']:
+                                session_id = session['session_id']
+                                missing = ', '.join(session['missing_modalities'])
+                                available = ', '.join(session['available_modalities'])
+                                
+                                f.write(f"sub-{patient_id}/ses-{session_id}\n")
+                                f.write(f"  Missing: {missing}\n")
+                                f.write(f"  Available: {available}\n\n")
+                    
+                    logger.info(f"✓ Incomplete data list saved to {incomplete_txt_path}")
+                
+                # Log summary
+                stats = comparison_result['statistics']
+                logger.info(f"\n{'=' * 70}")
+                logger.info("VALIDATION SUMMARY")
+                logger.info(f"{'=' * 70}")
+                logger.info(f"Total patients:      {stats['total_patients']}")
+                logger.info(f"Complete patients:   {stats['complete_patients']}")
+                logger.info(f"Incomplete patients: {stats['incomplete_patients']}")
+                logger.info(f"Total sessions:      {stats['total_sessions']}")
+                logger.info(f"Complete sessions:   {stats['complete_sessions']}")
+                logger.info(f"Incomplete sessions: {stats['incomplete_sessions']}")
+                logger.info(f"Success rate:        {stats['success_rate_percent']}%")
+                logger.info(f"{'=' * 70}")
+                
+            except Exception as e:
+                logger.error(f"Validation failed: {str(e)}", exc_info=True)
         
         # Final statistics
         total_time = time.time() - pipeline_start_time
@@ -711,6 +796,12 @@ def main():
         if successful > 0:
             logger.info(f"Average time/subject: {total_time/len(subjects):.1f}s")
         logger.info("=" * 70)
+
+        # Add validation info if enabled
+        if args.validate and 'comparison_result' in locals():
+            logger.info(f"\nValidation:")
+            logger.info(f"  Success rate:       {comparison_result['statistics']['success_rate_percent']}%")
+            logger.info(f"  Complete sessions:  {comparison_result['statistics']['complete_sessions']}/{comparison_result['statistics']['total_sessions']}")
         
         return 0 if failed == 0 else 1
         
