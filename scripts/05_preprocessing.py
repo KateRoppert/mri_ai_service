@@ -680,10 +680,18 @@ def main():
             )
             
             # Calculate speedup and efficiency vs baseline
-            baseline_time = benchmark_logger.get_baseline_time()
-            if baseline_time and baseline_time > 0:
-                metrics.speedup = baseline_time / metrics.time_per_series
-                metrics.efficiency = metrics.speedup / metrics.workers
+            if args.mode == 'sequential' and args.workers == 1:
+                # This IS the baseline
+                metrics.speedup = 1.0
+                metrics.efficiency = 1.0
+            else:
+                # Compare to baseline
+                baseline_time = benchmark_logger.get_baseline_time()
+                if baseline_time and baseline_time > 0:
+                    metrics.speedup = baseline_time / metrics.time_per_series
+                    metrics.efficiency = metrics.speedup / metrics.workers
+                else:
+                    logger.warning("No baseline found. Run sequential mode with 1 worker first.")
             
             # Log metrics
             benchmark_logger.log_metrics(metrics)
