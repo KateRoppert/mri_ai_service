@@ -168,6 +168,38 @@ def prepare_atlas(config: dict) -> Path:
         logger.error(f"Failed to prepare atlas: {e}")
         raise
 
+def check_subject_processed(
+    output_dir: Path,
+    subject_id: str,
+    session_id: str,
+    modalities: list
+) -> bool:
+    """
+    Check if subject has already been processed.
+    
+    Args:
+        output_dir: Output directory
+        subject_id: Subject ID
+        session_id: Session ID
+        modalities: List of expected modalities
+    
+    Returns:
+        bool: True if all modality files exist
+    """
+    anat_dir = output_dir / subject_id / session_id / "anat"
+    
+    if not anat_dir.exists():
+        return False
+    
+    # Check if all modality files exist
+    for modality in modalities:
+        filename = f"{subject_id}_{session_id}_{modality}.nii.gz"
+        file_path = anat_dir / filename
+        
+        if not file_path.exists():
+            return False
+    
+    return True
 
 def process_single_subject(
     anat_dir: Path,
@@ -476,6 +508,11 @@ def main():
         action="store_true",
         help="Enable input-output validation and generate completeness report"
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip subjects that have already been processed (resume interrupted processing)"
+    )
     
     args = parser.parse_args()
     
@@ -575,6 +612,8 @@ def main():
         # Sequential or parallel processing
         if args.mode == 'sequential':
             logger.info(f"Processing mode: SEQUENTIAL")
+            if args.skip_existing:
+                logger.info("Skip-existing mode: ENABLED")
             
             for idx, args_tuple in enumerate(processing_args, 1):
                 anat_dir, subject_id, session_id = args_tuple[0], args_tuple[1], args_tuple[2]
@@ -582,6 +621,20 @@ def main():
                 logger.info(f"\n{'=' * 70}")
                 logger.info(f"Subject {idx}/{len(subjects)}")
                 logger.info(f"{'=' * 70}")
+                
+                # Check if already processed
+                if args.skip_existing and check_subject_processed(
+                    preprocessed_dir, subject_id, session_id, modalities
+                ):
+                    logger.info(f"⊙ {subject_id}/{session_id} already processed, skipping")
+                    all_results.append({
+                        "subject_id": subject_id,
+                        "session_id": session_id,
+                        "success": True,
+                        "skipped": True
+                    })
+                    successful += 1
+                    continue
                 
                 result = process_subject_wrapper(args_tuple)
                 all_results.append(result)
@@ -593,38 +646,69 @@ def main():
 
         elif args.mode == 'parallel':
             logger.info(f"Processing mode: PARALLEL with {args.workers} workers")
-            
-            with ProcessPoolExecutor(max_workers=args.workers) as executor:
-                # Submit all jobs
-                future_to_subject = {
-                    executor.submit(process_subject_wrapper, args_tuple): (args_tuple[1], args_tuple[2])
-                    for args_tuple in processing_args
-                }
+            if args.skip_existing:
+                logger.info("Skip-existing mode: ENABLED")
                 
-                # Process completed jobs
-                for idx, future in enumerate(as_completed(future_to_subject), 1):
-                    subject_id, session_id = future_to_subject[future]
+                # Filter out already processed subjects
+                filtered_args = []
+                skipped_count = 0
+                
+                for args_tuple in processing_args:
+                    subject_id, session_id = args_tuple[1], args_tuple[2]
                     
-                    try:
-                        result = future.result()
-                        all_results.append(result)
-                        
-                        if result['success']:
-                            successful += 1
-                            logger.info(f"✓ [{idx}/{len(subjects)}] {subject_id}/{session_id} completed")
-                        else:
-                            failed += 1
-                            logger.error(f"✗ [{idx}/{len(subjects)}] {subject_id}/{session_id} failed")
-                            
-                    except Exception as e:
-                        failed += 1
-                        logger.error(f"✗ [{idx}/{len(subjects)}] {subject_id}/{session_id} exception: {e}")
+                    if check_subject_processed(preprocessed_dir, subject_id, session_id, modalities):
+                        logger.info(f"⊙ {subject_id}/{session_id} already processed, skipping")
                         all_results.append({
                             "subject_id": subject_id,
                             "session_id": session_id,
-                            "success": False,
-                            "errors": [str(e)]
+                            "success": True,
+                            "skipped": True
                         })
+                        successful += 1
+                        skipped_count += 1
+                    else:
+                        filtered_args.append(args_tuple)
+                
+                logger.info(f"Skipped {skipped_count} already processed subjects")
+                logger.info(f"Processing {len(filtered_args)} remaining subjects")
+                
+                # Process only remaining subjects
+                processing_args = filtered_args
+            
+            if processing_args:  # Only if there are subjects to process
+                with ProcessPoolExecutor(max_workers=args.workers) as executor:
+                    # Submit all jobs
+                    future_to_subject = {
+                        executor.submit(process_subject_wrapper, args_tuple): (args_tuple[1], args_tuple[2])
+                        for args_tuple in processing_args
+                    }
+                    
+                    # Process completed jobs
+                    for idx, future in enumerate(as_completed(future_to_subject), 1):
+                        subject_id, session_id = future_to_subject[future]
+                        
+                        try:
+                            result = future.result()
+                            all_results.append(result)
+                            
+                            if result['success']:
+                                successful += 1
+                                logger.info(f"✓ [{idx}/{len(processing_args)}] {subject_id}/{session_id} completed")
+                            else:
+                                failed += 1
+                                logger.error(f"✗ [{idx}/{len(processing_args)}] {subject_id}/{session_id} failed")
+                                
+                        except Exception as e:
+                            failed += 1
+                            logger.error(f"✗ [{idx}/{len(processing_args)}] {subject_id}/{session_id} exception: {e}")
+                            all_results.append({
+                                "subject_id": subject_id,
+                                "session_id": session_id,
+                                "success": False,
+                                "errors": [str(e)]
+                            })
+            else:
+                logger.info("All subjects already processed, nothing to do")
 
         # Stop performance monitoring
         if monitor:
