@@ -333,6 +333,7 @@ def apply_brain_mask(
 def process_subject_skull_stripping(
     subject_dir: Path,
     output_dir: Path,
+    transform_dir: Path,
     modalities: list,
     params: dict
 ) -> dict:
@@ -377,8 +378,10 @@ def process_subject_skull_stripping(
     
     # Output paths
     ref_output = output_dir / subject_id / session_id / "anat" / ref_pattern
+
+    # Save brain mask to transformations directory
     mask_pattern = f"{subject_id}_{session_id}_brain_mask.nii.gz"
-    mask_path = output_dir / subject_id / session_id / "anat" / mask_pattern
+    mask_path = transform_dir / subject_id / session_id / "anat" / mask_pattern
     
     # Run BET on reference modality
     bet_result = run_bet(
