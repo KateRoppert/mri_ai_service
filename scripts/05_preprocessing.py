@@ -642,24 +642,6 @@ def main():
         # Calculate metrics
         total_time = time.time() - pipeline_start_time
 
-        # Save summary
-        summary_path = args.output_dir / "preprocessing_summary.json"
-        summary_data = {
-            "pipeline_version": "1.0",
-            "total_subjects": len(subjects),
-            "successful": successful,
-            "failed": failed,
-            "total_time": total_time,
-            "mode": args.mode,
-            "workers": args.workers if args.mode == 'parallel' else 1,
-            "results": all_results
-        }
-
-        with open(summary_path, 'w') as f:
-            json.dump(summary_data, f, indent=2)
-
-        logger.info(f"✓ Summary saved to {summary_path}")
-
         # Save benchmark metrics if enabled
         if args.benchmark and monitor and benchmark_logger:
             system_metrics = monitor.get_metrics()
