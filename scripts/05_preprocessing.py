@@ -15,6 +15,9 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 import yaml
+from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 
 # Import preprocessing steps
 from preprocessing_steps.reorient import process_subject_reorient
@@ -371,6 +374,32 @@ def process_single_subject(
     
     return results
 
+def process_subject_wrapper(args_tuple):
+    """
+    Wrapper for parallel processing of subjects.
+    Unpacks arguments and calls process_single_subject.
+    
+    Args:
+        args_tuple: Tuple of arguments for process_single_subject
+    
+    Returns:
+        dict: Processing results
+    """
+    (anat_dir, subject_id, session_id, output_dir, transform_dir, 
+     temp_dir, atlas_path, config, modalities) = args_tuple
+    
+    return process_single_subject(
+        anat_dir=anat_dir,
+        subject_id=subject_id,
+        session_id=session_id,
+        output_dir=output_dir,
+        transform_dir=transform_dir,
+        temp_dir=temp_dir,
+        atlas_path=atlas_path,
+        config=config,
+        modalities=modalities
+    )
+
 
 def main():
     """Main preprocessing pipeline."""
@@ -412,6 +441,33 @@ def main():
         type=int,
         default=None,
         help="Maximum number of subjects to process (for testing)"
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Enable detailed performance monitoring and save metrics"
+    )
+
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=['sequential', 'parallel'],
+        default='sequential',
+        help="Processing mode: sequential or parallel (default: sequential)"
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of worker processes for parallel mode (default: 1)"
+    )
+
+    parser.add_argument(
+        "--results_dir",
+        type=Path,
+        default=Path("results_preprocessing"),
+        help="Directory to save benchmark results (default: ./results_preprocessing)"
     )
     
     args = parser.parse_args()
@@ -481,30 +537,92 @@ def main():
         all_results = []
         successful = 0
         failed = 0
-        
-        for idx, (anat_dir, subject_id, session_id) in enumerate(subjects, 1):
-            logger.info(f"\n{'=' * 70}")
-            logger.info(f"Subject {idx}/{len(subjects)}")
-            logger.info(f"{'=' * 70}")
+
+        # Initialize performance monitoring if benchmark mode
+        monitor = None
+        benchmark_logger = None
+
+        if args.benchmark:
+            monitor = PerformanceMonitor(enabled=True)
+            benchmark_logger = BenchmarkLogger(args.results_dir)
             
-            result = process_single_subject(
-                anat_dir=anat_dir,
-                subject_id=subject_id,
-                session_id=session_id,
-                output_dir=preprocessed_dir,
-                transform_dir=transform_dir,
-                temp_dir=temp_dir,
-                atlas_path=atlas_path,
-                config=config,
-                modalities=modalities
-            )
+            # Clear output directory for clean benchmark
+            if preprocessed_dir.exists():
+                logger.warning(f"Clearing output directory for benchmark: {preprocessed_dir}")
+                shutil.rmtree(preprocessed_dir)
+                preprocessed_dir.mkdir(parents=True)
+            if transform_dir.exists():
+                shutil.rmtree(transform_dir)
+                transform_dir.mkdir(parents=True)
             
-            all_results.append(result)
+            monitor.start()
+            logger.info("Performance monitoring started")
+
+        # Prepare arguments for processing
+        processing_args = [
+            (anat_dir, subject_id, session_id, preprocessed_dir, transform_dir,
+            temp_dir, atlas_path, config, modalities)
+            for anat_dir, subject_id, session_id in subjects
+        ]
+
+        # Sequential or parallel processing
+        if args.mode == 'sequential':
+            logger.info(f"Processing mode: SEQUENTIAL")
             
-            if result['success']:
-                successful += 1
-            else:
-                failed += 1
+            for idx, args_tuple in enumerate(processing_args, 1):
+                anat_dir, subject_id, session_id = args_tuple[0], args_tuple[1], args_tuple[2]
+                
+                logger.info(f"\n{'=' * 70}")
+                logger.info(f"Subject {idx}/{len(subjects)}")
+                logger.info(f"{'=' * 70}")
+                
+                result = process_subject_wrapper(args_tuple)
+                all_results.append(result)
+                
+                if result['success']:
+                    successful += 1
+                else:
+                    failed += 1
+
+        elif args.mode == 'parallel':
+            logger.info(f"Processing mode: PARALLEL with {args.workers} workers")
+            
+            with ProcessPoolExecutor(max_workers=args.workers) as executor:
+                # Submit all jobs
+                future_to_subject = {
+                    executor.submit(process_subject_wrapper, args_tuple): (args_tuple[1], args_tuple[2])
+                    for args_tuple in processing_args
+                }
+                
+                # Process completed jobs
+                for idx, future in enumerate(as_completed(future_to_subject), 1):
+                    subject_id, session_id = future_to_subject[future]
+                    
+                    try:
+                        result = future.result()
+                        all_results.append(result)
+                        
+                        if result['success']:
+                            successful += 1
+                            logger.info(f"✓ [{idx}/{len(subjects)}] {subject_id}/{session_id} completed")
+                        else:
+                            failed += 1
+                            logger.error(f"✗ [{idx}/{len(subjects)}] {subject_id}/{session_id} failed")
+                            
+                    except Exception as e:
+                        failed += 1
+                        logger.error(f"✗ [{idx}/{len(subjects)}] {subject_id}/{session_id} exception: {e}")
+                        all_results.append({
+                            "subject_id": subject_id,
+                            "session_id": session_id,
+                            "success": False,
+                            "errors": [str(e)]
+                        })
+
+        # Stop performance monitoring
+        if monitor:
+            monitor.stop()
+            logger.info("Performance monitoring stopped")
         
         # Cleanup temp directory
         try:
@@ -514,19 +632,63 @@ def main():
         except Exception as e:
             logger.warning(f"Could not remove temp directory: {e}")
         
+        # Calculate metrics
+        total_time = time.time() - pipeline_start_time
+
         # Save summary
         summary_path = args.output_dir / "preprocessing_summary.json"
+        summary_data = {
+            "pipeline_version": "1.0",
+            "total_subjects": len(subjects),
+            "successful": successful,
+            "failed": failed,
+            "total_time": total_time,
+            "mode": args.mode,
+            "workers": args.workers if args.mode == 'parallel' else 1,
+            "results": all_results
+        }
+
         with open(summary_path, 'w') as f:
-            json.dump({
-                "pipeline_version": "1.0",
-                "total_subjects": len(subjects),
-                "successful": successful,
-                "failed": failed,
-                "total_time": time.time() - pipeline_start_time,
-                "results": all_results
-            }, f, indent=2)
-        
+            json.dump(summary_data, f, indent=2)
+
         logger.info(f"✓ Summary saved to {summary_path}")
+
+        # Save benchmark metrics if enabled
+        if args.benchmark and monitor and benchmark_logger:
+            system_metrics = monitor.get_metrics()
+            
+            # Generate experiment ID
+            experiment_id = f"preproc_{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Create metrics object
+            metrics = ExperimentMetrics(
+                experiment_id=experiment_id,
+                timestamp=datetime.now().isoformat(),
+                mode=args.mode,
+                workers=args.workers if args.mode == 'parallel' else 1,
+                total_series=len(subjects),
+                successful=successful,
+                failed=failed,
+                skipped=0,
+                total_time=total_time,
+                time_per_series=total_time / len(subjects) if len(subjects) > 0 else 0,
+                throughput=len(subjects) / total_time if total_time > 0 else 0,
+                cpu_avg=system_metrics.get('cpu_avg'),
+                cpu_max=system_metrics.get('cpu_max'),
+                memory_avg_mb=system_metrics.get('memory_avg_mb'),
+                memory_peak_mb=system_metrics.get('memory_peak_mb')
+            )
+            
+            # Calculate speedup and efficiency vs baseline
+            baseline_time = benchmark_logger.get_baseline_time()
+            if baseline_time and baseline_time > 0:
+                metrics.speedup = baseline_time / metrics.time_per_series
+                metrics.efficiency = metrics.speedup / metrics.workers
+            
+            # Log metrics
+            benchmark_logger.log_metrics(metrics)
+            
+            logger.info(f"✓ Benchmark metrics saved to {args.results_dir}")
         
         # Final statistics
         total_time = time.time() - pipeline_start_time
