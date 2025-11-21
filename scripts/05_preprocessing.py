@@ -633,9 +633,20 @@ def main():
         
         # Cleanup temp directory
         try:
-            if temp_dir.exists() and not any(temp_dir.iterdir()):
-                shutil.rmtree(temp_dir)
-                logger.info("✓ Removed empty temporary directory")
+            if temp_dir.exists():
+                # Remove any remaining empty subdirectories
+                for subdir in temp_dir.iterdir():
+                    if subdir.is_dir() and not any(subdir.iterdir()):
+                        subdir.rmdir()
+                        logger.debug(f"Removed empty subdirectory: {subdir.name}")
+                
+                # Now remove temp_dir if empty
+                if not any(temp_dir.iterdir()):
+                    temp_dir.rmdir()
+                    logger.info("✓ Removed temporary directory")
+                else:
+                    logger.warning(f"Temporary directory not empty, keeping: {temp_dir}")
+                    logger.debug(f"Remaining contents: {list(temp_dir.iterdir())}")
         except Exception as e:
             logger.warning(f"Could not remove temp directory: {e}")
         
