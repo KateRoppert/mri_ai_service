@@ -475,36 +475,46 @@ def process_subject_registration(
             continue
         
         # Step 3: Apply combined transformation to original (non-bias-corrected) image
-        logger.info(f"Step 3: Applying transforms to original {modality}")
-        
+        logger.info(f"Step 3: Applying combined transforms to original {modality}")
+
         # Get original image
         original_file = subject_dir / modal_pattern
         modal_output_final = output_dir / subject_id / session_id / "anat" / modal_pattern
-        
-        # Apply transformation (modality -> ref, then ref -> atlas)
-        # ANTs will apply transforms in reverse order
-        combined_result = load_ants_image(str(original_file))
-        
-        # First apply modality to reference transform
+
+        # Load atlas as fixed image
+        atlas_img = load_ants_image(atlas_path)
+
+        # Load original (non-bias-corrected) moving image
+        original_img = load_ants_image(original_file)
+
+        # Apply COMBINED transformation: modality → T1c → atlas
+        # ANTs applies transforms in REVERSE order (last to first)
+        # So we list: [T1c→atlas, modality→T1c]
+        # This applies: modality→T1c first, then T1c→atlas
         combined_result = ants.apply_transforms(
-            fixed=load_ants_image(str(ref_output)),
-            moving=combined_result,
-            transformlist=[str(modal_transform)],
-            interpolator="linear"
+            fixed=atlas_img,
+            moving=original_img,
+            transformlist=[
+                str(ref_transform),      # Applied SECOND: T1c → atlas
+                str(modal_transform)     # Applied FIRST: modality → T1c
+            ],
+            interpolator="linear",
+            whichtoinvert=[False, False]  # Don't invert any transforms
         )
-        
+
         # Save final result
-        save_ants_image(combined_result, str(modal_output_final))
-        
+        save_ants_image(combined_result, modal_output_final)
+
         # Clean up temp file
         if modal_output_temp.exists():
             modal_output_temp.unlink()
-        
+
         logger.info(f"Saved final registered {modality} to {modal_output_final}")
-        
+
         results[modality] = {
             "success": True,
-            "transform_path": str(modal_transform),
+            "transform_to_ref": str(modal_transform),
+            "transform_to_atlas": str(ref_transform),
             "output_path": str(modal_output_final)
         }
     
