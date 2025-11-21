@@ -725,29 +725,6 @@ def main():
                     filename="preprocessing_incomplete_data.json"
                 )
                 
-                # Also save simple text file with incomplete data list
-                if comparison_result['incomplete_data']:
-                    incomplete_txt_path = args.output_dir / "incomplete_data.txt"
-                    with open(incomplete_txt_path, 'w') as f:
-                        f.write(f"# Preprocessing Incomplete Data Report\n")
-                        f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                        f.write(f"# Total patients: {comparison_result['statistics']['total_patients']}\n")
-                        f.write(f"# Incomplete patients: {comparison_result['statistics']['incomplete_patients']}\n")
-                        f.write(f"# Success rate: {comparison_result['statistics']['success_rate_percent']}%\n\n")
-                        
-                        for item in comparison_result['incomplete_data']:
-                            patient_id = item['patient_id']
-                            for session in item['incomplete_sessions']:
-                                session_id = session['session_id']
-                                missing = ', '.join(session['missing_modalities'])
-                                available = ', '.join(session['available_modalities'])
-                                
-                                f.write(f"sub-{patient_id}/ses-{session_id}\n")
-                                f.write(f"  Missing: {missing}\n")
-                                f.write(f"  Available: {available}\n\n")
-                    
-                    logger.info(f"✓ Incomplete data list saved to {incomplete_txt_path}")
-                
                 # Log summary
                 stats = comparison_result['statistics']
                 logger.info(f"\n{'=' * 70}")
