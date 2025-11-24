@@ -169,37 +169,56 @@ def prepare_atlas(config: dict) -> Path:
         raise
 
 def check_subject_processed(
+    input_dir: Path,
     output_dir: Path,
     subject_id: str,
     session_id: str,
     modalities: list
-) -> bool:
+) -> tuple[bool, list]:
     """
     Check if subject has already been processed.
+    Compares input and output: if all input modalities exist in output, 
+    subject is considered processed.
     
     Args:
+        input_dir: Input directory
         output_dir: Output directory
         subject_id: Subject ID
         session_id: Session ID
-        modalities: List of expected modalities
+        modalities: List of all possible modalities
     
     Returns:
-        bool: True if all modality files exist
+        tuple: (is_processed: bool, missing_on_output: list)
     """
-    anat_dir = output_dir / subject_id / session_id / "anat"
+    input_anat = input_dir / subject_id / session_id / "anat"
+    output_anat = output_dir / subject_id / session_id / "anat"
     
-    if not anat_dir.exists():
-        return False
-    
-    # Check if all modality files exist
+    # Find which modalities exist on INPUT
+    input_modalities = []
     for modality in modalities:
         filename = f"{subject_id}_{session_id}_{modality}.nii.gz"
-        file_path = anat_dir / filename
+        input_file = input_anat / filename
         
-        if not file_path.exists():
-            return False
+        if input_file.exists():
+            input_modalities.append(modality)
     
-    return True
+    # If no input modalities found, cannot be processed
+    if not input_modalities:
+        return False, []
+    
+    # Check if all INPUT modalities exist on OUTPUT
+    missing_on_output = []
+    for modality in input_modalities:
+        filename = f"{subject_id}_{session_id}_{modality}.nii.gz"
+        output_file = output_anat / filename
+        
+        if not output_file.exists():
+            missing_on_output.append(modality)
+    
+    # Processed if no missing modalities on output
+    is_processed = len(missing_on_output) == 0
+    
+    return is_processed, missing_on_output
 
 def process_single_subject(
     anat_dir: Path,
@@ -645,18 +664,23 @@ def main():
                 logger.info(f"{'=' * 70}")
                 
                 # Check if already processed
-                if args.skip_existing and check_subject_processed(
-                    preprocessed_dir, subject_id, session_id, modalities
-                ):
-                    logger.info(f"⊙ {subject_id}/{session_id} already processed, skipping")
-                    all_results.append({
-                        "subject_id": subject_id,
-                        "session_id": session_id,
-                        "success": True,
-                        "skipped": True
-                    })
-                    successful += 1
-                    continue
+                if args.skip_existing:
+                    is_processed, missing_mods = check_subject_processed(
+                        args.input_dir, preprocessed_dir, subject_id, session_id, modalities
+                    )
+                    
+                    if is_processed:
+                        logger.info(f"⊙ {subject_id}/{session_id} already processed, skipping")
+                        all_results.append({
+                            "subject_id": subject_id,
+                            "session_id": session_id,
+                            "success": True,
+                            "skipped": True
+                        })
+                        successful += 1
+                        continue
+                    elif missing_mods:
+                        logger.info(f"→ {subject_id}/{session_id} partially processed, missing: {', '.join(missing_mods)}")
                 
                 result = process_subject_wrapper(args_tuple)
                 all_results.append(result)
@@ -682,7 +706,11 @@ def main():
                 for args_tuple in processing_args:
                     subject_id, session_id = args_tuple[1], args_tuple[2]
                     
-                    if check_subject_processed(preprocessed_dir, subject_id, session_id, modalities):
+                    is_processed, missing_mods = check_subject_processed(
+                        args.input_dir, preprocessed_dir, subject_id, session_id, modalities
+                    )
+                    
+                    if is_processed:
                         logger.info(f"⊙ {subject_id}/{session_id} already processed, skipping")
                         all_results.append({
                             "subject_id": subject_id,
@@ -693,6 +721,8 @@ def main():
                         successful += 1
                         skipped_count += 1
                     else:
+                        if missing_mods:
+                            logger.info(f"→ {subject_id}/{session_id} partially processed, missing: {', '.join(missing_mods)}")
                         filtered_args.append(args_tuple)
                 
                 logger.info(f"Skipped {skipped_count} already processed subjects")
