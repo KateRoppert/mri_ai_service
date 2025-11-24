@@ -242,6 +242,28 @@ def process_single_subject(
         "steps": {},
         "errors": []
     }
+
+    # Early check: verify reference modality exists BEFORE starting any processing
+    reference_modality = None
+    for step in config.get('steps', []):
+        if step['name'] == 'registration':
+            reference_modality = step.get('params', {}).get('reference_modality', 't1c')
+            break
+
+    if reference_modality is None:
+        reference_modality = 't1c'  # Default fallback
+
+    ref_pattern = f"{subject_id}_{session_id}_{reference_modality}.nii.gz"
+    ref_files = list(anat_dir.glob(ref_pattern))
+
+    if not ref_files:
+        error_msg = f"Reference modality '{reference_modality}' not found (file: {ref_pattern})"
+        logger.warning(f"⊙ Skipping {subject_id}/{session_id}: {error_msg}")
+        results['success'] = False
+        results['skipped'] = True
+        results['skip_reason'] = f"missing_reference_modality_{reference_modality}"
+        results['errors'].append(error_msg)
+        return results
     
     try:
         # Create temporary directories
@@ -641,6 +663,10 @@ def main():
                 
                 if result['success']:
                     successful += 1
+                elif result.get('skipped'):
+                    # Subject was skipped due to missing data
+                    logger.warning(f"⊙ Skipped: {result.get('skip_reason', 'unknown reason')}")
+                    failed += 1  # Count as failed since not processed
                 else:
                     failed += 1
 
@@ -694,6 +720,9 @@ def main():
                             if result['success']:
                                 successful += 1
                                 logger.info(f"✓ [{idx}/{len(processing_args)}] {subject_id}/{session_id} completed")
+                            elif result.get('skipped'):
+                                failed += 1
+                                logger.warning(f"⊙ [{idx}/{len(processing_args)}] {subject_id}/{session_id} skipped: {result.get('skip_reason', 'unknown')}")
                             else:
                                 failed += 1
                                 logger.error(f"✗ [{idx}/{len(processing_args)}] {subject_id}/{session_id} failed")
