@@ -46,8 +46,8 @@ steps:
     params:
       method: "bet"                        # FSL BET
       reference_modality: "t1c"           # На какой модальности создавать маску
-      fractional_intensity: 0.3           # -f parameter (0.0-1.0)
-      vertical_gradient: -0.1              # -g parameter (-1.0-1.0)
+      fractional_intensity: 0.35           # -f parameter (0.0-1.0)
+      vertical_gradient: -0.1               # -g parameter (-1.0-1.0)
       apply_to_all: true                  # Применить маску ко всем модальностям
       cleanup: true                       # Удалить промежуточные файлы
 
