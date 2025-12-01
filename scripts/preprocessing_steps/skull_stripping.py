@@ -215,7 +215,7 @@ def run_bet(
         
         # Add robust brain center estimation
         cmd.append('-R')
-        
+
         logger.debug(f"BET command: {' '.join(cmd)}")
         logger.debug(f"FSLDIR: {env.get('FSLDIR', 'not set')}")
         
