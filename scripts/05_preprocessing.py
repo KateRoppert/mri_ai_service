@@ -9,6 +9,7 @@ Usage:
 import argparse
 import logging
 import sys
+import os 
 import time
 import json
 import shutil
@@ -35,6 +36,27 @@ from preprocessing_steps.skull_stripping import (
 )
 
 logger = logging.getLogger(__name__)
+
+def calculate_threads_per_worker(mode: str, workers: int) -> int:
+    """
+    Calculate optimal number of threads per worker.
+    
+    Args:
+        mode: 'sequential' or 'parallel'
+        workers: Number of workers
+    
+    Returns:
+        Number of threads per worker
+    """
+    cpu_count = os.cpu_count() or 4
+    
+    if mode == 'sequential' or workers == 1:
+        # Use all available cores
+        return cpu_count
+    else:
+        # Distribute cores among workers
+        threads = max(1, cpu_count // workers)
+        return threads
 
 
 def setup_logging(log_file: Path = None, level: str = "INFO"):
@@ -453,6 +475,7 @@ def process_subject_wrapper(args_tuple):
     """
     Wrapper for parallel processing of subjects.
     Unpacks arguments and calls process_single_subject.
+    Sets thread limits and creates isolated temp directory for this worker.
     
     Args:
         args_tuple: Tuple of arguments for process_single_subject
@@ -460,20 +483,62 @@ def process_subject_wrapper(args_tuple):
     Returns:
         dict: Processing results
     """
-    (anat_dir, subject_id, session_id, output_dir, transform_dir, 
-     temp_dir, atlas_path, config, modalities) = args_tuple
+    import traceback
     
-    return process_single_subject(
-        anat_dir=anat_dir,
-        subject_id=subject_id,
-        session_id=session_id,
-        output_dir=output_dir,
-        transform_dir=transform_dir,
-        temp_dir=temp_dir,
-        atlas_path=atlas_path,
-        config=config,
-        modalities=modalities
-    )
+    (anat_dir, subject_id, session_id, output_dir, transform_dir, 
+     base_temp_dir, atlas_path, config, modalities, threads_per_worker) = args_tuple
+    
+    # Set thread limits for this worker (only in parallel mode)
+    if threads_per_worker is not None:
+        os.environ['OMP_NUM_THREADS'] = str(threads_per_worker)
+        os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(threads_per_worker)
+        os.environ['ANTS_NUMBER_OF_THREADS'] = str(threads_per_worker)
+    
+    # Create isolated temp directory for this worker
+    worker_id = os.getpid()
+    worker_temp_dir = base_temp_dir / f"worker_{worker_id}"
+    worker_temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        result = process_single_subject(
+            anat_dir=anat_dir,
+            subject_id=subject_id,
+            session_id=session_id,
+            output_dir=output_dir,
+            transform_dir=transform_dir,
+            temp_dir=worker_temp_dir,  # Use worker-specific temp dir
+            atlas_path=atlas_path,
+            config=config,
+            modalities=modalities
+        )
+        
+        # Cleanup worker temp directory for this subject
+        subject_temp = worker_temp_dir / "reoriented" / subject_id
+        if subject_temp.exists():
+            shutil.rmtree(subject_temp, ignore_errors=True)
+        
+        subject_temp = worker_temp_dir / "bias_corrected" / subject_id
+        if subject_temp.exists():
+            shutil.rmtree(subject_temp, ignore_errors=True)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Worker exception for {subject_id}/{session_id}: {e}", exc_info=True)
+        return {
+            "subject_id": subject_id,
+            "session_id": session_id,
+            "success": False,
+            "errors": [str(e)],
+            "traceback": traceback.format_exc()
+        }
+    finally:
+        # Try to cleanup empty worker temp directory
+        try:
+            if worker_temp_dir.exists() and not any(worker_temp_dir.rglob('*')):
+                worker_temp_dir.rmdir()
+        except:
+            pass
 
 
 def main():
@@ -559,6 +624,22 @@ def main():
     
     # Setup logging
     setup_logging(args.log_file, level="INFO")
+
+    # Calculate threads per worker based on mode
+    threads_per_worker = calculate_threads_per_worker(args.mode, args.workers)
+    cpu_count = os.cpu_count() or 4
+
+    logger.info(f"System: {cpu_count} CPU cores available")
+    logger.info(f"Mode: {args.mode}")
+    logger.info(f"Workers: {args.workers if args.mode == 'parallel' else 1}")
+    logger.info(f"Threads per worker: {threads_per_worker}")
+
+    # Set thread limits for sequential mode (parallel mode sets in each worker)
+    if args.mode == 'sequential':
+        os.environ['OMP_NUM_THREADS'] = str(threads_per_worker)
+        os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(threads_per_worker)
+        os.environ['ANTS_NUMBER_OF_THREADS'] = str(threads_per_worker)
+        logger.info(f"Sequential mode: using {threads_per_worker} threads for external tools")
     
     logger.info("=" * 70)
     logger.info("MRI BRAIN PREPROCESSING PIPELINE")
@@ -644,9 +725,12 @@ def main():
             logger.info("Performance monitoring started")
 
         # Prepare arguments for processing
+        # Pass threads_per_worker only for parallel mode (sequential sets globally)
+        threads_for_parallel = threads_per_worker if args.mode == 'parallel' else None
+
         processing_args = [
             (anat_dir, subject_id, session_id, preprocessed_dir, transform_dir,
-            temp_dir, atlas_path, config, modalities)
+            temp_dir, atlas_path, config, modalities, threads_for_parallel)
             for anat_dir, subject_id, session_id in subjects
         ]
 
@@ -696,6 +780,7 @@ def main():
 
         elif args.mode == 'parallel':
             logger.info(f"Processing mode: PARALLEL with {args.workers} workers")
+            logger.info(f"Each worker will use {threads_per_worker} thread(s)")
             if args.skip_existing:
                 logger.info("Skip-existing mode: ENABLED")
                 
@@ -777,6 +862,12 @@ def main():
         # Cleanup temp directory
         try:
             if temp_dir.exists():
+                # Remove worker temp directories
+                for worker_dir in temp_dir.glob("worker_*"):
+                    if worker_dir.is_dir():
+                        shutil.rmtree(worker_dir, ignore_errors=True)
+                        logger.debug(f"Removed worker directory: {worker_dir.name}")
+                
                 # Remove any remaining empty subdirectories
                 for subdir in temp_dir.iterdir():
                     if subdir.is_dir() and not any(subdir.iterdir()):
