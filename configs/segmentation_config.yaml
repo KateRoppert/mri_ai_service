@@ -1,0 +1,17 @@
+# Segmentation Configuration File
+# This config is used by the batch segmentation script
+
+executables:
+  aiaa_server_url: "http://172.16.71.222:5000"  # URL of the AIAA segmentation server
+
+segmentation:
+  model_name: "Unet"  # Model name to use on the server
+  
+  # Mapping of server keys to BIDS suffixes
+  # Key: what the server expects (t1, t1c, t2, flair)
+  # Value: BIDS suffix to search for in filenames
+  modality_input_map:
+    t1: "t1"           # Matches files like: sub-001_ses-01_T1w.nii.gz
+    t1c: "t1c"    # Matches files like: sub-001_ses-01_ce-gd_T1w.nii.gz
+    t2: "t2"           # Matches files like: sub-001_ses-01_T2w.nii.gz
+    flair: "t2fl"      # Matches files like: sub-001_ses-01_FLAIR.nii.gz
