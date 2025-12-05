@@ -95,7 +95,7 @@ class Config:
             raise ValueError("'segmentation.modality_input_map' not found in config.")
         
         # Validate that all required keys are present
-        required_keys = {"t1", "t1c", "t2", "flair"}
+        required_keys = {"t1", "t1c", "t2", "t2fl"}
         if not required_keys.issubset(modality_map.keys()):
             missing = required_keys - modality_map.keys()
             raise ValueError(f"Missing required modality keys in config: {missing}")
@@ -121,7 +121,7 @@ class SubjectSession:
     
     def has_all_modalities(self) -> bool:
         """Checks if all required modalities are present."""
-        required = {"t1", "t1c", "t2", "flair"}
+        required = {"t1", "t1c", "t2", "t2fl"}
         return required.issubset(self.modality_files.keys())
 
 
@@ -227,7 +227,7 @@ class BIDSScanner:
                 logger.debug(f"{identifier}: Missing modality '{server_key}' (pattern: {pattern})")
         
         # Check if we have all required modalities
-        required = {"t1", "t1c", "t2", "flair"}
+        required = {"t1", "t1c", "t2", "t2fl"}
         if not required.issubset(modality_files.keys()):
             missing = required - modality_files.keys()
             logger.warning(f"⚠️  Skipping {identifier}: Missing modalities {missing}")
@@ -298,7 +298,7 @@ class SegmentationInput:
             "t1": self.t1,
             "t1c": self.t1c,
             "t2": self.t2,
-            "flair": self.flair,
+            "t2fl": self.flair,
         }
         
         logger.debug("Files prepared for server:")
@@ -327,33 +327,46 @@ class SegmentationClient:
         Returns:
             True on success, False on failure.
         """
-        inference_url = f"{self.server_url}/v1/inference?net={model_name}&client_id={client_id}"
+        # Simple inference URL without query params (we'll send them in form data)
+        inference_url = f"{self.server_url}/v1/inference"
         logger.debug(f"Sending request to: {inference_url}")
 
         try:
             # ExitStack cleanly manages opening multiple files
             with ExitStack() as stack:
+                # Server expects field names: file_t1, file_t1c, file_t2, file_t2fl
                 files_multipart = {
-                    f't1_{files_to_send["t1"].name}': (
+                    'file_t1': (
                         files_to_send["t1"].name, 
                         stack.enter_context(open(files_to_send["t1"], 'rb'))
                     ),
-                    f't1c_{files_to_send["t1c"].name}': (
+                    'file_t1c': (
                         files_to_send["t1c"].name,
                         stack.enter_context(open(files_to_send["t1c"], 'rb'))
                     ),
-                    f't2_{files_to_send["t2"].name}': (
+                    'file_t2': (
                         files_to_send["t2"].name,
                         stack.enter_context(open(files_to_send["t2"], 'rb'))
                     ),
-                    f't2flair_{files_to_send["flair"].name}': (
-                        files_to_send["flair"].name,
-                        stack.enter_context(open(files_to_send["flair"], 'rb'))
+                    'file_t2fl': (  # Note: server expects t2fl, not t2flair
+                        files_to_send["t2fl"].name,
+                        stack.enter_context(open(files_to_send["t2fl"], 'rb'))
                     ),
+                }
+                
+                # Prepare form data (server expects these fields)
+                form_data = {
+                    'net': model_name,
+                    'client_id': client_id
                 }
 
                 logger.info("  → Uploading files to server...")
-                response = requests.post(inference_url, files=files_multipart, timeout=self.timeout)
+                response = requests.post(
+                    inference_url,
+                    data=form_data,
+                    files=files_multipart,
+                    timeout=self.timeout
+                )
                 response.raise_for_status()
 
                 logger.info("  → Saving segmentation mask...")
@@ -451,7 +464,7 @@ class SegmentationRunner:
                         t1=session.modality_files["t1"],
                         t1c=session.modality_files["t1c"],
                         t2=session.modality_files["t2"],
-                        flair=session.modality_files["flair"]
+                        flair=session.modality_files["t2fl"]
                     )
                     
                     files_to_send = seg_input.prepare_for_server()
