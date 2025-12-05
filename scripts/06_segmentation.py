@@ -327,8 +327,8 @@ class SegmentationClient:
         Returns:
             True on success, False on failure.
         """
-        # Simple inference URL without query params (we'll send them in form data)
-        inference_url = f"{self.server_url}/v1/inference"
+        # Use query parameters for net and client_id (more reliable with multipart)
+        inference_url = f"{self.server_url}/v1/inference?net={model_name}&client_id={client_id}"
         logger.debug(f"Sending request to: {inference_url}")
 
         try:
@@ -348,23 +348,16 @@ class SegmentationClient:
                         files_to_send["t2"].name,
                         stack.enter_context(open(files_to_send["t2"], 'rb'))
                     ),
-                    'file_t2fl': (  # Note: server expects t2fl, not t2flair
+                    'file_t2fl': (
                         files_to_send["t2fl"].name,
                         stack.enter_context(open(files_to_send["t2fl"], 'rb'))
                     ),
-                }
-                
-                # Prepare form data (server expects these fields)
-                form_data = {
-                    'net': model_name,
-                    'client_id': client_id
                 }
 
                 logger.info("  → Uploading files to server...")
                 response = requests.post(
                     inference_url,
-                    data=form_data,
-                    files=files_multipart,
+                    files=files_multipart,  # Note: no data parameter
                     timeout=self.timeout
                 )
                 response.raise_for_status()
