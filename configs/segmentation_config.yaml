@@ -1,17 +1,68 @@
 # Segmentation Configuration File
-# This config is used by the batch segmentation script
-
-executables:
-  aiaa_server_url: "http://172.16.71.222:5000"  # URL of the AIAA segmentation server
+# Supports multiple deployment profiles
 
 segmentation:
-  model_name: "Unet"  # Model name to use on the server
+  model_name: "Unet"
   
   # Mapping of server keys to BIDS suffixes
-  # Key: what the server expects (t1, t1c, t2, flair)
-  # Value: BIDS suffix to search for in filenames
   modality_input_map:
-    t1: "t1"           # Matches files like: sub-001_ses-01_T1w.nii.gz
-    t1c: "t1c"    # Matches files like: sub-001_ses-01_ce-gd_T1w.nii.gz
-    t2: "t2"           # Matches files like: sub-001_ses-01_T2w.nii.gz
-    flair: "t2fl"      # Matches files like: sub-001_ses-01_FLAIR.nii.gz
+    t1: "t1"
+    t1c: "t1c"
+    t2: "t2"
+    t2fl: "t2fl"
+  
+  # ============================================
+  # Active profile - change this to switch servers
+  # Options: "local", "cube", "barguzin"
+  # ============================================
+  active_profile: "local"
+  
+  profiles:
+    # ==========================================
+    # Profile 1: Local (same machine)
+    # ==========================================
+    local:
+      connection_type: "direct"
+      server_url: "http://localhost:5000"
+      timeout: 1200
+      description: "Local server on this machine"
+    
+    # ==========================================
+    # Profile 2: Cube server (NSU)
+    # ==========================================
+    cube:
+      connection_type: "ssh_tunnel"
+      description: "NSU Cube GPU server"
+      
+      ssh:
+        host: "bigdata.nsu.ru"
+        port: 8888
+        user: "roppert"
+        # Password will be requested interactively
+        # For non-interactive: use key_file instead
+        # key_file: "~/.ssh/id_rsa_cube"
+      
+      remote_port: 5000  # Port where simple_server.py runs on remote
+      local_tunnel_port: 15000  # Local port for tunnel
+      server_url: "http://localhost:15000"
+      timeout: 1800
+    
+    # ==========================================
+    # Profile 3: Barguzin server (NSU)
+    # ==========================================
+    barguzin:
+      connection_type: "ssh_tunnel"
+      description: "NSU Barguzin GPU server"
+      
+      ssh:
+        host: "bigdata.nsu.ru"
+        port: 8819
+        user: "e.roppert"
+        # Password will be requested interactively
+        # For non-interactive: use key_file instead
+        # key_file: "~/.ssh/id_rsa_barguzin"
+      
+      remote_port: 5000
+      local_tunnel_port: 15001  # Different from cube!
+      server_url: "http://localhost:15001"
+      timeout: 1800
