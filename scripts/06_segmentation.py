@@ -23,6 +23,11 @@ import requests
 from dataclasses import dataclass
 from contextlib import ExitStack
 from collections import defaultdict
+import subprocess
+import atexit
+import socket
+import getpass
+import shutil
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
@@ -55,25 +60,270 @@ def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
         except Exception as e:
             logger.error(f"Failed to set up file logger at {log_file}: {e}")
 
+# --- Server Availability Check ---
+
+def check_server_availability(server_url: str, timeout: int = 5) -> bool:
+    """
+    Checks if the segmentation server is accessible.
+    
+    Args:
+        server_url: URL of the server to check
+        timeout: Request timeout in seconds
+    
+    Returns:
+        True if server responds, False otherwise
+    """
+    try:
+        response = requests.get(f"{server_url}/v1/models", timeout=timeout)
+        if response.status_code == 200:
+            logger.debug(f"Server is accessible at {server_url}")
+            return True
+        else:
+            logger.debug(f"Server returned status {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Server not accessible at {server_url}: {e}")
+        return False
+
+def create_ssh_tunnel(
+    ssh_host: str,
+    ssh_port: int,
+    ssh_user: str,
+    remote_port: int,
+    local_port: int,
+    ssh_key: Optional[Path] = None,
+    password: Optional[str] = None
+) -> subprocess.Popen:
+    """
+    Creates an SSH tunnel to access remote server.
+    
+    Args:
+        ssh_host: SSH server hostname/IP
+        ssh_port: SSH server port
+        ssh_user: SSH username
+        remote_port: Remote port where service runs (e.g., 5000)
+        local_port: Local port for tunnel (e.g., 15000)
+        ssh_key: Optional path to SSH key file
+        password: Optional password (will prompt if not provided and no key)
+    
+    Returns:
+        SSH process object
+    """
+    logger.info("=" * 60)
+    logger.info("CREATING SSH TUNNEL")
+    logger.info("=" * 60)
+    logger.info(f"SSH: {ssh_user}@{ssh_host}:{ssh_port}")
+    logger.info(f"Tunnel: localhost:{local_port} -> remote:{remote_port}")
+    
+    # Check if local port is available
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = sock.connect_ex(('localhost', local_port))
+    sock.close()
+    
+    if result == 0:
+        raise RuntimeError(
+            f"Local port {local_port} is already in use. "
+            "Please choose a different local_tunnel_port or close the conflicting process."
+        )
+    
+    # Build base SSH command
+    ssh_cmd = [
+        "ssh",
+        "-N",  # Don't execute remote command
+        "-L", f"{local_port}:localhost:{remote_port}",  # Local forward
+        "-p", str(ssh_port),
+        f"{ssh_user}@{ssh_host}",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ServerAliveInterval=60",
+        "-o", "ServerAliveCountMax=3"
+    ]
+    
+    # Add SSH key if specified
+    if ssh_key:
+        ssh_cmd.extend(["-i", str(ssh_key)])
+        logger.info(f"Using SSH key: {ssh_key}")
+    
+    # Determine authentication method
+    use_sshpass = False
+    if not ssh_key:
+        # No key specified - need password
+        if password is None:
+            # Prompt for password
+            password = getpass.getpass(f"Enter SSH password for {ssh_user}@{ssh_host}: ")
+        
+        # Check if sshpass is available
+        if shutil.which("sshpass"):
+            use_sshpass = True
+            logger.info("Using sshpass for password authentication")
+        else:
+            logger.warning(
+                "sshpass not found. SSH will prompt for password in terminal.\n"
+                "For better experience, install sshpass:\n"
+                "  Ubuntu/Debian: sudo apt install sshpass\n"
+                "  macOS: brew install hudochenkov/sshpass/sshpass"
+            )
+    
+    # Build final command with sshpass if needed
+    if use_sshpass and password:
+        final_cmd = ["sshpass", "-p", password] + ssh_cmd
+        # Don't log password!
+        log_cmd = ["sshpass", "-p", "****"] + ssh_cmd
+    else:
+        final_cmd = ssh_cmd
+        log_cmd = ssh_cmd
+    
+    logger.info(f"Executing: {' '.join(log_cmd[:10])}...")
+    
+    try:
+        # Start SSH tunnel
+        tunnel_process = subprocess.Popen(
+            final_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE if not use_sshpass else None
+        )
+        
+        # Wait for tunnel to establish
+        import time
+        logger.info("Waiting for tunnel to establish...")
+        time.sleep(3)
+        
+        # Check if tunnel is alive
+        if tunnel_process.poll() is not None:
+            stdout, stderr = tunnel_process.communicate()
+            error_msg = stderr.decode('utf-8', errors='ignore')
+            
+            # Common error messages
+            if "Permission denied" in error_msg:
+                raise RuntimeError(
+                    "SSH authentication failed. Check your password/key.\n"
+                    f"Details: {error_msg[:200]}"
+                )
+            elif "Connection refused" in error_msg:
+                raise RuntimeError(
+                    f"Cannot connect to {ssh_host}:{ssh_port}. "
+                    "Check if the server is accessible.\n"
+                    f"Details: {error_msg[:200]}"
+                )
+            else:
+                raise RuntimeError(
+                    f"SSH tunnel failed to start.\n"
+                    f"stdout: {stdout.decode('utf-8', errors='ignore')[:200]}\n"
+                    f"stderr: {error_msg[:200]}"
+                )
+        
+        # Verify tunnel works
+        logger.info(f"Verifying tunnel on port {local_port}...")
+        for attempt in range(5):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            try:
+                result = sock.connect_ex(('localhost', local_port))
+                sock.close()
+                
+                if result == 0:
+                    logger.info("✓ SSH tunnel established successfully")
+                    return tunnel_process
+                else:
+                    time.sleep(1)
+            except Exception:
+                time.sleep(1)
+        
+        # If we got here, tunnel didn't work
+        tunnel_process.terminate()
+        raise RuntimeError(
+            f"SSH tunnel created but port {local_port} is not accessible after 5 attempts"
+        )
+        
+    except FileNotFoundError as e:
+        if "sshpass" in str(e):
+            raise RuntimeError(
+                "sshpass not found. Please install it:\n"
+                "  Ubuntu/Debian: sudo apt install sshpass\n"
+                "  macOS: brew install hudochenkov/sshpass/sshpass\n"
+                "Or use SSH key authentication instead."
+            )
+        else:
+            raise RuntimeError(
+                "SSH client not found. Please install OpenSSH:\n"
+                "  Ubuntu/Debian: sudo apt install openssh-client\n"
+                "  macOS: built-in\n"
+                "  Windows: install OpenSSH or use WSL"
+            )
+
+
+def close_ssh_tunnel(process: subprocess.Popen):
+    """Closes SSH tunnel gracefully."""
+    if process and process.poll() is None:
+        logger.info("Closing SSH tunnel...")
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+            logger.info("✓ SSH tunnel closed")
+        except subprocess.TimeoutExpired:
+            logger.warning("SSH tunnel did not close gracefully, forcing...")
+            process.kill()
+            process.wait()
+
 # --- Core Classes ---
 
 class Config:
-    """Handles loading and providing access to the YAML configuration file."""
+    """Loads and provides access to configuration parameters."""
+    
     def __init__(self, config_path: Path):
+        self._config_path = config_path
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 self._data = yaml.safe_load(f)
             logger.info(f"Configuration loaded successfully from {config_path}")
-        except Exception as e:
-            logger.critical(f"Failed to load or parse config {config_path}: {e}")
-            raise
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in config file: {e}")
+    
+    def get_active_profile(self) -> dict:
+        """
+        Retrieves the active profile configuration.
+        
+        Returns:
+            Dictionary with profile settings
+        
+        Raises:
+            ValueError: If active profile not found or invalid
+        """
+        active = self._data.get('segmentation', {}).get('active_profile')
+        
+        if not active:
+            # Fallback to legacy format
+            logger.warning("No active_profile found in config, using legacy format")
+            legacy_url = self._data.get('executables', {}).get('aiaa_server_url')
+            if not legacy_url:
+                raise ValueError(
+                    "Neither 'segmentation.active_profile' nor 'executables.aiaa_server_url' "
+                    "found in config. Please update your configuration file."
+                )
+            
+            return {
+                'connection_type': 'direct',
+                'server_url': legacy_url,
+                'timeout': 1200,
+                'description': 'Legacy configuration'
+            }
+        
+        profiles = self._data.get('segmentation', {}).get('profiles', {})
+        
+        if active not in profiles:
+            raise ValueError(
+                f"Active profile '{active}' not found in config. "
+                f"Available profiles: {list(profiles.keys())}"
+            )
+        
+        return profiles[active]
 
     def get_server_url(self) -> str:
-        """Retrieves the AIAA server URL from the config."""
-        url = self._data.get('executables', {}).get('aiaa_server_url')
-        if not url:
-            raise ValueError("'executables.aiaa_server_url' not found in config.")
-        return url
+        """Retrieves the server URL from active profile."""
+        profile = self.get_active_profile()
+        return profile.get('server_url', 'http://localhost:5000')
 
     def get_model_name(self) -> str:
         """Retrieves the segmentation model name from the config."""
@@ -101,6 +351,44 @@ class Config:
             raise ValueError(f"Missing required modality keys in config: {missing}")
         
         return modality_map
+    
+    def get_connection_type(self) -> str:
+        """Returns connection type: 'direct' or 'ssh_tunnel'"""
+        profile = self.get_active_profile()
+        return profile.get('connection_type', 'direct')
+    
+    def get_ssh_config(self) -> Optional[dict]:
+        """
+        Returns SSH configuration if connection_type is ssh_tunnel.
+        
+        Returns:
+            Dictionary with SSH parameters or None
+        """
+        profile = self.get_active_profile()
+        
+        if profile.get('connection_type') == 'ssh_tunnel':
+            ssh_cfg = profile.get('ssh', {})
+            
+            if not ssh_cfg.get('host'):
+                raise ValueError("SSH host not specified in profile")
+            if not ssh_cfg.get('user'):
+                raise ValueError("SSH user not specified in profile")
+            
+            return {
+                'host': ssh_cfg['host'],
+                'port': ssh_cfg.get('port', 22),
+                'user': ssh_cfg['user'],
+                'key_file': Path(ssh_cfg['key_file']).expanduser() if 'key_file' in ssh_cfg else None,
+                'remote_port': profile.get('remote_port', 5000),
+                'local_port': profile.get('local_tunnel_port', 15000)
+            }
+        
+        return None
+    
+    def get_profile_description(self) -> str:
+        """Returns human-readable description of active profile."""
+        profile = self.get_active_profile()
+        return profile.get('description', 'No description')
 
 
 @dataclass
@@ -422,8 +710,68 @@ class SegmentationRunner:
         logger.info(f"Output directory: {self.args.output_dir}")
         logger.info(f"Config file:      {self.args.config}")
         
+        # Get and display profile information
         try:
+            active_profile_name = self.config._data.get('segmentation', {}).get('active_profile', 'unknown')
+            profile = self.config.get_active_profile()
+            logger.info("=" * 60)
+            logger.info(f"Active profile:   {active_profile_name}")
+            logger.info(f"Description:      {self.config.get_profile_description()}")
+            logger.info(f"Connection:       {self.config.get_connection_type()}")
+            logger.info(f"Server URL:       {profile.get('server_url')}")
+            logger.info("=" * 60)
+        except Exception as e:
+            logger.warning(f"Could not load profile info: {e}")
+        
+        ssh_tunnel_process = None
+        
+        try:
+            # Check if SSH tunnel is needed
+            connection_type = self.config.get_connection_type()
+            
+            if connection_type == 'ssh_tunnel':
+                ssh_cfg = self.config.get_ssh_config()
+                if not ssh_cfg:
+                    raise ValueError(
+                        "SSH tunnel requested but SSH config not found in profile.\n"
+                        "Please check your configuration file."
+                    )
+                
+                # Create SSH tunnel (will prompt for password if needed)
+                ssh_tunnel_process = create_ssh_tunnel(
+                    ssh_host=ssh_cfg['host'],
+                    ssh_port=ssh_cfg['port'],
+                    ssh_user=ssh_cfg['user'],
+                    remote_port=ssh_cfg['remote_port'],
+                    local_port=ssh_cfg['local_port'],
+                    ssh_key=ssh_cfg['key_file'],
+                    password=None  # Will prompt interactively
+                )
+                
+                # Register cleanup on exit
+                atexit.register(lambda: close_ssh_tunnel(ssh_tunnel_process))
+            
+            # Continue with normal processing
+            server_url = self.config.get_server_url()
+            
+            # Check server availability
+            logger.info("=" * 60)
+            logger.info("CHECKING SERVER AVAILABILITY")
+            logger.info("=" * 60)
+            
+            if not check_server_availability(server_url):
+                raise ConnectionError(
+                    f"Server not accessible at {server_url}.\n"
+                    f"Please ensure the server is running on the remote machine."
+                )
+            
+            logger.info(f"✓ Server is accessible at {server_url}")
+            
             # Scan for subjects/sessions
+            logger.info("=" * 60)
+            logger.info("SCANNING INPUT DIRECTORY")
+            logger.info("=" * 60)
+            
             scanner = BIDSScanner(
                 input_dir=self.args.input_dir,
                 output_dir=self.args.output_dir,
@@ -493,6 +841,11 @@ class SegmentationRunner:
             logger.critical(f"Critical error in batch processing: {e}")
             logger.exception("Full traceback:")
             return False
+        
+        finally:
+            # Stop SSH tunnel if created
+            if ssh_tunnel_process:
+                close_ssh_tunnel(ssh_tunnel_process)
 
 
 # --- Main Execution Block ---
