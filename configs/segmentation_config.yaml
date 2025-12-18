@@ -15,7 +15,7 @@ segmentation:
   # Active profile - change this to switch servers
   # Options: "local", "cube", "barguzin"
   # ============================================
-  active_profile: "local"
+  active_profile: "cube"
   
   profiles:
     # ==========================================
@@ -40,11 +40,11 @@ segmentation:
         user: "roppert"
         # Password will be requested interactively
         # For non-interactive: use key_file instead
-        # key_file: "~/.ssh/id_rsa_cube"
+        key_file: "~/.ssh/id_cube"
       
-      remote_port: 5000  # Port where simple_server.py runs on remote
-      local_tunnel_port: 15000  # Local port for tunnel
-      server_url: "http://localhost:15000"
+      remote_port: 5001  # Port where simple_server.py runs on remote
+      local_tunnel_port: 15001  # Local port for tunnel
+      server_url: "http://localhost:15001"
       timeout: 1800
     
     # ==========================================
@@ -60,9 +60,9 @@ segmentation:
         user: "e.roppert"
         # Password will be requested interactively
         # For non-interactive: use key_file instead
-        # key_file: "~/.ssh/id_rsa_barguzin"
+        key_file: "~/.ssh/id_barguzin"
       
-      remote_port: 5000
-      local_tunnel_port: 15001  # Different from cube!
-      server_url: "http://localhost:15001"
+      remote_port: 5002
+      local_tunnel_port: 15002  # Different from cube!
+      server_url: "http://localhost:15002"
       timeout: 1800
