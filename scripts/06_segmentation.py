@@ -17,7 +17,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import yaml
 import requests
 from dataclasses import dataclass
@@ -28,6 +28,8 @@ import atexit
 import socket
 import getpass
 import shutil
+import aiohttp
+import asyncio
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
@@ -358,32 +360,25 @@ class Config:
         return profile.get('connection_type', 'direct')
     
     def get_ssh_config(self) -> Optional[dict]:
-        """
-        Returns SSH configuration if connection_type is ssh_tunnel.
-        
-        Returns:
-            Dictionary with SSH parameters or None
-        """
+        """Returns full SSH configuration including ports."""
         profile = self.get_active_profile()
         
-        if profile.get('connection_type') == 'ssh_tunnel':
-            ssh_cfg = profile.get('ssh', {})
-            
-            if not ssh_cfg.get('host'):
-                raise ValueError("SSH host not specified in profile")
-            if not ssh_cfg.get('user'):
-                raise ValueError("SSH user not specified in profile")
-            
-            return {
-                'host': ssh_cfg['host'],
-                'port': ssh_cfg.get('port', 22),
-                'user': ssh_cfg['user'],
-                'key_file': Path(ssh_cfg['key_file']).expanduser() if 'key_file' in ssh_cfg else None,
-                'remote_port': profile.get('remote_port', 5000),
-                'local_port': profile.get('local_tunnel_port', 15000)
-            }
+        if not profile or profile.get('connection_type') != 'ssh_tunnel':
+            return None
         
-        return None
+        ssh_block = profile.get('ssh', {})
+        key_file = ssh_block.get('key_file')
+        if key_file:
+            key_file = Path(key_file).expanduser()
+        
+        return {
+            'host': ssh_block.get('host'),
+            'port': ssh_block.get('port'),
+            'user': ssh_block.get('user'),
+            'key_file': key_file,
+            'remote_port': profile.get('remote_port'),  # ← Из профиля!
+            'local_port': profile.get('local_tunnel_port')  # ← Из профиля!
+        }
     
     def get_profile_description(self) -> str:
         """Returns human-readable description of active profile."""
@@ -673,6 +668,132 @@ class SegmentationClient:
             logger.exception(f"  ✗ Unexpected error during segmentation: {e}")
             return False
 
+class AsyncSegmentationClient:
+    """Асинхронный клиент для параллельной отправки запросов на сегментацию"""
+    
+    def __init__(self, server_url: str, timeout: int = 1800):
+        self.server_url = server_url
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
+    
+    async def segment_async(
+        self,
+        files_to_send: dict,
+        model_name: str,
+        client_id: str,
+        output_path: Path
+    ) -> bool:
+        """Асинхронная отправка запроса на сегментацию"""
+        try:
+            # Формируем multipart данные
+            data = aiohttp.FormData()
+            data.add_field('model', model_name)
+            data.add_field('client_id', client_id)
+            
+            # Открываем файлы
+            files_handles = []
+            for key, filepath in files_to_send.items():
+                f = open(filepath, 'rb')
+                files_handles.append(f)
+                data.add_field(f'file_{key}', f, filename=filepath.name)
+            
+            # Отправляем запрос
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.server_url}/v1/inference_async",
+                    data=data
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Server error: {error_text}")
+                        return False
+                    
+                    result = await response.json()
+                    task_id = result.get('task_id')
+                    
+                    if not task_id:
+                        logger.error("No task_id in response")
+                        return False
+                    
+                    # Закрываем файлы
+                    for f in files_handles:
+                        f.close()
+                    
+                    # Ожидаем завершения
+                    success = await self._wait_for_completion(session, task_id, output_path)
+                    return success
+        
+        except Exception as e:
+            logger.error(f"Async segmentation error: {e}")
+            return False
+    
+    async def _wait_for_completion(
+        self,
+        session: aiohttp.ClientSession,
+        task_id: str,
+        output_path: Path,
+        poll_interval: float = 2.0
+    ) -> bool:
+        """Ожидание завершения задачи с опросом статуса"""
+        status_url = f"{self.server_url}/get_status/{task_id}"
+        
+        while True:
+            try:
+                async with session.get(status_url) as response:
+                    if response.status != 200:
+                        await asyncio.sleep(poll_interval)
+                        continue
+                    
+                    status_data = await response.json()
+                    current_status = status_data.get('status')
+                    
+                    if current_status == 'completed':
+                        # Скачиваем результат
+                        download_url = status_data.get('download_url')
+                        if download_url:
+                            return await self._download_result(
+                                session,
+                                f"{self.server_url}{download_url}",
+                                output_path
+                            )
+                        else:
+                            logger.error(f"No download_url for task {task_id}")
+                            return False
+                    
+                    elif current_status == 'failed':
+                        error = status_data.get('error', 'Unknown error')
+                        logger.error(f"Task {task_id} failed: {error}")
+                        return False
+                    
+                    await asyncio.sleep(poll_interval)
+            
+            except Exception as e:
+                logger.error(f"Error polling status: {e}")
+                await asyncio.sleep(poll_interval)
+    
+    async def _download_result(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        output_path: Path
+    ) -> bool:
+        """Скачивание результата"""
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Download failed: {response.status}")
+                    return False
+                
+                with open(output_path, 'wb') as f:
+                    f.write(await response.read())
+                
+                logger.info(f"  ✓ Saved: {output_path}")
+                return True
+        
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            return False
 
 @dataclass
 class ProcessingStats:
@@ -709,6 +830,7 @@ class SegmentationRunner:
         logger.info(f"Input directory:  {self.args.input_dir}")
         logger.info(f"Output directory: {self.args.output_dir}")
         logger.info(f"Config file:      {self.args.config}")
+        logger.info(f"Max concurrent:   {self.args.max_concurrent}")
         
         # Get and display profile information
         try:
@@ -737,7 +859,7 @@ class SegmentationRunner:
                         "Please check your configuration file."
                     )
                 
-                # Create SSH tunnel (will prompt for password if needed)
+                # Create SSH tunnel
                 ssh_tunnel_process = create_ssh_tunnel(
                     ssh_host=ssh_cfg['host'],
                     ssh_port=ssh_cfg['port'],
@@ -745,13 +867,11 @@ class SegmentationRunner:
                     remote_port=ssh_cfg['remote_port'],
                     local_port=ssh_cfg['local_port'],
                     ssh_key=ssh_cfg['key_file'],
-                    password=None  # Will prompt interactively
+                    password=None
                 )
                 
-                # Register cleanup on exit
                 atexit.register(lambda: close_ssh_tunnel(ssh_tunnel_process))
             
-            # Continue with normal processing
             server_url = self.config.get_server_url()
             
             # Check server availability
@@ -786,21 +906,39 @@ class SegmentationRunner:
             
             self.stats.total = len(sessions)
             
-            # Initialize segmentation client
-            client = SegmentationClient(server_url=self.config.get_server_url())
-            model_name = self.config.get_model_name()
+            # Run async processing
+            success = asyncio.run(self._process_sessions_async(sessions))
             
-            # Process each session
-            logger.info("=" * 60)
-            logger.info("PROCESSING SESSIONS")
-            logger.info("=" * 60)
-            
-            for idx, session in enumerate(sessions, 1):
+            return success
+        
+        except Exception as e:
+            logger.critical(f"Critical error in batch processing: {e}")
+            logger.exception("Full traceback:")
+            return False
+        
+        finally:
+            if ssh_tunnel_process:
+                close_ssh_tunnel(ssh_tunnel_process)
+
+    async def _process_sessions_async(self, sessions: List) -> bool:
+        """Асинхронная обработка сессий с ограничением параллелизма"""
+        logger.info("=" * 60)
+        logger.info("PROCESSING SESSIONS")
+        logger.info("=" * 60)
+        
+        client = AsyncSegmentationClient(server_url=self.config.get_server_url())
+        model_name = self.config.get_model_name()
+        
+        # Семафор для ограничения параллелизма
+        semaphore = asyncio.Semaphore(self.args.max_concurrent)
+        
+        async def process_one(idx: int, session) -> bool:
+            """Обработка одной сессии с семафором"""
+            async with semaphore:
                 identifier = session.get_identifier()
                 logger.info(f"[{idx}/{self.stats.total}] Processing: {identifier}")
                 
                 try:
-                    # Prepare input
                     seg_input = SegmentationInput(
                         t1=session.modality_files["t1"],
                         t1c=session.modality_files["t1c"],
@@ -809,12 +947,9 @@ class SegmentationRunner:
                     )
                     
                     files_to_send = seg_input.prepare_for_server()
-                    
-                    # Generate unique client ID
                     client_id = f"{identifier}_{idx}"
                     
-                    # Perform segmentation
-                    success = client.segment(
+                    success = await client.segment_async(
                         files_to_send=files_to_send,
                         model_name=model_name,
                         client_id=client_id,
@@ -826,26 +961,23 @@ class SegmentationRunner:
                     else:
                         self.stats.failed += 1
                         logger.error(f"  Failed to process {identifier}")
+                    
+                    return success
                 
                 except Exception as e:
                     self.stats.failed += 1
                     logger.error(f"  ✗ Error processing {identifier}: {e}")
                     logger.exception(f"  Full traceback for {identifier}:")
-            
-            # Log final statistics
-            self.stats.log_summary()
-            
-            return self.stats.failed == 0
+                    return False
         
-        except Exception as e:
-            logger.critical(f"Critical error in batch processing: {e}")
-            logger.exception("Full traceback:")
-            return False
+        # Запускаем все задачи параллельно
+        tasks = [process_one(idx, session) for idx, session in enumerate(sessions, 1)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        finally:
-            # Stop SSH tunnel if created
-            if ssh_tunnel_process:
-                close_ssh_tunnel(ssh_tunnel_process)
+        # Log final statistics
+        self.stats.log_summary()
+        
+        return self.stats.failed == 0
 
 
 # --- Main Execution Block ---
@@ -887,6 +1019,12 @@ if __name__ == "__main__":
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Console logging level"
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=2,
+        help="Maximum number of concurrent segmentation requests"
     )
     
     args = parser.parse_args()
