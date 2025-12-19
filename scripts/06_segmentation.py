@@ -728,6 +728,118 @@ class AsyncSegmentationClient:
         except Exception as e:
             logger.error(f"Async segmentation error: {e}")
             return False
+        
+    async def segment_async_with_status(
+        self,
+        files_to_send: dict,
+        model_name: str,
+        client_id: str,
+        output_path: Path
+    ) -> tuple[bool, dict]:
+        """
+        Асинхронная отправка запроса на сегментацию с возвратом финального статуса.
+        
+        Returns:
+            Tuple of (success: bool, final_task_status: dict)
+        """
+        try:
+            # Формируем multipart данные
+            data = aiohttp.FormData()
+            data.add_field('model', model_name)
+            data.add_field('client_id', client_id)
+            
+            # Открываем файлы
+            files_handles = []
+            for key, filepath in files_to_send.items():
+                f = open(filepath, 'rb')
+                files_handles.append(f)
+                data.add_field(f'file_{key}', f, filename=filepath.name)
+            
+            # Отправляем запрос
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.server_url}/v1/inference_async",
+                    data=data
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Server error: {error_text}")
+                        return False, {}
+                    
+                    result = await response.json()
+                    task_id = result.get('task_id')
+                    
+                    if not task_id:
+                        logger.error("No task_id in response")
+                        return False, {}
+                    
+                    # Закрываем файлы
+                    for f in files_handles:
+                        f.close()
+                    
+                    # Ожидаем завершения и получаем финальный статус
+                    success, final_status = await self._wait_for_completion_with_status(
+                        session, task_id, output_path
+                    )
+                    return success, final_status
+        
+        except Exception as e:
+            logger.error(f"Async segmentation error: {e}")
+            return False, {}
+    
+    async def _wait_for_completion_with_status(
+        self,
+        session: aiohttp.ClientSession,
+        task_id: str,
+        output_path: Path,
+        poll_interval: float = 2.0
+    ) -> tuple[bool, dict]:
+        """
+        Ожидание завершения задачи с опросом статуса и возвратом финального статуса.
+        
+        Returns:
+            Tuple of (success: bool, final_status: dict)
+        """
+        status_url = f"{self.server_url}/get_status/{task_id}"
+        final_status = {}
+        
+        while True:
+            try:
+                async with session.get(status_url) as response:
+                    if response.status != 200:
+                        await asyncio.sleep(poll_interval)
+                        continue
+                    
+                    status_data = await response.json()
+                    current_status = status_data.get('status')
+                    
+                    if current_status == 'completed':
+                        # Сохраняем финальный статус
+                        final_status = status_data
+                        
+                        # Скачиваем результат
+                        download_url = status_data.get('download_url')
+                        if download_url:
+                            success = await self._download_result(
+                                session,
+                                f"{self.server_url}{download_url}",
+                                output_path
+                            )
+                            return success, final_status
+                        else:
+                            logger.error(f"No download_url for task {task_id}")
+                            return False, final_status
+                    
+                    elif current_status == 'failed':
+                        error = status_data.get('error', 'Unknown error')
+                        logger.error(f"Task {task_id} failed: {error}")
+                        return False, status_data
+                    
+                    await asyncio.sleep(poll_interval)
+            
+            except Exception as e:
+                logger.error(f"Error polling status: {e}")
+                await asyncio.sleep(poll_interval)
     
     async def _wait_for_completion(
         self,
@@ -837,6 +949,7 @@ class SegmentationRunner:
         self.monitor = None
         self.benchmark_logger = None
         self.pipeline_start_time = None
+        self.gpu_metrics_collected = []
         
         # Initialize benchmark if enabled
         if args.benchmark:
@@ -990,7 +1103,8 @@ class SegmentationRunner:
                     files_to_send = seg_input.prepare_for_server()
                     client_id = f"{identifier}_{idx}"
                     
-                    success = await client.segment_async(
+                    # Get task status after processing
+                    success, task_status = await client.segment_async_with_status(
                         files_to_send=files_to_send,
                         model_name=model_name,
                         client_id=client_id,
@@ -999,6 +1113,10 @@ class SegmentationRunner:
                     
                     if success:
                         self.stats.successful += 1
+                        
+                        # Collect GPU metrics if benchmarking
+                        if self.args.benchmark and task_status and 'gpu_metrics' in task_status:
+                            self.gpu_metrics_collected.append(task_status['gpu_metrics'])
                     else:
                         self.stats.failed += 1
                         logger.error(f"  Failed to process {identifier}")
@@ -1066,6 +1184,33 @@ class SegmentationRunner:
             memory_avg_mb=system_metrics.get('memory_avg_mb'),
             memory_peak_mb=system_metrics.get('memory_peak_mb')
         )
+
+        # Aggregate GPU metrics from all tasks
+        if self.gpu_metrics_collected:
+            utilization_values = [m.get('utilization_avg', 0) for m in self.gpu_metrics_collected if m.get('utilization_avg')]
+            memory_values = [m.get('memory_used_mb_avg', 0) for m in self.gpu_metrics_collected if m.get('memory_used_mb_avg')]
+            temp_values = [m.get('temperature_avg', 0) for m in self.gpu_metrics_collected if m.get('temperature_avg')]
+            
+            utilization_max_values = [m.get('utilization_max', 0) for m in self.gpu_metrics_collected if m.get('utilization_max')]
+            memory_max_values = [m.get('memory_used_mb_max', 0) for m in self.gpu_metrics_collected if m.get('memory_used_mb_max')]
+            temp_max_values = [m.get('temperature_max', 0) for m in self.gpu_metrics_collected if m.get('temperature_max')]
+            
+            if utilization_values:
+                metrics.gpu_utilization_avg = sum(utilization_values) / len(utilization_values)
+                metrics.gpu_utilization_max = max(utilization_max_values) if utilization_max_values else None
+            
+            if memory_values:
+                metrics.gpu_memory_used_mb_avg = sum(memory_values) / len(memory_values)
+                metrics.gpu_memory_used_mb_max = max(memory_max_values) if memory_max_values else None
+            
+            if temp_values:
+                metrics.gpu_temperature_avg = sum(temp_values) / len(temp_values)
+                metrics.gpu_temperature_max = max(temp_max_values) if temp_max_values else None
+            
+            logger.info("GPU metrics aggregated from all tasks:")
+            logger.info(f"  Utilization: avg={metrics.gpu_utilization_avg:.1f}%, max={metrics.gpu_utilization_max:.1f}%")
+            logger.info(f"  Memory: avg={metrics.gpu_memory_used_mb_avg:.1f}MB, max={metrics.gpu_memory_used_mb_max:.1f}MB")
+            logger.info(f"  Temperature: avg={metrics.gpu_temperature_avg:.1f}°C, max={metrics.gpu_temperature_max:.1f}°C")
         
         # Calculate speedup and efficiency vs baseline
         if self.args.max_concurrent == 1:
@@ -1104,6 +1249,10 @@ class SegmentationRunner:
         logger.info(f"Total time:        {total_time:.1f}s ({total_time/60:.1f} min)")
         logger.info(f"Time per series:   {metrics.time_per_series:.2f}s")
         logger.info(f"Throughput:        {metrics.throughput:.3f} series/sec")
+        if metrics.gpu_utilization_avg:
+            logger.info(f"GPU Utilization:   avg={metrics.gpu_utilization_avg:.1f}%, max={metrics.gpu_utilization_max:.1f}%")
+            logger.info(f"GPU Memory:        avg={metrics.gpu_memory_used_mb_avg:.1f}MB, max={metrics.gpu_memory_used_mb_max:.1f}MB")
+            logger.info(f"GPU Temperature:   avg={metrics.gpu_temperature_avg:.1f}°C, max={metrics.gpu_temperature_max:.1f}°C")
         if metrics.speedup:
             logger.info(f"Speedup:           {metrics.speedup:.2f}x")
             logger.info(f"Efficiency:        {metrics.efficiency:.2%}")
