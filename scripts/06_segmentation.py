@@ -551,6 +551,35 @@ class BIDSScanner:
             modality_files=modality_files,
             output_mask_path=output_mask_path
         )
+    
+    def filter_existing(
+        self, 
+        sessions: list[SubjectSession]
+    ) -> tuple[list[SubjectSession], int]:
+        """
+        Filter out sessions that already have output mask files.
+        
+        Args:
+            sessions: List of SubjectSession objects to filter
+        
+        Returns:
+            Tuple of (filtered_sessions, skipped_count)
+        """
+        filtered = []
+        skipped = 0
+        
+        for session in sessions:
+            if session.output_mask_path.exists():
+                identifier = session.get_identifier()
+                logger.debug(f"⊙ Skipping {identifier}: Output mask already exists at {session.output_mask_path}")
+                skipped += 1
+            else:
+                filtered.append(session)
+        
+        if skipped > 0:
+            logger.info(f"⊙ Skipped {skipped} sessions with existing output masks")
+        
+        return filtered, skipped
 
 
 @dataclass
@@ -923,10 +952,11 @@ class ProcessingStats:
         logger.info("=" * 60)
         logger.info("PROCESSING SUMMARY")
         logger.info("=" * 60)
-        logger.info(f"Total sessions discovered: {self.total}")
+        logger.info(f"Total sessions to process: {self.total}")
         logger.info(f"Successfully processed:    {self.successful}")
         logger.info(f"Failed:                    {self.failed}")
-        logger.info(f"Skipped (incomplete):      {self.skipped}")
+        if self.skipped > 0:
+            logger.info(f"Skipped (already exists):  {self.skipped}")
         logger.info("=" * 60)
 
 
@@ -1054,6 +1084,24 @@ class SegmentationRunner:
                 logger.warning("No valid sessions found to process!")
                 return False
             
+            # Filter existing sessions if requested
+            if self.args.skip_existing:
+                logger.info("=" * 60)
+                logger.info("FILTERING EXISTING SESSIONS")
+                logger.info("=" * 60)
+                logger.info(f"Sessions discovered: {len(sessions)}")
+                
+                sessions, skipped_count = scanner.filter_existing(sessions)
+                self.stats.skipped = skipped_count
+                
+                logger.info(f"Sessions to process: {len(sessions)}")
+                logger.info(f"Sessions skipped:    {skipped_count}")
+                logger.info("=" * 60)
+                
+                if not sessions:
+                    logger.info("All sessions already processed. Nothing to do.")
+                    return True  # Success - nothing to do
+            
             self.stats.total = len(sessions)
             
             # Run async processing
@@ -1062,6 +1110,10 @@ class SegmentationRunner:
             # Save benchmark metrics if enabled
             if self.args.benchmark and self.monitor and self.benchmark_logger:
                 self._save_benchmark_metrics(sessions)
+
+            # Log final statistics
+            logger.info("")
+            self.stats.log_summary()
             
             return success
         
@@ -1334,6 +1386,11 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="GPU IDs used on server, e.g., '0,1,2' (for benchmark metadata)"
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip sessions that already have output segmentation masks"
     )
     
     args = parser.parse_args()
