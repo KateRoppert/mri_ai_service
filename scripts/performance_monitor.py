@@ -22,11 +22,15 @@ except ImportError:
 
 @dataclass
 class ExperimentMetrics:
-    """Container for experiment metrics."""
+    """Container for experiment metrics (universal for CPU and GPU workloads)."""
+    # ========================================================================
+    # REQUIRED FIELDS (no defaults) - must come first!
+    # ========================================================================
     experiment_id: str
     timestamp: str
-    mode: str  # sequential or parallel
-    workers: int
+    stage: str  # "preprocessing", "segmentation", etc.
+    parallelism_type: str  # "cpu_workers" or "gpu_concurrent"
+    parallelism_level: int  # number of workers or max_concurrent requests
     total_series: int
     successful: int
     failed: int
@@ -34,12 +38,28 @@ class ExperimentMetrics:
     total_time: float
     time_per_series: float
     throughput: float  # series per second
+    
+    # ========================================================================
+    # OPTIONAL FIELDS (with defaults) - must come after required fields!
+    # ========================================================================
+    # GPU-specific parameters
+    server_name: Optional[str] = None  # "barguzin", "cube", "tunka"
+    gpu_count: Optional[int] = None  # number of GPUs on server
+    gpu_ids: Optional[str] = None  # e.g., "0,1,2"
+    
+    # Legacy parameters (for backward compatibility with preprocessing)
+    mode: Optional[str] = None  # "sequential" or "parallel"
+    workers: Optional[int] = None  # number of CPU workers
+    
+    # System resource metrics (client-side)
     cpu_avg: Optional[float] = None
     cpu_max: Optional[float] = None
     memory_avg_mb: Optional[float] = None
     memory_peak_mb: Optional[float] = None
+    
+    # Comparative metrics
     speedup: Optional[float] = None  # vs baseline
-    efficiency: Optional[float] = None  # speedup / workers
+    efficiency: Optional[float] = None  # speedup / parallelism_level
     
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -162,7 +182,10 @@ class BenchmarkLogger:
     def _init_csv(self):
         """Initialize CSV file with headers."""
         headers = [
-            'experiment_id', 'timestamp', 'mode', 'workers',
+            'experiment_id', 'timestamp', 'stage',
+            'parallelism_type', 'parallelism_level',
+            'server_name', 'gpu_count', 'gpu_ids',
+            'mode', 'workers',  # legacy fields
             'total_series', 'successful', 'failed', 'skipped',
             'total_time', 'time_per_series', 'throughput',
             'cpu_avg', 'cpu_max', 'memory_avg_mb', 'memory_peak_mb',
@@ -186,8 +209,14 @@ class BenchmarkLogger:
             writer.writerow([
                 metrics.experiment_id,
                 metrics.timestamp,
-                metrics.mode,
-                metrics.workers,
+                metrics.stage,
+                metrics.parallelism_type,
+                metrics.parallelism_level,
+                metrics.server_name or "",
+                metrics.gpu_count or "",
+                metrics.gpu_ids or "",
+                metrics.mode or "",
+                metrics.workers or "",
                 metrics.total_series,
                 metrics.successful,
                 metrics.failed,
@@ -226,11 +255,18 @@ class BenchmarkLogger:
             reader = csv.DictReader(f)
             for row in reader:
                 # Convert strings to appropriate types
+                # Handle both new and legacy CSV formats
                 metrics = ExperimentMetrics(
                     experiment_id=row['experiment_id'],
                     timestamp=row['timestamp'],
-                    mode=row['mode'],
-                    workers=int(row['workers']),
+                    stage=row.get('stage', 'preprocessing'),  # default for old CSVs
+                    parallelism_type=row.get('parallelism_type', 'cpu_workers'),
+                    parallelism_level=int(row.get('parallelism_level', row.get('workers', 1))),
+                    server_name=row.get('server_name') or None,
+                    gpu_count=int(row['gpu_count']) if row.get('gpu_count') else None,
+                    gpu_ids=row.get('gpu_ids') or None,
+                    mode=row.get('mode') or None,
+                    workers=int(row['workers']) if row.get('workers') else None,
                     total_series=int(row['total_series']),
                     successful=int(row['successful']),
                     failed=int(row['failed']),
@@ -238,20 +274,27 @@ class BenchmarkLogger:
                     total_time=float(row['total_time']),
                     time_per_series=float(row['time_per_series']),
                     throughput=float(row['throughput']),
-                    cpu_avg=float(row['cpu_avg']) if row['cpu_avg'] else None,
-                    cpu_max=float(row['cpu_max']) if row['cpu_max'] else None,
-                    memory_avg_mb=float(row['memory_avg_mb']) if row['memory_avg_mb'] else None,
-                    memory_peak_mb=float(row['memory_peak_mb']) if row['memory_peak_mb'] else None,
-                    speedup=float(row['speedup']) if row['speedup'] else None,
-                    efficiency=float(row['efficiency']) if row['efficiency'] else None
+                    cpu_avg=float(row['cpu_avg']) if row.get('cpu_avg') else None,
+                    cpu_max=float(row['cpu_max']) if row.get('cpu_max') else None,
+                    memory_avg_mb=float(row['memory_avg_mb']) if row.get('memory_avg_mb') else None,
+                    memory_peak_mb=float(row['memory_peak_mb']) if row.get('memory_peak_mb') else None,
+                    speedup=float(row['speedup']) if row.get('speedup') else None,
+                    efficiency=float(row['efficiency']) if row.get('efficiency') else None
                 )
                 metrics_list.append(metrics)
         
         return metrics_list
     
-    def get_baseline_time(self) -> Optional[float]:
+    def get_baseline_time(self, stage: str = None, server_name: str = None) -> Optional[float]:
         """
-        Get baseline (sequential, 1 worker) time per series.
+        Get baseline time per series for comparison.
+        
+        For CPU workflows: sequential mode with 1 worker
+        For GPU workflows: 1 concurrent request on specific server
+        
+        Args:
+            stage: Filter by stage (optional)
+            server_name: Filter by server name (for GPU workflows)
         
         Returns:
             Baseline time or None if not found
@@ -259,7 +302,25 @@ class BenchmarkLogger:
         metrics_list = self.load_all_metrics()
         
         for metrics in metrics_list:
-            if metrics.mode == 'sequential' and metrics.workers == 1:
+            # Filter by stage if specified
+            if stage and metrics.stage != stage:
+                continue
+            
+            # Filter by server_name if specified (for GPU benchmarks)
+            if server_name and metrics.server_name != server_name:
+                continue
+            
+            # Check if this is a baseline experiment
+            is_baseline = False
+            
+            if metrics.parallelism_type == 'cpu_workers':
+                # CPU baseline: sequential mode with 1 worker
+                is_baseline = (metrics.mode == 'sequential' and metrics.parallelism_level == 1)
+            elif metrics.parallelism_type == 'gpu_concurrent':
+                # GPU baseline: 1 concurrent request
+                is_baseline = (metrics.parallelism_level == 1)
+            
+            if is_baseline:
                 return metrics.time_per_series
         
         return None
