@@ -56,6 +56,14 @@ class ExperimentMetrics:
     cpu_max: Optional[float] = None
     memory_avg_mb: Optional[float] = None
     memory_peak_mb: Optional[float] = None
+
+    # GPU metrics (from server-side monitoring)
+    gpu_utilization_avg: Optional[float] = None  # average GPU usage (%)
+    gpu_utilization_max: Optional[float] = None  # peak GPU usage (%)
+    gpu_memory_used_mb_avg: Optional[float] = None  # average GPU memory (MB)
+    gpu_memory_used_mb_max: Optional[float] = None  # peak GPU memory (MB)
+    gpu_temperature_avg: Optional[float] = None  # average temperature (°C)
+    gpu_temperature_max: Optional[float] = None  # peak temperature (°C)
     
     # Comparative metrics
     speedup: Optional[float] = None  # vs baseline
@@ -189,6 +197,9 @@ class BenchmarkLogger:
             'total_series', 'successful', 'failed', 'skipped',
             'total_time', 'time_per_series', 'throughput',
             'cpu_avg', 'cpu_max', 'memory_avg_mb', 'memory_peak_mb',
+            'gpu_utilization_avg', 'gpu_utilization_max',
+            'gpu_memory_used_mb_avg', 'gpu_memory_used_mb_max',
+            'gpu_temperature_avg', 'gpu_temperature_max',
             'speedup', 'efficiency'
         ]
         
@@ -228,6 +239,12 @@ class BenchmarkLogger:
                 f"{metrics.cpu_max:.2f}" if metrics.cpu_max else "",
                 f"{metrics.memory_avg_mb:.2f}" if metrics.memory_avg_mb else "",
                 f"{metrics.memory_peak_mb:.2f}" if metrics.memory_peak_mb else "",
+                f"{metrics.gpu_utilization_avg:.2f}" if metrics.gpu_utilization_avg else "",
+                f"{metrics.gpu_utilization_max:.2f}" if metrics.gpu_utilization_max else "",
+                f"{metrics.gpu_memory_used_mb_avg:.2f}" if metrics.gpu_memory_used_mb_avg else "",
+                f"{metrics.gpu_memory_used_mb_max:.2f}" if metrics.gpu_memory_used_mb_max else "",
+                f"{metrics.gpu_temperature_avg:.2f}" if metrics.gpu_temperature_avg else "",
+                f"{metrics.gpu_temperature_max:.2f}" if metrics.gpu_temperature_max else "",
                 f"{metrics.speedup:.3f}" if metrics.speedup else "",
                 f"{metrics.efficiency:.3f}" if metrics.efficiency else ""
             ])
@@ -259,7 +276,7 @@ class BenchmarkLogger:
                 metrics = ExperimentMetrics(
                     experiment_id=row['experiment_id'],
                     timestamp=row['timestamp'],
-                    stage=row.get('stage', 'preprocessing'),  # default for old CSVs
+                    stage=row.get('stage', 'preprocessing'),
                     parallelism_type=row.get('parallelism_type', 'cpu_workers'),
                     parallelism_level=int(row.get('parallelism_level', row.get('workers', 1))),
                     server_name=row.get('server_name') or None,
@@ -278,6 +295,12 @@ class BenchmarkLogger:
                     cpu_max=float(row['cpu_max']) if row.get('cpu_max') else None,
                     memory_avg_mb=float(row['memory_avg_mb']) if row.get('memory_avg_mb') else None,
                     memory_peak_mb=float(row['memory_peak_mb']) if row.get('memory_peak_mb') else None,
+                    gpu_utilization_avg=float(row['gpu_utilization_avg']) if row.get('gpu_utilization_avg') else None,
+                    gpu_utilization_max=float(row['gpu_utilization_max']) if row.get('gpu_utilization_max') else None,
+                    gpu_memory_used_mb_avg=float(row['gpu_memory_used_mb_avg']) if row.get('gpu_memory_used_mb_avg') else None,
+                    gpu_memory_used_mb_max=float(row['gpu_memory_used_mb_max']) if row.get('gpu_memory_used_mb_max') else None,
+                    gpu_temperature_avg=float(row['gpu_temperature_avg']) if row.get('gpu_temperature_avg') else None,
+                    gpu_temperature_max=float(row['gpu_temperature_max']) if row.get('gpu_temperature_max') else None,
                     speedup=float(row['speedup']) if row.get('speedup') else None,
                     efficiency=float(row['efficiency']) if row.get('efficiency') else None
                 )
