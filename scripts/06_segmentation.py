@@ -30,6 +30,9 @@ import getpass
 import shutil
 import aiohttp
 import asyncio
+import time
+from datetime import datetime 
+from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
@@ -816,11 +819,39 @@ class ProcessingStats:
 
 
 class SegmentationRunner:
-    """Orchestrates the batch segmentation workflow."""
-    def __init__(self, config: Config, args: argparse.Namespace):
+    """Orchestrates the batch processing of multiple subjects/sessions."""
+    
+    def __init__(self, config: 'Config', args):
+        """
+        Initialize the runner.
+        
+        Args:
+            config: Configuration object
+            args: Command-line arguments
+        """
         self.config = config
         self.args = args
         self.stats = ProcessingStats()
+        
+        # Benchmark components
+        self.monitor = None
+        self.benchmark_logger = None
+        self.pipeline_start_time = None
+        
+        # Initialize benchmark if enabled
+        if args.benchmark:
+            # Determine results directory
+            if args.results_dir:
+                results_dir = args.results_dir
+            else:
+                results_dir = args.output_dir / "benchmark_results" / "segmentation"
+            
+            # Initialize logger
+            self.benchmark_logger = BenchmarkLogger(results_dir)
+            logger.info(f"Benchmark mode enabled. Results will be saved to: {results_dir}")
+            
+            # Initialize performance monitor
+            self.monitor = PerformanceMonitor(enabled=True)
 
     def run(self) -> bool:
         """Executes the full batch segmentation process."""
@@ -831,6 +862,12 @@ class SegmentationRunner:
         logger.info(f"Output directory: {self.args.output_dir}")
         logger.info(f"Config file:      {self.args.config}")
         logger.info(f"Max concurrent:   {self.args.max_concurrent}")
+
+        # Start timing and monitoring for benchmark
+        self.pipeline_start_time = time.time()
+        if self.monitor:
+            self.monitor.start()
+            logger.info("Performance monitoring started")
         
         # Get and display profile information
         try:
@@ -908,6 +945,10 @@ class SegmentationRunner:
             
             # Run async processing
             success = asyncio.run(self._process_sessions_async(sessions))
+
+            # Save benchmark metrics if enabled
+            if self.args.benchmark and self.monitor and self.benchmark_logger:
+                self._save_benchmark_metrics(sessions)
             
             return success
         
@@ -978,6 +1019,95 @@ class SegmentationRunner:
         self.stats.log_summary()
         
         return self.stats.failed == 0
+    
+
+    def _save_benchmark_metrics(self, sessions: List):
+        """Save benchmark metrics after processing."""
+        # Stop monitoring
+        self.monitor.stop()
+        logger.info("Performance monitoring stopped")
+        
+        # Calculate total time
+        total_time = time.time() - self.pipeline_start_time
+        
+        # Get system metrics
+        system_metrics = self.monitor.get_metrics()
+        
+        # Determine server name
+        if self.args.server_name:
+            server_name = self.args.server_name
+        else:
+            # Auto-detect from config
+            server_name = self.config._data.get('segmentation', {}).get('active_profile', 'unknown')
+        
+        # Generate experiment ID
+        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        experiment_id = f"seg_{server_name}_c{self.args.max_concurrent}_{timestamp_str}"
+        
+        # Create metrics object
+        metrics = ExperimentMetrics(
+            experiment_id=experiment_id,
+            timestamp=datetime.now().isoformat(),
+            stage="segmentation",
+            parallelism_type="gpu_concurrent",
+            parallelism_level=self.args.max_concurrent,
+            server_name=server_name,
+            gpu_count=self.args.gpu_count,
+            gpu_ids=self.args.gpu_ids,
+            total_series=self.stats.total,
+            successful=self.stats.successful,
+            failed=self.stats.failed,
+            skipped=0,  # segmentation doesn't skip, only fails
+            total_time=total_time,
+            time_per_series=total_time / self.stats.total if self.stats.total > 0 else 0,
+            throughput=self.stats.total / total_time if total_time > 0 else 0,
+            cpu_avg=system_metrics.get('cpu_avg'),
+            cpu_max=system_metrics.get('cpu_max'),
+            memory_avg_mb=system_metrics.get('memory_avg_mb'),
+            memory_peak_mb=system_metrics.get('memory_peak_mb')
+        )
+        
+        # Calculate speedup and efficiency vs baseline
+        if self.args.max_concurrent == 1:
+            # This IS the baseline for this server
+            metrics.speedup = 1.0
+            metrics.efficiency = 1.0
+        else:
+            # Compare to baseline for this server
+            baseline_time = self.benchmark_logger.get_baseline_time(
+                stage="segmentation",
+                server_name=server_name
+            )
+            if baseline_time and baseline_time > 0:
+                metrics.speedup = baseline_time / metrics.time_per_series
+                metrics.efficiency = metrics.speedup / metrics.parallelism_level
+            else:
+                logger.warning(
+                    f"No baseline found for server '{server_name}'. "
+                    f"Run with --max-concurrent 1 first to establish baseline."
+                )
+        
+        # Log metrics
+        self.benchmark_logger.log_metrics(metrics)
+        
+        logger.info("=" * 60)
+        logger.info("BENCHMARK METRICS")
+        logger.info("=" * 60)
+        logger.info(f"Experiment ID:     {experiment_id}")
+        logger.info(f"Server:            {server_name}")
+        logger.info(f"GPU count:         {self.args.gpu_count or 'not specified'}")
+        logger.info(f"GPU IDs:           {self.args.gpu_ids or 'not specified'}")
+        logger.info(f"Max concurrent:    {self.args.max_concurrent}")
+        logger.info(f"Total series:      {self.stats.total}")
+        logger.info(f"Successful:        {self.stats.successful}")
+        logger.info(f"Failed:            {self.stats.failed}")
+        logger.info(f"Total time:        {total_time:.1f}s ({total_time/60:.1f} min)")
+        logger.info(f"Time per series:   {metrics.time_per_series:.2f}s")
+        logger.info(f"Throughput:        {metrics.throughput:.3f} series/sec")
+        if metrics.speedup:
+            logger.info(f"Speedup:           {metrics.speedup:.2f}x")
+            logger.info(f"Efficiency:        {metrics.efficiency:.2%}")
+        logger.info("=" * 60)
 
 
 # --- Main Execution Block ---
@@ -1025,6 +1155,36 @@ if __name__ == "__main__":
         type=int,
         default=2,
         help="Maximum number of concurrent segmentation requests"
+    )
+    # Benchmark arguments
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Enable benchmarking mode (collect performance metrics)"
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=None,
+        help="Directory for benchmark results (default: output_dir/benchmark_results)"
+    )
+    parser.add_argument(
+        "--server-name",
+        type=str,
+        default=None,
+        help="Server name for benchmark (default: auto-detect from config active_profile)"
+    )
+    parser.add_argument(
+        "--gpu-count",
+        type=int,
+        default=None,
+        help="Number of GPUs on server (for benchmark metadata)"
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default=None,
+        help="GPU IDs used on server, e.g., '0,1,2' (for benchmark metadata)"
     )
     
     args = parser.parse_args()
