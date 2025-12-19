@@ -33,6 +33,7 @@ import asyncio
 import time
 from datetime import datetime 
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+from pipeline_validator import InputOutputValidator
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
@@ -1100,7 +1101,12 @@ class SegmentationRunner:
                 
                 if not sessions:
                     logger.info("All sessions already processed. Nothing to do.")
-                    return True  # Success - nothing to do
+
+                    # Run validation if enabled (even when nothing processed)
+                    if self.args.validate:
+                        self._run_validation()
+
+                    return True 
             
             self.stats.total = len(sessions)
             
@@ -1114,6 +1120,10 @@ class SegmentationRunner:
             # Log final statistics
             logger.info("")
             self.stats.log_summary()
+
+            # Run validation if enabled
+            if self.args.validate:
+                self._run_validation()
             
             return success
         
@@ -1310,6 +1320,131 @@ class SegmentationRunner:
             logger.info(f"Efficiency:        {metrics.efficiency:.2%}")
         logger.info("=" * 60)
 
+    def _scan_output_structure(self) -> dict:
+        """
+        Scan output directory for segmentation masks.
+        
+        Returns:
+            Structure dict compatible with InputOutputValidator:
+            {patient_id: {session_id: {'segmask'}}}
+        """
+        from collections import defaultdict
+        
+        structure = defaultdict(lambda: defaultdict(set))
+        
+        logger.debug("Scanning output directory for segmentation masks...")
+        
+        # Scan output directory for BIDS structure
+        for subject_dir in sorted(self.args.output_dir.glob("sub-*")):
+            if not subject_dir.is_dir():
+                continue
+            
+            patient_id = subject_dir.name.replace("sub-", "")
+            
+            # Check for session directories
+            session_dirs = sorted([d for d in subject_dir.iterdir() 
+                                  if d.is_dir() and d.name.startswith('ses-')])
+            
+            if session_dirs:
+                # Multi-session structure
+                for session_dir in session_dirs:
+                    session_id = session_dir.name.replace("ses-", "")
+                    anat_dir = session_dir / "anat"
+                    
+                    if anat_dir.exists():
+                        # Look for segmentation masks
+                        mask_files = list(anat_dir.glob("*_segmask.nii.gz"))
+                        if mask_files:
+                            structure[patient_id][session_id].add('segmask')
+                            logger.debug(f"  Found mask: {patient_id}/ses-{session_id}")
+            else:
+                # Single-session structure
+                anat_dir = subject_dir / "anat"
+                if anat_dir.exists():
+                    mask_files = list(anat_dir.glob("*_segmask.nii.gz"))
+                    if mask_files:
+                        # Use empty string for session_id in single-session case
+                        structure[patient_id]["001"].add('segmask')
+                        logger.debug(f"  Found mask: {patient_id}")
+        
+        # Convert to regular dict
+        return {
+            patient_id: {
+                session_id: modalities 
+                for session_id, modalities in sessions.items()
+            }
+            for patient_id, sessions in structure.items()
+        }
+    
+    def _run_validation(self):
+        """
+        Validate input-output correspondence and generate incomplete data report.
+        """
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("VALIDATION: Input-Output Correspondence")
+        logger.info("=" * 60)
+        
+        try:
+            # Initialize validator
+            validator = InputOutputValidator(logger=logger)
+            
+            # Scan input structure (NIfTI files)
+            logger.info("Scanning input directory structure...")
+            input_structure = validator.scan_structure(
+                directory=self.args.input_dir,
+                format_type='bids-nifti'
+            )
+            
+            logger.info(f"  Found {len(input_structure)} subjects in input")
+            
+            # Scan output structure (segmentation masks)
+            logger.info("Scanning output directory structure...")
+            output_structure = self._scan_output_structure()
+            
+            logger.info(f"  Found {len(output_structure)} subjects in output")
+            
+            # Validate segmentation completion
+            logger.info("Validating segmentation completion...")
+            comparison = validator.validate_segmentation_completion(
+                input_structure=input_structure,
+                output_structure=output_structure
+            )
+            
+            # Generate report
+            report_path = validator.generate_incomplete_report(
+                comparison_result=comparison,
+                stage_name="06_segmentation",
+                output_dir=self.args.output_dir,
+                filename="segmentation_incomplete_data.json"
+            )
+            
+            # Log summary
+            stats = comparison['statistics']
+            logger.info("")
+            logger.info("Validation Results:")
+            logger.info("-" * 60)
+            logger.info(f"  Total patients:       {stats['total_patients']}")
+            logger.info(f"  Complete patients:    {stats['complete_patients']}")
+            logger.info(f"  Incomplete patients:  {stats['incomplete_patients']}")
+            logger.info(f"  Total sessions:       {stats['total_sessions']}")
+            logger.info(f"  Complete sessions:    {stats['complete_sessions']}")
+            logger.info(f"  Incomplete sessions:  {stats['incomplete_sessions']}")
+            logger.info(f"  Success rate:         {stats['success_rate_percent']}%")
+            logger.info("-" * 60)
+            logger.info(f"  Report saved to: {report_path}")
+            logger.info("=" * 60)
+            
+            if stats['incomplete_patients'] > 0:
+                logger.warning(
+                    f"⚠️  Found {stats['incomplete_patients']} patients with incomplete data. "
+                    f"Check {report_path} for details."
+                )
+            
+        except Exception as e:
+            logger.error(f"Validation failed: {e}")
+            logger.exception("Full validation traceback:")
+
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
@@ -1391,6 +1526,11 @@ if __name__ == "__main__":
         "--skip-existing",
         action="store_true",
         help="Skip sessions that already have output segmentation masks"
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate input-output correspondence after processing"
     )
     
     args = parser.parse_args()
