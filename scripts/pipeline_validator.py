@@ -383,6 +383,100 @@ class InputOutputValidator:
             },
             'incomplete_data': incomplete_data
         }
+    
+    def validate_segmentation_completion(
+        self, 
+        input_structure: Dict[str, Dict[str, Set[str]]], 
+        output_structure: Dict[str, Dict[str, Set[str]]]
+    ) -> Dict:
+        """
+        Validate segmentation stage completion.
+        
+        Checks that each input session has corresponding output data.
+        Does not compare modalities (input: 4 modalities -> output: 1 mask is OK).
+        
+        Args:
+            input_structure: Input structure from scan_structure()
+            output_structure: Output structure from scan_structure()
+        
+        Returns:
+            Dictionary with comparison results
+        """
+        incomplete_data = []
+        complete_patients = 0
+        complete_sessions = 0
+        total_patients = len(input_structure)
+        total_sessions = 0
+        
+        # Check all patients from input
+        for patient_id, input_sessions in input_structure.items():
+            patient_has_issues = False
+            patient_incomplete_sessions = []
+            
+            for session_id, input_modalities in input_sessions.items():
+                total_sessions += 1
+                
+                # Check if patient exists in output
+                if patient_id not in output_structure:
+                    patient_has_issues = True
+                    patient_incomplete_sessions.append({
+                        'session_id': session_id,
+                        'input_modalities': sorted(list(input_modalities)),
+                        'output_data': False,
+                        'reason': 'patient_missing_in_output'
+                    })
+                    continue
+                
+                # Check if session exists in output
+                if session_id not in output_structure[patient_id]:
+                    patient_has_issues = True
+                    patient_incomplete_sessions.append({
+                        'session_id': session_id,
+                        'input_modalities': sorted(list(input_modalities)),
+                        'output_data': False,
+                        'reason': 'session_missing_in_output'
+                    })
+                    continue
+                
+                # Check if ANY output data exists
+                output_modalities = output_structure[patient_id][session_id]
+                if not output_modalities:
+                    patient_has_issues = True
+                    patient_incomplete_sessions.append({
+                        'session_id': session_id,
+                        'input_modalities': sorted(list(input_modalities)),
+                        'output_data': False,
+                        'reason': 'no_output_data'
+                    })
+                else:
+                    # Session has output - count as complete
+                    complete_sessions += 1
+            
+            if patient_has_issues:
+                incomplete_data.append({
+                    'patient_id': patient_id,
+                    'incomplete_sessions': patient_incomplete_sessions
+                })
+            else:
+                complete_patients += 1
+        
+        # Calculate statistics
+        incomplete_patients = len(incomplete_data)
+        incomplete_sessions = total_sessions - complete_sessions
+        success_rate = (complete_sessions / total_sessions * 100) if total_sessions > 0 else 0
+        
+        return {
+            'statistics': {
+                'total_patients': total_patients,
+                'complete_patients': complete_patients,
+                'incomplete_patients': incomplete_patients,
+                'total_sessions': total_sessions,
+                'complete_sessions': complete_sessions,
+                'incomplete_sessions': incomplete_sessions,
+                'success_rate_percent': round(success_rate, 2)
+            },
+            'incomplete_data': incomplete_data
+        }
 
     def generate_incomplete_report(
         self,
