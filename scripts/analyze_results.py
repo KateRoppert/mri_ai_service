@@ -39,32 +39,55 @@ class BenchmarkAnalyzer:
         self.baseline = self._get_baseline()
     
     def _load_data(self) -> List[Dict]:
-        """Load metrics from CSV file."""
+        """Load metrics from CSV file (supports both CPU and GPU formats)."""
         data = []
         
         with open(self.metrics_file, 'r') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Convert numeric fields
-                data.append({
+                # Convert numeric fields with safe get
+                record = {
                     'experiment_id': row['experiment_id'],
-                    'mode': row['mode'],
-                    'workers': int(row['workers']),
+                    # Legacy fields (preprocessing)
+                    'mode': row.get('mode', ''),
+                    'workers': int(row.get('workers', 0)) if row.get('workers') else 0,
+                    # New fields (segmentation)
+                    'stage': row.get('stage', 'preprocessing'),
+                    'parallelism_type': row.get('parallelism_type', 'cpu_workers'),
+                    'parallelism_level': int(row.get('parallelism_level', 0)) if row.get('parallelism_level') else 0,
+                    'server_name': row.get('server_name', ''),
+                    'gpu_count': int(row.get('gpu_count', 0)) if row.get('gpu_count') else 0,
+                    # Common fields
                     'total_series': int(row['total_series']),
                     'successful': int(row['successful']),
                     'total_time': float(row['total_time']),
                     'time_per_series': float(row['time_per_series']),
                     'throughput': float(row['throughput']),
-                    'cpu_avg': float(row['cpu_avg']) if row['cpu_avg'] else None,
-                    'cpu_max': float(row['cpu_max']) if row['cpu_max'] else None,
-                    'memory_avg_mb': float(row['memory_avg_mb']) if row['memory_avg_mb'] else None,
-                    'memory_peak_mb': float(row['memory_peak_mb']) if row['memory_peak_mb'] else None,
-                    'speedup': float(row['speedup']) if row['speedup'] else None,
-                    'efficiency': float(row['efficiency']) if row['efficiency'] else None
-                })
+                    # CPU metrics
+                    'cpu_avg': float(row['cpu_avg']) if row.get('cpu_avg') else None,
+                    'cpu_max': float(row['cpu_max']) if row.get('cpu_max') else None,
+                    'memory_avg_mb': float(row['memory_avg_mb']) if row.get('memory_avg_mb') else None,
+                    'memory_peak_mb': float(row['memory_peak_mb']) if row.get('memory_peak_mb') else None,
+                    # GPU metrics
+                    'gpu_utilization_avg': float(row['gpu_utilization_avg']) if row.get('gpu_utilization_avg') else None,
+                    'gpu_utilization_max': float(row['gpu_utilization_max']) if row.get('gpu_utilization_max') else None,
+                    'gpu_memory_used_mb_avg': float(row['gpu_memory_used_mb_avg']) if row.get('gpu_memory_used_mb_avg') else None,
+                    'gpu_memory_used_mb_max': float(row['gpu_memory_used_mb_max']) if row.get('gpu_memory_used_mb_max') else None,
+                    'gpu_temperature_avg': float(row['gpu_temperature_avg']) if row.get('gpu_temperature_avg') else None,
+                    'gpu_temperature_max': float(row['gpu_temperature_max']) if row.get('gpu_temperature_max') else None,
+                    # Performance metrics
+                    'speedup': float(row['speedup']) if row.get('speedup') else None,
+                    'efficiency': float(row['efficiency']) if row.get('efficiency') else None
+                }
+                data.append(record)
         
-        # Sort by number of workers
-        data.sort(key=lambda x: x['workers'])
+        # Sort appropriately based on data type
+        # For CPU: sort by workers
+        # For GPU: sort by server_name then gpu_count
+        if data and data[0]['stage'] == 'segmentation':
+            data.sort(key=lambda x: (x['server_name'], x['gpu_count']))
+        else:
+            data.sort(key=lambda x: x['workers'])
         
         return data
     
@@ -74,6 +97,16 @@ class BenchmarkAnalyzer:
             if exp['mode'] == 'sequential' and exp['workers'] == 1:
                 return exp
         return None
+    
+    def _has_gpu_data(self) -> bool:
+        """Check if data contains GPU metrics."""
+        return any(exp.get('gpu_utilization_avg') is not None for exp in self.data)
+
+    def _filter_segmentation_data(self) -> List[Dict]:
+        """Filter only segmentation experiments with GPU data."""
+        return [exp for exp in self.data 
+                if exp['stage'] == 'segmentation' 
+                and exp.get('gpu_utilization_avg') is not None]
     
     def generate_plots(self):
         """Generate all plots."""
@@ -176,6 +209,213 @@ class BenchmarkAnalyzer:
             plt.savefig(self.output_dir / 'cpu_utilization.png', dpi=300, bbox_inches='tight')
             plt.close()
             print(f"✓ Saved: {self.output_dir / 'cpu_utilization.png'}")
+
+
+    def generate_gpu_dashboard(self):
+        """Generate 2x2 dashboard comparing GPU servers."""
+        if not MATPLOTLIB_AVAILABLE:
+            print("Skipping GPU dashboard (matplotlib not available)")
+            return
+        
+        gpu_data = self._filter_segmentation_data()
+        
+        if not gpu_data:
+            print("No GPU data found, skipping GPU dashboard")
+            return
+        
+        print("Generating GPU comparison dashboard...")
+        
+        # Prepare data - group by server and GPU count
+        configs = []
+        labels = []
+        throughput = []
+        gpu_util_avg = []
+        gpu_util_max = []
+        gpu_mem_avg = []
+        gpu_mem_max = []
+        gpu_temp_avg = []
+        gpu_temp_max = []
+        
+        for exp in gpu_data:
+            server = exp['server_name']
+            gpus = exp['gpu_count']
+            # Create label: server name + GPU count
+            if gpus > 1:
+                label = f"{server}\n({gpus} GPUs)"
+            else:
+                label = f"{server}\n(1 GPU)"
+            
+            labels.append(label)
+            throughput.append(exp['throughput'])
+            gpu_util_avg.append(exp['gpu_utilization_avg'] or 0)
+            gpu_util_max.append(exp['gpu_utilization_max'] or 0)
+            gpu_mem_avg.append((exp['gpu_memory_used_mb_avg'] or 0) / 1024)  # Convert to GB
+            gpu_mem_max.append((exp['gpu_memory_used_mb_max'] or 0) / 1024)
+            gpu_temp_avg.append(exp['gpu_temperature_avg'] or 0)
+            gpu_temp_max.append(exp['gpu_temperature_max'] or 0)
+        
+        # Create 2x2 subplot
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        x = range(len(labels))
+        width = 0.35
+        
+        # 1. Throughput (top-left)
+        bars1 = ax1.bar(x, throughput, color='steelblue', alpha=0.8)
+        ax1.set_ylabel('Throughput (series/sec)', fontsize=11)
+        ax1.set_title('A) Segmentation Throughput', fontsize=12, fontweight='bold')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(labels, fontsize=10)
+        ax1.grid(True, alpha=0.3, axis='y')
+        # Add value labels on bars
+        for bar in bars1:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.2f}',
+                    ha='center', va='bottom', fontsize=9)
+        
+        # 2. GPU Utilization (top-right)
+        bars2_avg = ax2.bar([i - width/2 for i in x], gpu_util_avg, width, 
+                            label='Average', color='orange', alpha=0.7)
+        bars2_max = ax2.bar([i + width/2 for i in x], gpu_util_max, width,
+                            label='Maximum', color='orangered', alpha=0.7)
+        ax2.set_ylabel('GPU Utilization (%)', fontsize=11)
+        ax2.set_title('B) GPU Utilization', fontsize=12, fontweight='bold')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(labels, fontsize=10)
+        ax2.legend(fontsize=10)
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.set_ylim(0, 100)
+        
+        # 3. GPU Memory (bottom-left)
+        bars3_avg = ax3.bar([i - width/2 for i in x], gpu_mem_avg, width,
+                            label='Average', color='mediumseagreen', alpha=0.7)
+        bars3_max = ax3.bar([i + width/2 for i in x], gpu_mem_max, width,
+                            label='Maximum', color='darkgreen', alpha=0.7)
+        ax3.set_ylabel('GPU Memory (GB)', fontsize=11)
+        ax3.set_title('C) GPU Memory Usage', fontsize=12, fontweight='bold')
+        ax3.set_xticks(x)
+        ax3.set_xticklabels(labels, fontsize=10)
+        ax3.legend(fontsize=10)
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # 4. GPU Temperature (bottom-right)
+        bars4_avg = ax4.bar([i - width/2 for i in x], gpu_temp_avg, width,
+                            label='Average', color='mediumpurple', alpha=0.7)
+        bars4_max = ax4.bar([i + width/2 for i in x], gpu_temp_max, width,
+                            label='Maximum', color='darkviolet', alpha=0.7)
+        ax4.set_ylabel('Temperature (°C)', fontsize=11)
+        ax4.set_title('D) GPU Temperature', fontsize=12, fontweight='bold')
+        ax4.set_xticks(x)
+        ax4.set_xticklabels(labels, fontsize=10)
+        ax4.legend(fontsize=10)
+        ax4.grid(True, alpha=0.3, axis='y')
+        
+        plt.tight_layout()
+        plt.savefig(self.output_dir / 'gpu_comparison_dashboard.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✓ Saved: {self.output_dir / 'gpu_comparison_dashboard.png'}")
+
+
+    def generate_gpu_comparison_table(self):
+        """Generate comparison table for GPU servers."""
+        gpu_data = self._filter_segmentation_data()
+        
+        if not gpu_data:
+            print("No GPU data found, skipping GPU comparison table")
+            return
+        
+        print("\nGenerating GPU comparison table...")
+        
+        # Markdown table
+        md = []
+        md.append("## GPU Server Comparison\n")
+        md.append("| Configuration | GPUs | Throughput | GPU Util (avg/max) | GPU Memory (avg/max) | Temperature (avg/max) | Speedup |")
+        md.append("|---------------|------|------------|--------------------|-----------------------|-----------------------|---------|")
+        
+        for exp in gpu_data:
+            server = exp['server_name']
+            gpus = exp['gpu_count']
+            config = f"{server} ({gpus} GPU)" if gpus else server
+            
+            # Safe formatting with None checks
+            util_avg = exp['gpu_utilization_avg'] if exp['gpu_utilization_avg'] is not None else 0
+            util_max = exp['gpu_utilization_max'] if exp['gpu_utilization_max'] is not None else 0
+            mem_avg = (exp['gpu_memory_used_mb_avg'] or 0) / 1024
+            mem_max = (exp['gpu_memory_used_mb_max'] or 0) / 1024
+            temp_avg = exp['gpu_temperature_avg'] if exp['gpu_temperature_avg'] is not None else 0
+            temp_max = exp['gpu_temperature_max'] if exp['gpu_temperature_max'] is not None else 0
+            speedup = exp['speedup'] if exp['speedup'] is not None else 1.0
+
+            md.append(
+                f"| {config} | "
+                f"{gpus} | "
+                f"{exp['throughput']:.2f} series/s | "
+                f"{util_avg:.1f}% / {util_max:.1f}% | "
+                f"{mem_avg:.1f}GB / {mem_max:.1f}GB | "
+                f"{temp_avg:.1f}°C / {temp_max:.1f}°C | "
+                f"**{speedup:.2f}x** |"
+            )
+        
+        md_str = "\n".join(md)
+        
+        # Save markdown
+        md_file = self.output_dir / 'gpu_comparison.md'
+        with open(md_file, 'w') as f:
+            f.write(md_str)
+        print(f"✓ Saved: {md_file}")
+        
+        # LaTeX table
+        latex = []
+        latex.append("\\begin{table}[htbp]")
+        latex.append("\\centering")
+        latex.append("\\caption{GPU server performance comparison for MRI segmentation.}")
+        latex.append("\\label{tab:gpu_comparison}")
+        latex.append("\\begin{tabular}{lcccccc}")
+        latex.append("\\hline")
+        latex.append("Configuration & GPUs & Throughput & GPU Util. & GPU Memory & Temperature & Speedup \\\\")
+        latex.append("              &      & (series/s) & (avg/max \\%) & (avg/max GB) & (avg/max °C) & \\\\")
+        latex.append("\\hline")
+        
+        for exp in gpu_data:
+            server = exp['server_name']
+            gpus = exp['gpu_count']
+            
+            # Safe formatting for LaTeX
+            util_avg = exp['gpu_utilization_avg'] if exp['gpu_utilization_avg'] is not None else 0
+            util_max = exp['gpu_utilization_max'] if exp['gpu_utilization_max'] is not None else 0
+            mem_avg = (exp['gpu_memory_used_mb_avg'] or 0) / 1024
+            mem_max = (exp['gpu_memory_used_mb_max'] or 0) / 1024
+            temp_avg = exp['gpu_temperature_avg'] if exp['gpu_temperature_avg'] is not None else 0
+            temp_max = exp['gpu_temperature_max'] if exp['gpu_temperature_max'] is not None else 0
+            speedup = exp['speedup'] if exp['speedup'] is not None else 1.0
+
+            latex.append(
+                f"{server} ({gpus}GPU) & "
+                f"{gpus} & "
+                f"{exp['throughput']:.2f} & "
+                f"{util_avg:.1f}/{util_max:.1f} & "
+                f"{mem_avg:.1f}/{mem_max:.1f} & "
+                f"{temp_avg:.1f}/{temp_max:.1f} & "
+                f"{speedup:.2f}x \\\\"
+            )
+        
+        latex.append("\\hline")
+        latex.append("\\end{tabular}")
+        latex.append("\\end{table}")
+        
+        latex_str = "\n".join(latex)
+        
+        # Save LaTeX
+        latex_file = self.output_dir / 'gpu_comparison.tex'
+        with open(latex_file, 'w') as f:
+            f.write(latex_str)
+        print(f"✓ Saved: {latex_file}")
+        
+        print("\nGPU Comparison Table:")
+        print("=" * 120)
+        print(md_str)
+        print("=" * 120)
     
     def generate_latex_table(self):
         """Generate LaTeX table."""
@@ -375,27 +615,48 @@ class BenchmarkAnalyzer:
         print(f"Input: {self.metrics_file}")
         print(f"Output: {self.output_dir}")
         print(f"Experiments: {len(self.data)}")
+        
+        # Detect data type - check if this is segmentation (GPU) or preprocessing (CPU)
+        has_gpu = self._has_gpu_data()
+        is_preprocessing = any(exp['stage'] == 'preprocessing' for exp in self.data)
+        
+        print(f"Data type: {'GPU (segmentation)' if has_gpu else 'CPU (preprocessing)'}")
         print()
         
-        self.generate_plots()
-        self.generate_latex_table()
-        self.generate_markdown_table()
-        self.generate_summary_report()
+        # Generate appropriate analysis based on data type
+        if has_gpu:
+            # GPU analysis only
+            self.generate_gpu_dashboard()
+            self.generate_gpu_comparison_table()
+        elif is_preprocessing or not has_gpu:
+            # CPU analysis only
+            if self.baseline is None:
+                print("Warning: No baseline found, skipping analysis")
+                return
+            self.generate_plots()
+            self.generate_latex_table()
+            self.generate_markdown_table()
+            self.generate_summary_report()
         
         print(f"\n{'='*80}")
         print("ANALYSIS COMPLETE!")
         print(f"{'='*80}")
         print(f"\nAll results saved to: {self.output_dir}/")
+        
         print("\nGenerated files:")
-        print("  - speedup.png")
-        print("  - efficiency.png")
-        print("  - throughput.png")
-        print("  - combined.png")
-        print("  - cpu_utilization.png")
-        print("  - table.tex (LaTeX)")
-        print("  - table.md (Markdown)")
-        print("  - summary.json")
-        print("  - summary.txt")
+        if has_gpu:
+            print("  GPU Analysis:")
+            print("    - gpu_comparison_dashboard.png (2x2 plots)")
+            print("    - gpu_comparison.tex / gpu_comparison.md")
+        else:
+            print("  CPU Analysis:")
+            print("    - speedup.png")
+            print("    - efficiency.png")
+            print("    - throughput.png")
+            print("    - combined.png")
+            print("    - cpu_utilization.png")
+            print("    - table.tex / table.md")
+            print("    - summary.json / summary.txt")
 
 
 def main():
