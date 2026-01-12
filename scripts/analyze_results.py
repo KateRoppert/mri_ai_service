@@ -327,34 +327,66 @@ class BenchmarkAnalyzer:
         
         print("\nGenerating GPU comparison table...")
         
-        # Markdown table
-        md = []
-        md.append("## GPU Server Comparison\n")
-        md.append("| Configuration | GPUs | Throughput | GPU Util (avg/max) | GPU Memory (avg/max) | Temperature (avg/max) | Speedup |")
-        md.append("|---------------|------|------------|--------------------|-----------------------|-----------------------|---------|")
+        # Find slowest (baseline) for speedup calculation
+        slowest_time = max(exp['time_per_series'] for exp in gpu_data)
         
+        # Calculate speedup relative to slowest and prepare data
+        table_data = []
         for exp in gpu_data:
             server = exp['server_name']
             gpus = exp['gpu_count']
-            config = f"{server} ({gpus} GPU)" if gpus else server
+            time_per_series = exp['time_per_series']
             
-            # Safe formatting with None checks
+            # Speedup relative to slowest
+            speedup_rel = slowest_time / time_per_series
+            
+            # Time for 100 patients (assume 1 series per patient for segmentation)
+            time_for_100 = time_per_series * 100
+            
+            # Safe None handling for GPU metrics
             util_avg = exp['gpu_utilization_avg'] if exp['gpu_utilization_avg'] is not None else 0
             util_max = exp['gpu_utilization_max'] if exp['gpu_utilization_max'] is not None else 0
             mem_avg = (exp['gpu_memory_used_mb_avg'] or 0) / 1024
             mem_max = (exp['gpu_memory_used_mb_max'] or 0) / 1024
             temp_avg = exp['gpu_temperature_avg'] if exp['gpu_temperature_avg'] is not None else 0
             temp_max = exp['gpu_temperature_max'] if exp['gpu_temperature_max'] is not None else 0
-            speedup = exp['speedup'] if exp['speedup'] is not None else 1.0
-
+            
+            table_data.append({
+                'server': server,
+                'gpus': gpus,
+                'config': f"{server} ({gpus} GPU)" if gpus else server,
+                'time_per_series': time_per_series,
+                'time_for_100': time_for_100,
+                'speedup': speedup_rel,
+                'throughput': exp['throughput'],
+                'util_avg': util_avg,
+                'util_max': util_max,
+                'mem_avg': mem_avg,
+                'mem_max': mem_max,
+                'temp_avg': temp_avg,
+                'temp_max': temp_max
+            })
+        
+        # Sort by speedup (ascending) - slowest first
+        table_data.sort(key=lambda x: x['speedup'])
+        
+        # Markdown table
+        md = []
+        md.append("## GPU Server Comparison\n")
+        md.append("| Configuration | GPUs | Time/series (s) | Time for 100 (min) | Speedup | Throughput | GPU Util (avg/max) | GPU Memory (avg/max) | Temperature (avg/max) |")
+        md.append("|---------------|------|-----------------|--------------------|---------|-----------|--------------------|----------------------|-----------------------|")
+        
+        for row in table_data:
             md.append(
-                f"| {config} | "
-                f"{gpus} | "
-                f"{exp['throughput']:.2f} series/s | "
-                f"{util_avg:.1f}% / {util_max:.1f}% | "
-                f"{mem_avg:.1f}GB / {mem_max:.1f}GB | "
-                f"{temp_avg:.1f}°C / {temp_max:.1f}°C | "
-                f"**{speedup:.2f}x** |"
+                f"| {row['config']} | "
+                f"{row['gpus']} | "
+                f"{row['time_per_series']:.2f} | "
+                f"{row['time_for_100']/60:.1f} | "
+                f"**{row['speedup']:.2f}x** | "
+                f"{row['throughput']:.3f} series/s | "
+                f"{row['util_avg']:.1f}% / {row['util_max']:.1f}% | "
+                f"{row['mem_avg']:.1f}GB / {row['mem_max']:.1f}GB | "
+                f"{row['temp_avg']:.1f}°C / {row['temp_max']:.1f}°C |"
             )
         
         md_str = "\n".join(md)
@@ -371,33 +403,22 @@ class BenchmarkAnalyzer:
         latex.append("\\centering")
         latex.append("\\caption{GPU server performance comparison for MRI segmentation.}")
         latex.append("\\label{tab:gpu_comparison}")
-        latex.append("\\begin{tabular}{lcccccc}")
+        latex.append("\\begin{tabular}{lccccccc}")
         latex.append("\\hline")
-        latex.append("Configuration & GPUs & Throughput & GPU Util. & GPU Memory & Temperature & Speedup \\\\")
-        latex.append("              &      & (series/s) & (avg/max \\%) & (avg/max GB) & (avg/max °C) & \\\\")
+        latex.append("Configuration & GPUs & Time/series & Time for 100 & Speedup & GPU Util. & GPU Memory & Temperature \\\\")
+        latex.append("              &      & (s) & (min) & & (avg/max \\%) & (avg/max GB) & (avg/max °C) \\\\")
         latex.append("\\hline")
         
-        for exp in gpu_data:
-            server = exp['server_name']
-            gpus = exp['gpu_count']
-            
-            # Safe formatting for LaTeX
-            util_avg = exp['gpu_utilization_avg'] if exp['gpu_utilization_avg'] is not None else 0
-            util_max = exp['gpu_utilization_max'] if exp['gpu_utilization_max'] is not None else 0
-            mem_avg = (exp['gpu_memory_used_mb_avg'] or 0) / 1024
-            mem_max = (exp['gpu_memory_used_mb_max'] or 0) / 1024
-            temp_avg = exp['gpu_temperature_avg'] if exp['gpu_temperature_avg'] is not None else 0
-            temp_max = exp['gpu_temperature_max'] if exp['gpu_temperature_max'] is not None else 0
-            speedup = exp['speedup'] if exp['speedup'] is not None else 1.0
-
+        for row in table_data:
             latex.append(
-                f"{server} ({gpus}GPU) & "
-                f"{gpus} & "
-                f"{exp['throughput']:.2f} & "
-                f"{util_avg:.1f}/{util_max:.1f} & "
-                f"{mem_avg:.1f}/{mem_max:.1f} & "
-                f"{temp_avg:.1f}/{temp_max:.1f} & "
-                f"{speedup:.2f}x \\\\"
+                f"{row['server']} ({row['gpus']}GPU) & "
+                f"{row['gpus']} & "
+                f"{row['time_per_series']:.2f} & "
+                f"{row['time_for_100']/60:.1f} & "
+                f"\\textbf{{{row['speedup']:.2f}x}} & "
+                f"{row['util_avg']:.1f}/{row['util_max']:.1f} & "
+                f"{row['mem_avg']:.1f}/{row['mem_max']:.1f} & "
+                f"{row['temp_avg']:.1f}/{row['temp_max']:.1f} \\\\"
             )
         
         latex.append("\\hline")
@@ -413,9 +434,9 @@ class BenchmarkAnalyzer:
         print(f"✓ Saved: {latex_file}")
         
         print("\nGPU Comparison Table:")
-        print("=" * 120)
+        print("=" * 160)
         print(md_str)
-        print("=" * 120)
+        print("=" * 160)
     
     def generate_latex_table(self):
         """Generate LaTeX table."""
