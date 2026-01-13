@@ -77,10 +77,10 @@ stages:
     script: scripts/04_assess_quality.py
     args:
       config: configs/quality_config.yaml
-      input_format: bids
+      input-format: bids
       mode: parallel
       workers: 12
-      skip_existing: true
+      skip-existing: true
       force: false
       benchmark: true
       max_subjects: null
@@ -93,7 +93,7 @@ stages:
       config: configs/preprocessing_config.yaml
       mode: parallel
       workers: 14
-      skip_existing: true
+      skip-existing: true
       benchmark: true
       validate: true
       max_subjects: null
@@ -104,9 +104,9 @@ stages:
     script: scripts/06_segmentation.py
     args:
       config: configs/segmentation_config.yaml
-      console_log_level: INFO
-      max_concurrent: 2
-      skip_existing: true
+      console-log-level: INFO
+      max-concurrent: 2
+      skip-existing: true
       benchmark: true
       validate: true
       server_name: null
