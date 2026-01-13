@@ -572,13 +572,13 @@ class QualityAssessor:
             # Limit to first N subjects
             unique_patients = []
             filtered_images = []
-            for nifti_path, patient_id, modality in images:
+            for nifti_path, patient_id, session_id, modality in images:
                 if patient_id not in unique_patients:
                     if len(unique_patients) >= max_subjects:
                         break
                     unique_patients.append(patient_id)
                 if patient_id in unique_patients:
-                    filtered_images.append((nifti_path, patient_id, modality))
+                    filtered_images.append((nifti_path, patient_id, session_id, modality))
             images = filtered_images
             self.logger.info(f"Limited to first {max_subjects} subjects")
         
