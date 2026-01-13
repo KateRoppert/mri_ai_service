@@ -28,9 +28,6 @@ class ExperimentMetrics:
     # ========================================================================
     experiment_id: str
     timestamp: str
-    stage: str  # "preprocessing", "segmentation", etc.
-    parallelism_type: str  # "cpu_workers" or "gpu_concurrent"
-    parallelism_level: int  # number of workers or max_concurrent requests
     total_series: int
     successful: int
     failed: int
@@ -42,12 +39,17 @@ class ExperimentMetrics:
     # ========================================================================
     # OPTIONAL FIELDS (with defaults) - must come after required fields!
     # ========================================================================
-    # GPU-specific parameters
-    server_name: Optional[str] = None  # "barguzin", "cube", "tunka"
-    gpu_count: Optional[int] = None  # number of GPUs on server
-    gpu_ids: Optional[str] = None  # e.g., "0,1,2"
+    # New universal fields
+    stage: Optional[str] = None  # ← Теперь опциональное
+    parallelism_type: Optional[str] = None  # ← Теперь опциональное
+    parallelism_level: Optional[int] = None  # ← Теперь опциональное
     
-    # Legacy parameters (for backward compatibility with preprocessing)
+    # GPU-specific parameters
+    server_name: Optional[str] = None
+    gpu_count: Optional[int] = None
+    gpu_ids: Optional[str] = None
+    
+    # Legacy parameters (for backward compatibility)
     mode: Optional[str] = None  # "sequential" or "parallel"
     workers: Optional[int] = None  # number of CPU workers
     
@@ -57,17 +59,30 @@ class ExperimentMetrics:
     memory_avg_mb: Optional[float] = None
     memory_peak_mb: Optional[float] = None
 
-    # GPU metrics (from server-side monitoring)
-    gpu_utilization_avg: Optional[float] = None  # average GPU usage (%)
-    gpu_utilization_max: Optional[float] = None  # peak GPU usage (%)
-    gpu_memory_used_mb_avg: Optional[float] = None  # average GPU memory (MB)
-    gpu_memory_used_mb_max: Optional[float] = None  # peak GPU memory (MB)
-    gpu_temperature_avg: Optional[float] = None  # average temperature (°C)
-    gpu_temperature_max: Optional[float] = None  # peak temperature (°C)
+    # GPU metrics
+    gpu_utilization_avg: Optional[float] = None
+    gpu_utilization_max: Optional[float] = None
+    gpu_memory_used_mb_avg: Optional[float] = None
+    gpu_memory_used_mb_max: Optional[float] = None
+    gpu_temperature_avg: Optional[float] = None
+    gpu_temperature_max: Optional[float] = None
     
     # Comparative metrics
-    speedup: Optional[float] = None  # vs baseline
-    efficiency: Optional[float] = None  # speedup / parallelism_level
+    speedup: Optional[float] = None
+    efficiency: Optional[float] = None
+    
+    def __post_init__(self):
+        """Auto-fill new fields from legacy fields for backward compatibility."""
+        # Если новые поля не заданы, заполняем из старых
+        if self.stage is None:
+            self.stage = "unknown"  # Дефолтное значение
+        
+        if self.parallelism_type is None:
+            self.parallelism_type = "cpu_workers"  # По умолчанию CPU
+        
+        if self.parallelism_level is None:
+            # Берем из workers если есть
+            self.parallelism_level = self.workers if self.workers else 1
     
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
