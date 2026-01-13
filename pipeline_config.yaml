@@ -1,0 +1,131 @@
+# ============================================
+# MASTER PIPELINE CONFIGURATION
+# ============================================
+
+# Общие настройки
+general:
+  root_input_dir: /mnt/datastorage/nbia/nbia/manifest-1669766397961/UPENN-GBM
+  root_output_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3
+  max_subjects: 3                    # null = все субъекты, или число для теста
+  skip_existing: true                   # Глобальное возобновление прерванной работы
+  benchmark_results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results
+
+# Структура поддиректорий внутри root_output_dir
+output_structure:
+  stage_01: bids_organized
+  stage_02: metadata
+  stage_03: nifti
+  stage_04: quality_reports
+  stage_05_data: preprocessed
+  stage_05_transforms: preprocessing_transforms
+  stage_06: segmentation
+  logs: logs
+  reports: reports
+
+# Параллельное выполнение этапов (по умолчанию выключено)
+parallel_stages:
+  enabled: false
+  groups:
+    - [2, 3]  # Этапы 2 и 3 могут выполняться параллельно
+
+# ============================================
+# КОНФИГУРАЦИЯ ЭТАПОВ
+# ============================================
+
+stages:
+  stage_01_reorganize:
+    enabled: true
+    script: scripts/01_reorganize_folders.py
+    args:
+      mode: parallel
+      workers: 18
+      dry_run: false
+      force: false
+      benchmark: true
+      batch_size: null
+      max_subjects: null
+      validate: false  # Пока не реализовано
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_01
+
+  stage_02_metadata:
+    enabled: true
+    script: scripts/02_extract_metadata.py
+    args:
+      config: configs/dicom_tags.yaml
+      mode: parallel 
+      workers: 14
+      force: false
+      benchmark: true
+      max_subjects: null
+      validate: false  # Пока не реализовано
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_02
+
+  stage_03_convert:
+    enabled: true
+    script: scripts/03_convert_to_nifti.py
+    args:
+      mode: parallel
+      workers: 14
+      force: false
+      benchmark: true
+      max_subjects: null
+      validate: false  # Пока не реализовано
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_03
+
+  stage_04_quality:
+    enabled: true
+    script: scripts/04_assess_quality.py
+    args:
+      config: configs/quality_config.yaml
+      input_format: bids
+      mode: parallel
+      workers: 12
+      skip_existing: true
+      force: false
+      benchmark: true
+      max_subjects: null
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_04
+
+  stage_05_preprocessing:
+    enabled: true
+    script: scripts/05_preprocessing.py
+    args:
+      config: configs/preprocessing_config.yaml
+      mode: parallel
+      workers: 14
+      skip_existing: true
+      benchmark: true
+      validate: true
+      max_subjects: null
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_05
+
+  stage_06_segmentation:
+    enabled: true
+    script: scripts/06_segmentation.py
+    args:
+      config: configs/segmentation_config.yaml
+      console_log_level: INFO
+      max_concurrent: 2
+      skip_existing: true
+      benchmark: true
+      validate: true
+      server_name: null
+      gpu_count: null
+      gpu_ids: null
+      max_subjects: null
+      results-dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_06
+
+# ============================================
+# НАСТРОЙКИ ОТЧЕТНОСТИ
+# ============================================
+reporting:
+  enabled: true
+  formats:
+    - json
+    - html
+    - txt
+  include:
+    - timing
+    - throughput
+    - errors
+    - completion
