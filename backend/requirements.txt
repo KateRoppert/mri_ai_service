@@ -1,0 +1,22 @@
+# FastAPI и сервер
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Валидация данных
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Работа с YAML конфигами
+pyyaml==6.0.1
+
+# База данных
+sqlalchemy==2.0.23
+
+# Для загрузки файлов
+python-multipart==0.0.6
+
+# WebSocket
+websockets==12.0
+
+# Дополнительно
+python-dateutil==2.8.2
