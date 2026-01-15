@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: Optional[Path] = None
     
+    # Отладка
+    keep_runtime_configs: bool = False  # Если True, runtime конфиги не удаляются
+    
     # Названия этапов на русском
     stage_names_ru: dict[int, str] = {
         1: "Стандартизация файловой структуры",

@@ -54,6 +54,17 @@ class PipelineManager:
         config['general']['root_input_dir'] = input_path
         config['general']['root_output_dir'] = output_path
         
+        # ВАЖНО: Преобразуем относительные пути к скриптам в абсолютные
+        # Иначе они будут искаться относительно runtime_configs директории
+        for stage_name, stage_config in config.get('stages', {}).items():
+            if 'script' in stage_config:
+                script_path = stage_config['script']
+                # Если путь относительный, делаем его абсолютным
+                if not Path(script_path).is_absolute():
+                    absolute_script_path = self.pipeline_root / script_path
+                    stage_config['script'] = str(absolute_script_path)
+                    logger.debug(f"Преобразован путь скрипта {stage_name}: {script_path} -> {absolute_script_path}")
+        
         # Создаём директорию для runtime конфигов
         runtime_configs_dir = self.pipeline_root / "runtime_configs"
         runtime_configs_dir.mkdir(exist_ok=True)
@@ -290,13 +301,19 @@ class PipelineManager:
             logger.error(f"Ошибка чтения отчёта о качестве: {e}")
             return None
     
-    def cleanup_runtime_config(self, run_id: str):
+    def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
         """
         Удаляет runtime конфиг после завершения
         
         Args:
             run_id: ID запуска
+            keep_for_debug: Если True, конфиг не удаляется (для отладки)
         """
+        if keep_for_debug:
+            config_path = self.pipeline_root / "runtime_configs" / f"config_{run_id}.yaml"
+            logger.info(f"Runtime конфиг сохранён для отладки: {config_path}")
+            return
+            
         config_path = self.pipeline_root / "runtime_configs" / f"config_{run_id}.yaml"
         if config_path.exists():
             try:
