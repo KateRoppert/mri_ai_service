@@ -1,0 +1,152 @@
+"""
+Pydantic модели для API
+"""
+
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List
+from datetime import datetime
+from enum import Enum
+
+
+class PipelineStatus(str, Enum):
+    """Статусы выполнения pipeline"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class QualityCategory(str, Enum):
+    """Категории качества изображения"""
+    GOOD = "GOOD"
+    ACCEPTABLE = "ACCEPTABLE"
+    FAIR = "FAIR"
+    POOR = "POOR"
+    BAD = "BAD"
+
+
+# ============================================
+# МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
+# ============================================
+
+class PipelineStartRequest(BaseModel):
+    """Запрос на запуск pipeline"""
+    input_path: str = Field(
+        ..., 
+        description="Путь к директории с DICOM данными",
+        min_length=1
+    )
+    output_path: Optional[str] = Field(
+        None, 
+        description="Путь для сохранения результатов (опционально)"
+    )
+    use_default_output: bool = Field(
+        False, 
+        description="Использовать путь по умолчанию для результатов"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "input_path": "/data/dicom/patient_001",
+                "output_path": "/data/results/patient_001",
+                "use_default_output": False
+            }
+        }
+    )
+
+
+class PipelineStartResponse(BaseModel):
+    """Ответ на запуск pipeline"""
+    run_id: str = Field(..., description="Уникальный ID запуска")
+    status: PipelineStatus = Field(..., description="Текущий статус")
+    message: str = Field(..., description="Информационное сообщение")
+    created_at: datetime = Field(..., description="Время создания задачи")
+
+
+# ============================================
+# МОДЕЛИ ДЛЯ СТАТУСА ВЫПОЛНЕНИЯ
+# ============================================
+
+class StageProgress(BaseModel):
+    """Прогресс выполнения одного этапа"""
+    stage_number: int = Field(..., ge=1, le=6, description="Номер этапа (1-6)")
+    stage_name: str = Field(..., description="Название этапа на русском")
+    status: str = Field(..., description="Статус: pending/running/completed/failed")
+    progress: float = Field(0.0, ge=0.0, le=100.0, description="Прогресс в процентах")
+    started_at: Optional[datetime] = Field(None, description="Время начала этапа")
+    completed_at: Optional[datetime] = Field(None, description="Время завершения этапа")
+    error: Optional[str] = Field(None, description="Сообщение об ошибке (если есть)")
+
+
+class PipelineStatusResponse(BaseModel):
+    """Ответ с текущим статусом pipeline"""
+    run_id: str = Field(..., description="ID запуска")
+    status: PipelineStatus = Field(..., description="Общий статус pipeline")
+    current_stage: Optional[int] = Field(None, description="Номер текущего этапа (1-6)")
+    overall_progress: float = Field(0.0, ge=0.0, le=100.0, description="Общий прогресс")
+    stages: List[StageProgress] = Field(default_factory=list, description="Детали по каждому этапу")
+    created_at: datetime = Field(..., description="Время запуска")
+    completed_at: Optional[datetime] = Field(None, description="Время завершения")
+    error: Optional[str] = Field(None, description="Сообщение об ошибке")
+
+
+# ============================================
+# МОДЕЛИ ДЛЯ ОТЧЁТА О КАЧЕСТВЕ
+# ============================================
+
+class QualityMetrics(BaseModel):
+    """Метрики качества изображения"""
+    snr: float = Field(..., description="Signal-to-Noise Ratio")
+    cnr: float = Field(..., description="Contrast-to-Noise Ratio")
+    efc: float = Field(..., description="Entropy Focus Criterion")
+    fber: float = Field(..., description="Foreground-Background Energy Ratio")
+    gradient_sharpness: float = Field(..., description="Gradient Sharpness")
+    voxel_anisotropy: float = Field(..., description="Voxel Anisotropy")
+    intensity_variance: float = Field(..., description="Intensity Variance")
+    coefficient_of_variation: float = Field(..., description="Coefficient of Variation")
+
+
+class QualityReportResponse(BaseModel):
+    """Отчёт о качестве изображения"""
+    file: str = Field(..., description="Имя файла")
+    patient_id: str = Field(..., description="ID пациента")
+    modality: str = Field(..., description="Модальность (t1, t2, flair и т.д.)")
+    quality_score: float = Field(..., ge=0.0, le=100.0, description="Общая оценка качества")
+    quality_category: QualityCategory = Field(..., description="Категория качества")
+    quality_category_ru: str = Field(..., description="Категория качества на русском")
+    metrics: QualityMetrics = Field(..., description="Подробные метрики")
+
+
+# ============================================
+# МОДЕЛИ ДЛЯ ИСТОРИИ ЗАПУСКОВ
+# ============================================
+
+class PipelineRunHistoryItem(BaseModel):
+    """Элемент истории запусков"""
+    run_id: str = Field(..., description="ID запуска")
+    input_path: str = Field(..., description="Путь к входным данным")
+    output_path: str = Field(..., description="Путь к результатам")
+    status: PipelineStatus = Field(..., description="Статус выполнения")
+    quality_score: Optional[float] = Field(None, description="Оценка качества")
+    quality_category: Optional[str] = Field(None, description="Категория качества")
+    created_at: datetime = Field(..., description="Время запуска")
+    completed_at: Optional[datetime] = Field(None, description="Время завершения")
+    duration_seconds: Optional[int] = Field(None, description="Длительность в секундах")
+
+
+class PipelineHistoryResponse(BaseModel):
+    """Список истории запусков"""
+    total: int = Field(..., description="Общее количество запусков")
+    runs: List[PipelineRunHistoryItem] = Field(..., description="Список запусков")
+
+
+# ============================================
+# СЛУЖЕБНЫЕ МОДЕЛИ
+# ============================================
+
+class HealthCheckResponse(BaseModel):
+    """Ответ health check"""
+    status: str = Field("ok", description="Статус сервиса")
+    timestamp: datetime = Field(..., description="Текущее время сервера")
+    version: str = Field(..., description="Версия API")
