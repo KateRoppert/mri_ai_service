@@ -2,6 +2,7 @@
 Основное FastAPI приложение
 """
 
+import asyncio
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -36,6 +37,8 @@ from database import (
     update_stage_execution,
     get_pipeline_history
 )
+from websocket_manager import ws_manager
+from pipeline_monitor import pipeline_monitor
 from pipeline_manager import PipelineManager
 
 # Настройка логирования
@@ -106,6 +109,9 @@ def run_pipeline_background(
     
     # Обновляем статус на "running"
     update_pipeline_run(db, run_id, status="running", started_at=datetime.utcnow())
+
+    # Запускаем мониторинг через WebSocket
+    asyncio.create_task(pipeline_monitor.start_monitoring(run_id, output_path))
     
     # Запускаем pipeline
     process = pipeline_manager.start_pipeline(run_id, input_path, output_path)
@@ -196,6 +202,12 @@ def run_pipeline_background(
         )
     
     finally:
+        # Останавливаем мониторинг
+        try:
+            await pipeline_monitor.stop_monitoring(run_id)
+        except Exception as e:
+            logger.error(f"Ошибка остановки мониторинга: {e}")
+        
         # Очистка runtime конфига (с учётом настройки отладки)
         pipeline_manager.cleanup_runtime_config(run_id, keep_for_debug=settings.keep_runtime_configs)
 
@@ -424,6 +436,42 @@ async def get_quality_report(
         quality_category_ru=quality_data['quality_category_ru'],
         metrics=QualityMetrics(**quality_data['metrics'])
     )
+
+@app.websocket("/ws/pipeline/{run_id}")
+async def websocket_endpoint(websocket: WebSocket, run_id: str):
+    """
+    WebSocket endpoint для real-time обновлений прогресса pipeline
+    
+    Args:
+        websocket: WebSocket соединение
+        run_id: ID запуска pipeline
+    """
+    await ws_manager.connect(run_id, websocket)
+    
+    try:
+        # Отправляем приветственное сообщение
+        await websocket.send_json({
+            "type": "connected",
+            "run_id": run_id,
+            "message": "Подключено к мониторингу pipeline"
+        })
+        
+        # Держим соединение открытым
+        while True:
+            # Ждём сообщения от клиента (ping для keep-alive)
+            data = await websocket.receive_text()
+            
+            if data == "ping":
+                await websocket.send_json({"type": "pong"})
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket отключён для run_id: {run_id}")
+    
+    except Exception as e:
+        logger.error(f"Ошибка WebSocket для run_id {run_id}: {e}")
+    
+    finally:
+        ws_manager.disconnect(run_id, websocket)
 
 
 # ============================================
