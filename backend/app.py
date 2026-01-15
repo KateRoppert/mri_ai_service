@@ -109,9 +109,6 @@ def run_pipeline_background(
     
     # Обновляем статус на "running"
     update_pipeline_run(db, run_id, status="running", started_at=datetime.utcnow())
-
-    # Запускаем мониторинг через WebSocket
-    asyncio.create_task(pipeline_monitor.start_monitoring(run_id, output_path))
     
     # Запускаем pipeline
     process = pipeline_manager.start_pipeline(run_id, input_path, output_path)
@@ -272,7 +269,10 @@ async def start_pipeline(
         run.output_path,
         db
     )
-    
+
+    # Запускаем мониторинг (из асинхронного контекста)
+    asyncio.create_task(pipeline_monitor.start_monitoring(run.run_id, run.output_path))
+
     logger.info(f"Pipeline запущен с run_id: {run.run_id}")
     
     return PipelineStartResponse(
