@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from pathlib import Path
+from contextlib import asynccontextmanager
 import logging
 import subprocess
 import uvicorn
@@ -45,11 +46,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Создаём приложение
+
+# Lifespan context manager для инициализации/завершения
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Управление жизненным циклом приложения"""
+    # Startup
+    logger.info(f"Запуск {settings.app_name} v{settings.app_version}")
+    init_db()
+    logger.info("База данных инициализирована")
+    
+    yield
+    
+    # Shutdown (если нужно что-то делать при завершении)
+    logger.info("Завершение работы приложения")
+
+
+# Создаём приложение с lifespan
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="API для веб-интерфейса AI-сервиса распознавания поражений головного мозга"
+    description="API для веб-интерфейса AI-сервиса распознавания поражений головного мозга",
+    lifespan=lifespan
 )
 
 # Настройка CORS
@@ -60,14 +78,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Инициализация базы данных при старте
-@app.on_event("startup")
-async def startup_event():
-    """Инициализация при запуске приложения"""
-    logger.info(f"Запуск {settings.app_name} v{settings.app_version}")
-    init_db()
-    logger.info("База данных инициализирована")
 
 # Создаём экземпляр менеджера pipeline
 pipeline_manager = PipelineManager()
@@ -143,6 +153,13 @@ def run_pipeline_background(
         else:
             # Ошибка выполнения
             logger.error(f"Pipeline завершился с ошибкой для run_id: {run_id}, код: {return_code}")
+            
+            # Логируем полный stderr для отладки
+            if stderr:
+                logger.error(f"STDERR от pipeline:\n{stderr}")
+            if stdout:
+                logger.info(f"STDOUT от pipeline:\n{stdout}")
+            
             error_msg = stderr[-500:] if stderr else "Неизвестная ошибка"
             
             update_pipeline_run(
@@ -179,8 +196,8 @@ def run_pipeline_background(
         )
     
     finally:
-        # Очистка runtime конфига
-        pipeline_manager.cleanup_runtime_config(run_id)
+        # Очистка runtime конфига (с учётом настройки отладки)
+        pipeline_manager.cleanup_runtime_config(run_id, keep_for_debug=settings.keep_runtime_configs)
 
 
 # ============================================
