@@ -276,7 +276,6 @@ def create_output_directories(config: Dict[str, Any]) -> None:
         root_output / output_struct['stage_03'],
         root_output / output_struct['stage_04'],
         root_output / output_struct['stage_05_data'],
-        root_output / output_struct['stage_05_transforms'],
         root_output / output_struct['stage_06'],
         root_output / output_struct['logs'],
         root_output / output_struct['logs'] / 'stages',
