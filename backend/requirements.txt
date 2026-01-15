@@ -18,5 +18,8 @@ python-multipart==0.0.6
 # WebSocket
 websockets==12.0
 
+# Async support
+asyncio-compat==0.1.1  # Для совместимости
+
 # Дополнительно
 python-dateutil==2.8.2
