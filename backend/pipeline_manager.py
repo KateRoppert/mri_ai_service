@@ -229,30 +229,34 @@ class PipelineManager:
             for line in lines:
                 # Ищем маркеры начала/завершения этапов
                 
-                # [stage_01] STARTED
+                # [stage_01_reorganize] STARTED
                 if "[stage_" in line and "STARTED" in line:
                     try:
-                        # Извлекаем номер этапа: [stage_01] -> 1
-                        stage_str = line.split("[stage_")[1].split("]")[0]
-                        stage_num = int(stage_str.replace("stage_", "").replace("_", ""))
+                        # Извлекаем номер этапа: [stage_01_reorganize] -> 1
+                        stage_part = line.split("[stage_")[1].split("]")[0]
+                        # Берём первые 2 символа после "stage_" как номер (01, 02, и т.д.)
+                        stage_num_str = stage_part.split("_")[0]  # "01_reorganize" -> "01"
+                        stage_num = int(stage_num_str)  # "01" -> 1
                         stages_status[stage_num] = {"status": "running", "progress": 50.0}
                     except (ValueError, IndexError) as e:
                         logger.warning(f"Не удалось распарсить номер этапа из строки: {line.strip()}")
                 
-                # [stage_01] SUCCESS
+                # [stage_01_reorganize] SUCCESS
                 elif "[stage_" in line and "SUCCESS" in line:
                     try:
-                        stage_str = line.split("[stage_")[1].split("]")[0]
-                        stage_num = int(stage_str.replace("stage_", "").replace("_", ""))
+                        stage_part = line.split("[stage_")[1].split("]")[0]
+                        stage_num_str = stage_part.split("_")[0]  # "01_reorganize" -> "01"
+                        stage_num = int(stage_num_str)
                         stages_status[stage_num] = {"status": "completed", "progress": 100.0}
                     except (ValueError, IndexError) as e:
                         logger.warning(f"Не удалось распарсить номер этапа из строки: {line.strip()}")
                 
-                # [stage_01] FAILED
+                # [stage_01_reorganize] FAILED
                 elif "[stage_" in line and "FAILED" in line:
                     try:
-                        stage_str = line.split("[stage_")[1].split("]")[0]
-                        stage_num = int(stage_str.replace("stage_", "").replace("_", ""))
+                        stage_part = line.split("[stage_")[1].split("]")[0]
+                        stage_num_str = stage_part.split("_")[0]  # "01_reorganize" -> "01"
+                        stage_num = int(stage_num_str)
                         stages_status[stage_num] = {"status": "failed", "progress": 0.0}
                     except (ValueError, IndexError) as e:
                         logger.warning(f"Не удалось распарсить номер этапа из строки: {line.strip()}")
