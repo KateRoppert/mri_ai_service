@@ -202,11 +202,8 @@ def run_pipeline_background(
         )
     
     finally:
-        # Останавливаем мониторинг
-        try:
-            await pipeline_monitor.stop_monitoring(run_id)
-        except Exception as e:
-            logger.error(f"Ошибка остановки мониторинга: {e}")
+        # Мониторинг остановится автоматически когда pipeline завершится
+        # (проверка статуса в _monitor_loop)
         
         # Очистка runtime конфига (с учётом настройки отладки)
         pipeline_manager.cleanup_runtime_config(run_id, keep_for_debug=settings.keep_runtime_configs)
