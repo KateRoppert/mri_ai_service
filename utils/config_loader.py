@@ -93,7 +93,7 @@ def _validate_general_section(general: Dict[str, Any]) -> None:
 def _validate_output_structure(output_structure: Dict[str, str]) -> None:
     """Валидация секции output_structure."""
     required_keys = ['stage_01', 'stage_02', 'stage_03', 'stage_04', 
-                     'stage_05_data', 'stage_05_transforms', 'stage_06', 
+                     'stage_05_data', 'stage_06', 
                      'logs', 'reports']
     
     for key in required_keys:
