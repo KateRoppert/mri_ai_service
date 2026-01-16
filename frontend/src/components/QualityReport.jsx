@@ -1,7 +1,7 @@
 /**
- * Модальное окно с детальным отчётом о качестве изображения
+ * Модальное окно с детальными отчётами о качестве всех обработанных файлов
  */
-import { Modal, Descriptions, Tag, Space, Alert, Spin } from 'antd';
+import { Modal, Collapse, Tag, Space, Alert, Spin, Statistic, Row, Col } from 'antd';
 import { 
   CheckCircleOutlined, 
   WarningOutlined, 
@@ -13,7 +13,8 @@ import { getQualityReport } from '../services/api';
 
 const QualityReport = ({ runId, visible, onClose }) => {
   const [loading, setLoading] = useState(false);
-  const [report, setReport] = useState(null);
+  const [reports, setReports] = useState([]);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState(null);
 
   /**
@@ -21,23 +22,24 @@ const QualityReport = ({ runId, visible, onClose }) => {
    */
   useEffect(() => {
     if (visible && runId) {
-      fetchReport();
+      fetchReports();
     }
   }, [visible, runId]);
 
   /**
-   * Получить отчёт о качестве через API
+   * Получить отчёты о качестве через API
    */
-  const fetchReport = async () => {
+  const fetchReports = async () => {
     setLoading(true);
     setError(null);
     
     try {
       const data = await getQualityReport(runId);
-      setReport(data);
+      setReports(data.reports || []);
+      setTotal(data.total || 0);
     } catch (err) {
-      console.error('Ошибка загрузки отчёта:', err);
-      setError('Не удалось загрузить отчёт о качестве');
+      console.error('Ошибка загрузки отчётов:', err);
+      setError('Не удалось загрузить отчёты о качестве');
     } finally {
       setLoading(false);
     }
@@ -87,29 +89,104 @@ const QualityReport = ({ runId, visible, onClose }) => {
     return value;
   };
 
-  if (!report && !loading && !error) {
-    return null;
-  }
+  /**
+   * Создаём элементы Collapse для каждого отчёта
+   */
+  const collapseItems = reports.map((report, index) => {
+    const qualityConfig = getQualityConfig(report.quality_category);
+    
+    return {
+      key: index.toString(),
+      label: (
+        <Space>
+          <strong>{report.file}</strong>
+          <Tag color={qualityConfig.color} icon={qualityConfig.icon}>
+            {qualityConfig.text} ({report.quality_score.toFixed(1)}/100)
+          </Tag>
+        </Space>
+      ),
+      children: (
+        <div>
+          {/* Основная информация */}
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col span={8}>
+              <Statistic 
+                title="Общая оценка" 
+                value={report.quality_score.toFixed(2)} 
+                suffix="/ 100"
+              />
+            </Col>
+            <Col span={8}>
+              <Statistic title="ID пациента" value={report.patient_id} />
+            </Col>
+            <Col span={8}>
+              <Statistic title="Модальность" value={report.modality.toUpperCase()} />
+            </Col>
+          </Row>
 
-  const qualityConfig = report ? getQualityConfig(report.quality_category) : null;
+          {/* Метрики в компактном виде */}
+          <div style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
+            <Row gutter={[16, 8]}>
+              <Col span={12}>
+                <strong>SNR:</strong> {formatMetric(report.metrics.snr)}
+                <span style={{ marginLeft: 4, color: '#999', fontSize: 12 }}>
+                  (Сигнал/шум)
+                </span>
+              </Col>
+              <Col span={12}>
+                <strong>CNR:</strong> {formatMetric(report.metrics.cnr)}
+                <span style={{ marginLeft: 4, color: '#999', fontSize: 12 }}>
+                  (Контраст/шум)
+                </span>
+              </Col>
+              <Col span={12}>
+                <strong>EFC:</strong> {formatMetric(report.metrics.efc)}
+                <span style={{ marginLeft: 4, color: '#999', fontSize: 12 }}>
+                  (Фокусировка)
+                </span>
+              </Col>
+              <Col span={12}>
+                <strong>FBER:</strong> {formatMetric(report.metrics.fber)}
+                <span style={{ marginLeft: 4, color: '#999', fontSize: 12 }}>
+                  (Передний/задний фон)
+                </span>
+              </Col>
+              <Col span={12}>
+                <strong>Резкость:</strong> {formatMetric(report.metrics.gradient_sharpness)}
+              </Col>
+              <Col span={12}>
+                <strong>Анизотропия:</strong> {formatMetric(report.metrics.voxel_anisotropy)}
+              </Col>
+              <Col span={12}>
+                <strong>Дисперсия:</strong> {formatMetric(report.metrics.intensity_variance)}
+              </Col>
+              <Col span={12}>
+                <strong>Коэф. вариации:</strong> {formatMetric(report.metrics.coefficient_of_variation)}
+              </Col>
+            </Row>
+          </div>
+        </div>
+      ),
+    };
+  });
 
   return (
     <Modal
       title={
         <Space>
           <FileTextOutlined />
-          <span>Отчёт о качестве изображения</span>
+          <span>Отчёты о качестве изображений ({total})</span>
         </Space>
       }
       open={visible}
       onCancel={onClose}
-      width={800}
+      width={900}
       footer={null}
     >
       {loading && (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
           <Spin size="large" />
-          <p style={{ marginTop: 16 }}>Загрузка отчёта...</p>
+          <p style={{ marginTop: 16 }}>Загрузка отчётов...</p>
         </div>
       )}
 
@@ -122,113 +199,18 @@ const QualityReport = ({ runId, visible, onClose }) => {
         />
       )}
 
-      {report && !loading && (
+      {reports.length > 0 && !loading && (
         <>
-          {/* Общая оценка качества */}
-          <div style={{ marginBottom: 24, textAlign: 'center' }}>
-            <Space direction="vertical" size="small">
-              <Tag 
-                color={qualityConfig.color} 
-                icon={qualityConfig.icon}
-                style={{ fontSize: 16, padding: '8px 16px' }}
-              >
-                {qualityConfig.text}
-              </Tag>
-              <div style={{ fontSize: 24, fontWeight: 'bold' }}>
-                {report.quality_score.toFixed(2)} / 100
-              </div>
-            </Space>
-          </div>
-
-          {/* Информация о файле */}
-          <Descriptions 
-            title="Информация о данных" 
-            bordered 
-            column={2}
-            size="small"
-            style={{ marginBottom: 24 }}
-          >
-            <Descriptions.Item label="Файл" span={2}>
-              {report.file}
-            </Descriptions.Item>
-            <Descriptions.Item label="ID пациента">
-              {report.patient_id}
-            </Descriptions.Item>
-            <Descriptions.Item label="Модальность">
-              {report.modality.toUpperCase()}
-            </Descriptions.Item>
-          </Descriptions>
-
-          {/* Детальные метрики */}
-          <Descriptions 
-            title="Детальные метрики качества" 
-            bordered 
-            column={1}
-            size="small"
-          >
-            <Descriptions.Item label="SNR (Signal-to-Noise Ratio)">
-              <strong>{formatMetric(report.metrics.snr)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Отношение сигнал/шум
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="CNR (Contrast-to-Noise Ratio)">
-              <strong>{formatMetric(report.metrics.cnr)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Контраст к шуму
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="EFC (Entropy Focus Criterion)">
-              <strong>{formatMetric(report.metrics.efc)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Критерий энтропийной фокусировки
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="FBER (Foreground-Background Energy Ratio)">
-              <strong>{formatMetric(report.metrics.fber)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Отношение энергии переднего и заднего фона
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="Gradient Sharpness">
-              <strong>{formatMetric(report.metrics.gradient_sharpness)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Резкость градиента
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="Voxel Anisotropy">
-              <strong>{formatMetric(report.metrics.voxel_anisotropy)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Анизотропия вокселя
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="Intensity Variance">
-              <strong>{formatMetric(report.metrics.intensity_variance)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Дисперсия интенсивности
-              </span>
-            </Descriptions.Item>
-
-            <Descriptions.Item label="Coefficient of Variation">
-              <strong>{formatMetric(report.metrics.coefficient_of_variation)}</strong>
-              <span style={{ marginLeft: 8, color: '#999' }}>
-                Коэффициент вариации
-              </span>
-            </Descriptions.Item>
-          </Descriptions>
-
-          {/* Пояснение */}
           <Alert
             type="info"
             showIcon
-            style={{ marginTop: 16 }}
-            description="Эти метрики характеризуют техническое качество МРТ изображения. Более высокое качество обеспечивает более точную сегментацию поражений."
+            style={{ marginBottom: 16 }}
+            description={`Обработано ${total} файлов. Раскройте каждый для просмотра детальных метрик качества.`}
+          />
+          
+          <Collapse 
+            items={collapseItems}
+            defaultActiveKey={['0']}  // Первый отчёт раскрыт по умолчанию
           />
         </>
       )}
