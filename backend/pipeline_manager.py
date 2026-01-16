@@ -290,39 +290,44 @@ class PipelineManager:
     
     def get_quality_report(self, output_path: str) -> Optional[Dict[str, Any]]:
         """
-        Получает отчёт о качестве из JSON файла
+        Получить отчёт о качестве из quality_reports/
         
-        Args:
-            output_path: Выходная директория pipeline
-            
-        Returns:
-            Словарь с данными отчёта или None
+        Структура: quality_reports/sub-XXX/ses-XXX/anat/*_quality.json
         """
-        # Ищем JSON файлы с отчётом о качестве в stage_04
-        quality_dir = Path(output_path) / "stage_04_quality"
+        quality_dir = Path(output_path) / "quality_reports"
         
         if not quality_dir.exists():
+            logger.warning(f"Директория качества не найдена: {quality_dir}")
             return None
         
-        # Ищем первый JSON файл с качеством
-        quality_files = list(quality_dir.glob("*_quality.json"))
+        # Рекурсивно ищем JSON файлы с отчётами
+        quality_files = list(quality_dir.rglob("*_quality.json"))
         
         if not quality_files:
+            logger.warning(f"Файлы отчётов не найдены в {quality_dir}")
+            logger.info(f"Проверьте структуру директории: {list(quality_dir.iterdir()) if quality_dir.exists() else 'не существует'}")
             return None
         
+        # Берём первый найденный файл (обычно он один)
+        quality_file = quality_files[0]
+        logger.info(f"Найден файл отчёта: {quality_file}")
+        
         try:
-            import json
-            with open(quality_files[0], 'r', encoding='utf-8') as f:
-                quality_data = json.load(f)
+            with open(quality_file, 'r') as f:
+                report_data = json.load(f)
             
-            # Добавляем русское название категории
-            category = quality_data.get('quality_category', '').upper()
-            quality_data['quality_category_ru'] = settings.get_quality_category_ru(category)
+            # Добавляем русский перевод категории качества
+            if 'quality_category' in report_data:
+                report_data['quality_category_ru'] = settings.get_quality_category_ru(
+                    report_data['quality_category']
+                )
             
-            return quality_data
+            logger.info(f"Отчёт успешно загружен: quality_score={report_data.get('quality_score')}, category={report_data.get('quality_category')}")
             
+            return report_data
+        
         except Exception as e:
-            logger.error(f"Ошибка чтения отчёта о качестве: {e}")
+            logger.error(f"Ошибка чтения отчёта о качестве из {quality_file}: {e}")
             return None
     
     def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
