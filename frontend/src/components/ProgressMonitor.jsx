@@ -154,14 +154,14 @@ const ProgressMonitor = ({ runId, onComplete }) => {
             status === 'completed' ? 'success' :
             status === 'failed' ? 'exception' : 'active'
           }
-          strokeWidth={12}
+          size={['default', 12]}
         />
       </div>
 
       {/* Ошибка (если есть) */}
       {error && (
         <Alert
-          message="Ошибка"
+          title="Ошибка"
           description={error}
           type="error"
           showIcon
