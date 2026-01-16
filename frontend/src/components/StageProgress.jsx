@@ -1,15 +1,16 @@
 /**
  * Компонент для отображения прогресса одного этапа
  */
-import { Progress, Space, Tag } from 'antd';
+import { Progress, Space, Tag, Button } from 'antd';
 import { 
   CheckCircleOutlined, 
   CloseCircleOutlined, 
   SyncOutlined,
-  ClockCircleOutlined 
+  ClockCircleOutlined,
+  FileTextOutlined
 } from '@ant-design/icons';
 
-const StageProgress = ({ stageNumber, stageName, status, progress }) => {
+const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport }) => {
   /**
    * Определяем цвет и иконку в зависимости от статуса
    */
@@ -48,15 +49,32 @@ const StageProgress = ({ stageNumber, stageName, status, progress }) => {
   };
 
   const statusConfig = getStatusConfig();
+  
+  // Показываем кнопку отчёта только для 4-го этапа после завершения
+  const showQualityButton = stageNumber === 4 && status === 'completed' && onShowQualityReport;
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <Space style={{ width: '100%', marginBottom: 8 }} size="middle">
-        <Tag color={statusConfig.color} icon={statusConfig.icon}>
-          {statusConfig.text}
-        </Tag>
-        <strong>Этап {stageNumber}:</strong>
-        <span>{stageName}</span>
+      <Space style={{ width: '100%', marginBottom: 8, justifyContent: 'space-between' }}>
+        <Space size="middle">
+          <Tag color={statusConfig.color} icon={statusConfig.icon}>
+            {statusConfig.text}
+          </Tag>
+          <strong>Этап {stageNumber}:</strong>
+          <span>{stageName}</span>
+        </Space>
+        
+        {/* Кнопка отчёта о качестве */}
+        {showQualityButton && (
+          <Button
+            type="link"
+            size="small"
+            icon={<FileTextOutlined />}
+            onClick={onShowQualityReport}
+          >
+            Просмотреть отчёт
+          </Button>
+        )}
       </Space>
       
       <Progress
