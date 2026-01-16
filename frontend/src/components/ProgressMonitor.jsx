@@ -10,6 +10,7 @@ import {
   ReloadOutlined 
 } from '@ant-design/icons';
 import StageProgress from './StageProgress';
+import QualityReport from './QualityReport'; 
 import wsService from '../services/websocket';
 import { getPipelineStatus } from '../services/api';
 
@@ -20,6 +21,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   const [currentStage, setCurrentStage] = useState(0);
   const [status, setStatus] = useState('running');
   const [error, setError] = useState(null);
+  const [showQualityReport, setShowQualityReport] = useState(false); 
 
   /**
    * Подключение к WebSocket при монтировании компонента
@@ -101,6 +103,20 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   };
 
   /**
+   * Открыть модальное окно с отчётом о качестве
+   */
+  const handleShowQualityReport = () => {
+    setShowQualityReport(true);
+  };
+
+  /**
+   * Закрыть модальное окно с отчётом
+   */
+  const handleCloseQualityReport = () => {
+    setShowQualityReport(false);
+  };
+
+  /**
    * Определяем общий статус
    */
   const getOverallStatus = () => {
@@ -175,19 +191,20 @@ const ProgressMonitor = ({ runId, onComplete }) => {
       {/* Список этапов */}
       {Object.keys(stages).length > 0 ? (
         Object.entries(stages).map(([stageNum, stageData]) => (
-          <StageProgress
+            <StageProgress
             key={stageNum}
             stageNumber={stageData.stage_number}
             stageName={stageData.stage_name}
             status={stageData.status}
             progress={Math.round(stageData.progress)}
-          />
+            onShowQualityReport={stageData.stage_number === 4 ? handleShowQualityReport : null}
+            />
         ))
-      ) : (
+        ) : (
         <p style={{ textAlign: 'center', color: '#999' }}>
-          Ожидание запуска этапов...
+            Ожидание запуска этапов...
         </p>
-      )}
+        )}
 
       {/* Кнопка обновления (если соединение потеряно) */}
       {error && (
@@ -200,6 +217,13 @@ const ProgressMonitor = ({ runId, onComplete }) => {
           Обновить статус
         </Button>
       )}
+      
+      {/* Модальное окно отчёта о качестве */}
+      <QualityReport
+        runId={runId}
+        visible={showQualityReport}
+        onClose={handleCloseQualityReport}
+      />
     </Card>
   );
 };
