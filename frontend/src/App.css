@@ -1,24 +1,54 @@
+/* Сброс стандартных отступов */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Основной контейнер */
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  width: 100%;
+  min-height: 100vh;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+/* Улучшенные стили для карточек */
+.ant-card {
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-@keyframes logo-spin {
+.ant-card-head {
+  border-bottom: 2px solid #f0f0f0;
+}
+
+/* Стили для прогресс-баров */
+.ant-progress-line {
+  margin-bottom: 0;
+}
+
+.ant-progress-text {
+  font-weight: 600;
+}
+
+/* Кнопки */
+.ant-btn-primary {
+  font-weight: 500;
+}
+
+/* Inputs */
+.ant-input-lg {
+  border-radius: 6px;
+}
+
+/* Tags */
+.ant-tag {
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 4px 12px;
+}
+
+/* Анимация для спиннера */
+@keyframes spin {
   from {
     transform: rotate(0deg);
   }
@@ -27,16 +57,17 @@
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
+/* Отзывчивый дизайн для мобильных */
+@media (max-width: 768px) {
+  .ant-layout-header {
+    padding: 0 16px !important;
   }
-}
-
-.card {
-  padding: 2em;
-}
-
-.read-the-docs {
-  color: #888;
+  
+  .ant-layout-content {
+    padding: 16px !important;
+  }
+  
+  .ant-card {
+    margin-bottom: 16px;
+  }
 }
