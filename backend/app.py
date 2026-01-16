@@ -25,6 +25,7 @@ from models import (
     PipelineRunHistoryItem,
     HealthCheckResponse,
     QualityReportResponse,
+    QualityReportListResponse,
     QualityMetrics
 )
 from database import (
@@ -393,45 +394,43 @@ async def get_history(
     )
 
 
-@app.get("/api/quality-report/{run_id}", response_model=QualityReportResponse)
-async def get_quality_report(
+@app.get("/api/quality-report/{run_id}", response_model=QualityReportListResponse)
+async def get_quality_report_endpoint(
     run_id: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Получить отчёт о качестве изображения
+    """Получить отчёты о качестве для всех обработанных файлов"""
+    logger.info(f"Запрос отчётов о качестве для run_id: {run_id}")
     
-    Args:
-        run_id: ID запуска
-        db: Сессия БД
-        
-    Returns:
-        Отчёт о качестве
-    """
-    # Проверяем существование запуска
+    # Получаем run из БД
     run = get_pipeline_run(db, run_id)
     
     if not run:
-        raise HTTPException(status_code=404, detail="Запуск не найден")
+        logger.error(f"Run не найден: {run_id}")
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
     
-    # Получаем отчёт о качестве
-    quality_data = pipeline_manager.get_quality_report(run.output_path)
+    logger.info(f"Output path: {run.output_path}, Current stage: {run.current_stage}")
     
-    if not quality_data:
+    # Проверяем что 4-й этап завершён
+    if run.current_stage < 4:
+        logger.warning(f"Этап 4 ещё не завершён для run_id: {run_id}")
         raise HTTPException(
-            status_code=404,
-            detail="Отчёт о качестве не найден. Возможно, 4-й этап ещё не завершён."
+            status_code=400, 
+            detail="Quality assessment stage not yet completed"
         )
     
-    # Формируем ответ
-    return QualityReportResponse(
-        file=quality_data['file'],
-        patient_id=quality_data['patient_id'],
-        modality=quality_data['modality'],
-        quality_score=quality_data['quality_score'],
-        quality_category=quality_data['quality_category'],
-        quality_category_ru=quality_data['quality_category_ru'],
-        metrics=QualityMetrics(**quality_data['metrics'])
+    # Получаем отчёты (список)
+    reports = pipeline_manager.get_quality_report(run.output_path)
+    
+    if not reports:
+        logger.error(f"Отчёты не найдены для run_id: {run_id}")
+        raise HTTPException(status_code=404, detail="Quality reports not found")
+    
+    logger.info(f"Найдено {len(reports)} отчётов для run_id: {run_id}")
+    
+    return QualityReportListResponse(
+        total=len(reports),
+        reports=reports
     )
 
 @app.websocket("/ws/pipeline/{run_id}")

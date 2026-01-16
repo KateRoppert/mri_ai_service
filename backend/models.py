@@ -117,6 +117,33 @@ class QualityReportResponse(BaseModel):
     quality_category_ru: str = Field(..., description="Категория качества на русском")
     metrics: QualityMetrics = Field(..., description="Подробные метрики")
 
+class QualityReportListResponse(BaseModel):
+    """Список отчётов о качестве для всех обработанных файлов"""
+    total: int = Field(..., description="Общее количество отчётов")
+    reports: List[QualityReportResponse] = Field(..., description="Список отчётов")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total": 3,
+                "reports": [
+                    {
+                        "file": "sub-001_ses-001_t1_quality.json",
+                        "patient_id": "sub-001",
+                        "modality": "t1",
+                        "quality_score": 85.64,
+                        "quality_category": "GOOD",
+                        "quality_category_ru": "Хорошее",
+                        "metrics": {
+                            "snr": 12.456,
+                            "cnr": 8.234,
+                            # ...
+                        }
+                    }
+                ]
+            }
+        }
+
 
 # ============================================
 # МОДЕЛИ ДЛЯ ИСТОРИИ ЗАПУСКОВ

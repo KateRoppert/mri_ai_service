@@ -6,7 +6,7 @@ import subprocess
 import yaml
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 import logging
 import json
@@ -289,11 +289,14 @@ class PipelineManager:
             'stages': stages_status
         }
     
-    def get_quality_report(self, output_path: str) -> Optional[Dict[str, Any]]:
+    def get_quality_report(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
         """
-        Получить отчёт о качестве из quality_reports/
+        Получить все отчёты о качестве из quality_reports/
         
         Структура: quality_reports/sub-XXX/ses-XXX/anat/*_quality.json
+        
+        Returns:
+            Список словарей с отчётами для каждого файла
         """
         quality_dir = Path(output_path) / "quality_reports"
         
@@ -306,30 +309,36 @@ class PipelineManager:
         
         if not quality_files:
             logger.warning(f"Файлы отчётов не найдены в {quality_dir}")
-            logger.info(f"Проверьте структуру директории: {list(quality_dir.iterdir()) if quality_dir.exists() else 'не существует'}")
             return None
         
-        # Берём первый найденный файл (обычно он один)
-        quality_file = quality_files[0]
-        logger.info(f"Найден файл отчёта: {quality_file}")
+        logger.info(f"Найдено {len(quality_files)} файлов отчётов")
         
-        try:
-            with open(quality_file, 'r') as f:
-                report_data = json.load(f)
-            
-            # Добавляем русский перевод категории качества
-            if 'quality_category' in report_data:
-                report_data['quality_category_ru'] = settings.get_quality_category_ru(
-                    report_data['quality_category']
-                )
-            
-            logger.info(f"Отчёт успешно загружен: quality_score={report_data.get('quality_score')}, category={report_data.get('quality_category')}")
-            
-            return report_data
+        reports = []
         
-        except Exception as e:
-            logger.error(f"Ошибка чтения отчёта о качестве из {quality_file}: {e}")
+        for quality_file in quality_files:
+            try:
+                with open(quality_file, 'r') as f:
+                    report_data = json.load(f)
+                
+                # Добавляем русский перевод категории качества
+                if 'quality_category' in report_data:
+                    report_data['quality_category_ru'] = settings.get_quality_category_ru(
+                        report_data['quality_category']
+                    )
+                
+                reports.append(report_data)
+                logger.info(f"Отчёт загружен: {quality_file.name}, quality_score={report_data.get('quality_score')}")
+            
+            except Exception as e:
+                logger.error(f"Ошибка чтения отчёта {quality_file}: {e}")
+                continue
+        
+        if not reports:
+            logger.warning("Не удалось загрузить ни одного отчёта")
             return None
+        
+        logger.info(f"Успешно загружено {len(reports)} отчётов")
+        return reports
     
     def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
         """
