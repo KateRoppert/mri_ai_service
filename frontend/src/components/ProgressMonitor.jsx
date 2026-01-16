@@ -1,0 +1,198 @@
+/**
+ * Компонент для мониторинга выполнения pipeline
+ */
+import { useEffect, useState } from 'react';
+import { Card, Progress, Space, Tag, Button, Divider, Alert } from 'antd';
+import { 
+  SyncOutlined, 
+  CheckCircleOutlined, 
+  CloseCircleOutlined,
+  ReloadOutlined 
+} from '@ant-design/icons';
+import StageProgress from './StageProgress';
+import wsService from '../services/websocket';
+import { getPipelineStatus } from '../services/api';
+
+const ProgressMonitor = ({ runId, onComplete }) => {
+  const [pipelineStatus, setPipelineStatus] = useState(null);
+  const [stages, setStages] = useState({});
+  const [overallProgress, setOverallProgress] = useState(0);
+  const [currentStage, setCurrentStage] = useState(0);
+  const [status, setStatus] = useState('running');
+  const [error, setError] = useState(null);
+
+  /**
+   * Подключение к WebSocket при монтировании компонента
+   */
+  useEffect(() => {
+    // Сначала получаем текущий статус через REST API
+    fetchInitialStatus();
+
+    // Затем подключаемся к WebSocket для real-time обновлений
+    wsService.connect(
+      runId,
+      handleWebSocketMessage,
+      handleWebSocketError
+    );
+
+    // Отключаемся при размонтировании
+    return () => {
+      wsService.disconnect();
+    };
+  }, [runId]);
+
+  /**
+   * Получить начальный статус через REST API
+   */
+  const fetchInitialStatus = async () => {
+    try {
+      const data = await getPipelineStatus(runId);
+      updateStatus(data);
+    } catch (error) {
+      console.error('Ошибка получения статуса:', error);
+      setError('Не удалось получить статус pipeline');
+    }
+  };
+
+  /**
+   * Обработчик сообщений от WebSocket
+   */
+  const handleWebSocketMessage = (data) => {
+    if (data.type === 'progress_update') {
+      updateStatus(data);
+    }
+  };
+
+  /**
+   * Обработчик ошибок WebSocket
+   */
+  const handleWebSocketError = (error) => {
+    console.error('WebSocket ошибка:', error);
+    setError('Потеряно соединение с сервером');
+  };
+
+  /**
+   * Обновить состояние на основе данных от backend
+   */
+  const updateStatus = (data) => {
+    setStatus(data.status);
+    setOverallProgress(data.overall_progress || 0);
+    setCurrentStage(data.current_stage || 0);
+    
+    if (data.stages) {
+      setStages(data.stages);
+    }
+
+    // Если pipeline завершён - уведомляем родительский компонент
+    if (data.status === 'completed' || data.status === 'failed') {
+      if (onComplete) {
+        onComplete(data);
+      }
+    }
+  };
+
+  /**
+   * Определяем общий статус
+   */
+  const getOverallStatus = () => {
+    switch (status) {
+      case 'completed':
+        return {
+          color: 'success',
+          icon: <CheckCircleOutlined />,
+          text: 'Обработка завершена',
+        };
+      case 'failed':
+        return {
+          color: 'error',
+          icon: <CloseCircleOutlined />,
+          text: 'Ошибка выполнения',
+        };
+      case 'running':
+      default:
+        return {
+          color: 'processing',
+          icon: <SyncOutlined spin />,
+          text: 'Выполняется обработка',
+        };
+    }
+  };
+
+  const overallStatus = getOverallStatus();
+
+  return (
+    <Card
+      title={
+        <Space>
+          {overallStatus.icon}
+          <span>{overallStatus.text}</span>
+        </Space>
+      }
+      extra={
+        <Tag color={overallStatus.color}>
+          ID: {runId.substring(0, 8)}...
+        </Tag>
+      }
+    >
+      {/* Общий прогресс */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ marginBottom: 8 }}>
+          <strong>Общий прогресс:</strong>
+        </div>
+        <Progress
+          percent={Math.round(overallProgress)}
+          status={
+            status === 'completed' ? 'success' :
+            status === 'failed' ? 'exception' : 'active'
+          }
+          strokeWidth={12}
+        />
+      </div>
+
+      {/* Ошибка (если есть) */}
+      {error && (
+        <Alert
+          message="Ошибка"
+          description={error}
+          type="error"
+          showIcon
+          closable
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      <Divider>Этапы обработки</Divider>
+
+      {/* Список этапов */}
+      {Object.keys(stages).length > 0 ? (
+        Object.entries(stages).map(([stageNum, stageData]) => (
+          <StageProgress
+            key={stageNum}
+            stageNumber={stageData.stage_number}
+            stageName={stageData.stage_name}
+            status={stageData.status}
+            progress={Math.round(stageData.progress)}
+          />
+        ))
+      ) : (
+        <p style={{ textAlign: 'center', color: '#999' }}>
+          Ожидание запуска этапов...
+        </p>
+      )}
+
+      {/* Кнопка обновления (если соединение потеряно) */}
+      {error && (
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={fetchInitialStatus}
+          block
+          style={{ marginTop: 16 }}
+        >
+          Обновить статус
+        </Button>
+      )}
+    </Card>
+  );
+};
+
+export default ProgressMonitor;
