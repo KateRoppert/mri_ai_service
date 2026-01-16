@@ -28,18 +28,27 @@ const ProgressMonitor = ({ runId, onComplete }) => {
     // Сначала получаем текущий статус через REST API
     fetchInitialStatus();
 
-    // Затем подключаемся к WebSocket для real-time обновлений
-    wsService.connect(
-      runId,
-      handleWebSocketMessage,
-      handleWebSocketError
-    );
+    // Ждём 500мс перед подключением к WebSocket
+    // (даём backend время запустить мониторинг)
+    const connectTimeout = setTimeout(() => {
+        wsService.connect(
+        runId,
+        handleWebSocketMessage,
+        (error) => {
+            // Не показываем ошибку если pipeline завершён
+            if (status !== 'completed' && status !== 'failed') {
+            handleWebSocketError(error);
+            }
+        }
+        );
+    }, 500);
 
     // Отключаемся при размонтировании
     return () => {
-      wsService.disconnect();
+        clearTimeout(connectTimeout);
+        wsService.disconnect();
     };
-  }, [runId]);
+    }, [runId]);
 
   /**
    * Получить начальный статус через REST API
