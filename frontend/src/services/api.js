@@ -52,9 +52,29 @@ export const getQualityReport = async (runId) => {
   return response.data;
 };
 
+/**
+ * Получить список доступных NIfTI файлов для визуализации
+ */
+export const getNIfTIFiles = async (runId) => {
+  const response = await apiClient.get(`/nifti-files/${runId}`);
+  return response.data;
+};
+
+/**
+ * Получить URL для NIfTI файла
+ * Эта функция просто возвращает URL, сам файл загружается niivue
+ */
+export const getNIfTIFileUrl = (url) => {
+  // Преобразуем относительный URL в полный
+  return `http://localhost:8000${url}`;
+};
+
 export default {
   startPipeline,
   getPipelineStatus,
   getPipelineHistory,
   getQualityReport,
+  getNIfTIFiles,     
+  getNIfTIFileUrl,    
 };
+
