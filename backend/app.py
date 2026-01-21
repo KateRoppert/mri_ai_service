@@ -5,7 +5,7 @@
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +13,9 @@ from contextlib import asynccontextmanager
 import logging
 import subprocess
 import uvicorn
+import os
+from pydantic import BaseModel
+from typing import Optional, List
 
 from config import settings
 from models import (
@@ -135,14 +138,18 @@ def run_pipeline_background(
             # Успешное завершение
             logger.info(f"Pipeline успешно завершён для run_id: {run_id}")
             
-            # Получаем отчёт о качестве
-            quality_report = pipeline_manager.get_quality_report(output_path)
+            # Получаем отчёты о качестве (теперь это список)
+            quality_reports = pipeline_manager.get_quality_report(output_path)
             quality_score = None
             quality_category = None
-            
-            if quality_report:
-                quality_score = quality_report.get('quality_score')
-                quality_category = quality_report.get('quality_category')
+
+            if quality_reports and len(quality_reports) > 0:
+                # Берём первый отчёт для общей оценки
+                first_report = quality_reports[0]
+                quality_score = first_report.get('quality_score')
+                quality_category = first_report.get('quality_category')
+                
+                logger.info(f"Качество: {quality_score} ({quality_category}), всего отчётов: {len(quality_reports)}")
             
             # Обновляем статус
             update_pipeline_run(
@@ -468,6 +475,171 @@ async def websocket_endpoint(websocket: WebSocket, run_id: str):
     
     finally:
         ws_manager.disconnect(run_id, websocket)
+
+@app.get("/api/nifti/{run_id}/{file_type}/{filename}")
+async def get_nifti_file(
+    run_id: str,
+    file_type: str,  # "preprocessed" или "segmentation"
+    filename: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить NIfTI файл для визуализации
+    
+    Args:
+        run_id: ID запуска pipeline
+        file_type: Тип файла (preprocessed/segmentation)
+        filename: Имя файла
+    """
+    logger.info(f"Запрос NIfTI файла: {file_type}/{filename} для run_id: {run_id}")
+    
+    # Получаем run из БД
+    run = get_pipeline_run(db, run_id)
+    
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    
+    # Проверяем что 6-й этап завершён
+    if run.current_stage < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Segmentation stage not yet completed"
+        )
+    
+    # Проверяем допустимость file_type
+    if file_type not in ["preprocessed", "segmentation"]:
+        raise HTTPException(status_code=400, detail="Invalid file_type. Must be 'preprocessed' or 'segmentation'")
+    
+    # Формируем путь к файлу
+    base_dir = Path(run.output_path) / file_type
+    
+    # Рекурсивный поиск файла
+    file_path = None
+    for root, dirs, files in os.walk(base_dir):
+        if filename in files:
+            file_path = Path(root) / filename
+            break
+    
+    if not file_path or not file_path.exists():
+        logger.error(f"Файл не найден: {filename} в {base_dir}")
+        raise HTTPException(status_code=404, detail="NIfTI file not found")
+    
+    logger.info(f"Отдаём файл: {file_path}")
+    
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/gzip",
+        filename=filename
+    )
+
+class NIfTIFile(BaseModel):
+    """Информация о NIfTI файле"""
+    filename: str
+    patient_id: str
+    session_id: str
+    modality: str
+    file_type: str  # "preprocessed" или "segmentation"
+    url: str
+
+class NIfTIFilesResponse(BaseModel):
+    """Список доступных NIfTI файлов"""
+    total: int
+    files: List[NIfTIFile]
+
+@app.get("/api/nifti-files/{run_id}", response_model=NIfTIFilesResponse)
+async def get_nifti_files_list(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить список доступных NIfTI файлов для визуализации
+    
+    Args:
+        run_id: ID запуска pipeline
+    """
+    logger.info(f"Запрос списка NIfTI файлов для run_id: {run_id}")
+    
+    # Получаем run из БД
+    run = get_pipeline_run(db, run_id)
+    
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    
+    # Проверяем что 6-й этап завершён
+    if run.current_stage < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Segmentation stage not yet completed"
+        )
+    
+    # Ищем файлы в preprocessed и segmentation директориях
+    output_base = Path(run.output_path)
+    preprocessed_dir = output_base / "preprocessed"
+    segmentation_dir = output_base / "segmentation"
+    
+    if not preprocessed_dir.exists():
+        raise HTTPException(status_code=404, detail="Preprocessed directory not found")
+    
+    if not segmentation_dir.exists():
+        raise HTTPException(status_code=404, detail="Segmentation directory not found")
+    
+    nifti_files = []
+    
+    # Сначала находим все preprocessed файлы
+    preprocessed_files = {}
+    for nifti_path in preprocessed_dir.rglob("*.nii.gz"):
+        filename = nifti_path.name
+        
+        # Создаём ключ без расширения для сопоставления с маской
+        base_name = filename.replace(".nii.gz", "")
+        preprocessed_files[base_name] = filename
+    
+    logger.info(f"Найдено {len(preprocessed_files)} preprocessed файлов")
+    
+    # Теперь находим сегментационные маски и сопоставляем с preprocessed
+    for mask_path in segmentation_dir.rglob("*_segmask.nii.gz"):
+        mask_filename = mask_path.name
+        
+        # Извлекаем base name без _segmask
+        # Например: sub-001_ses-001_t1_segmask.nii.gz -> sub-001_ses-001_t1
+        base_name = mask_filename.replace("_segmask.nii.gz", "")
+        
+        # Парсим имя файла
+        parts = base_name.split("_")
+        
+        try:
+            patient_id = parts[0]  # sub-001
+            session_id = parts[1] if len(parts) > 1 else "ses-001"  # ses-001
+            modality = parts[2] if len(parts) > 2 else "unknown"  # t1, t2, flair
+            
+            # Проверяем что есть соответствующий preprocessed файл
+            if base_name in preprocessed_files:
+                preprocessed_filename = preprocessed_files[base_name]
+                
+                nifti_files.append(NIfTIFile(
+                    filename=preprocessed_filename,  # Основной файл
+                    mask_filename=mask_filename,     # Маска
+                    patient_id=patient_id,
+                    session_id=session_id,
+                    modality=modality.upper(),
+                    image_url=f"/api/nifti/{run_id}/preprocessed/{preprocessed_filename}",
+                    mask_url=f"/api/nifti/{run_id}/segmentation/{mask_filename}"
+                ))
+                
+                logger.info(f"Добавлен файл: {preprocessed_filename} с маской {mask_filename}")
+            else:
+                logger.warning(f"Не найден preprocessed файл для маски: {mask_filename}")
+        
+        except Exception as e:
+            logger.warning(f"Не удалось распарсить имя файла {mask_filename}: {e}")
+            continue
+    
+    logger.info(f"Итого подготовлено {len(nifti_files)} пар файлов для визуализации")
+    
+    return NIfTIFilesResponse(
+        total=len(nifti_files),
+        files=nifti_files
+    )
 
 
 # ============================================

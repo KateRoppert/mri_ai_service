@@ -24,6 +24,20 @@ class QualityCategory(str, Enum):
     POOR = "POOR"
     BAD = "BAD"
 
+class NIfTIFile(BaseModel):
+    """Информация о NIfTI файле"""
+    filename: str = Field(..., description="Имя preprocessed файла")
+    mask_filename: str = Field(..., description="Имя файла маски сегментации")
+    patient_id: str = Field(..., description="ID пациента")
+    session_id: str = Field(..., description="ID сессии")
+    modality: str = Field(..., description="Модальность (T1, T2, FLAIR)")
+    image_url: str = Field(..., description="URL для получения preprocessed файла")
+    mask_url: str = Field(..., description="URL для получения маски")
+
+class NIfTIFilesResponse(BaseModel):
+    """Список доступных NIfTI файлов"""
+    total: int = Field(..., description="Количество файлов")
+    files: List[NIfTIFile] = Field(..., description="Список файлов")
 
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
