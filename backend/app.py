@@ -29,7 +29,9 @@ from models import (
     HealthCheckResponse,
     QualityReportResponse,
     QualityReportListResponse,
-    QualityMetrics
+    QualityMetrics,
+    NIfTIFile,     
+    NIfTIFilesResponse 
 )
 from database import (
     get_db,
@@ -531,20 +533,6 @@ async def get_nifti_file(
         media_type="application/gzip",
         filename=filename
     )
-
-class NIfTIFile(BaseModel):
-    """Информация о NIfTI файле"""
-    filename: str
-    patient_id: str
-    session_id: str
-    modality: str
-    file_type: str  # "preprocessed" или "segmentation"
-    url: str
-
-class NIfTIFilesResponse(BaseModel):
-    """Список доступных NIfTI файлов"""
-    total: int
-    files: List[NIfTIFile]
 
 @app.get("/api/nifti-files/{run_id}", response_model=NIfTIFilesResponse)
 async def get_nifti_files_list(
