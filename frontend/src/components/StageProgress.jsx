@@ -7,10 +7,11 @@ import {
   CloseCircleOutlined, 
   SyncOutlined,
   ClockCircleOutlined,
-  FileTextOutlined
+  FileTextOutlined,
+  EyeOutlined
 } from '@ant-design/icons';
 
-const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport }) => {
+const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization }) => {
   /**
    * Определяем цвет и иконку в зависимости от статуса
    */
@@ -52,6 +53,9 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
   
   // Показываем кнопку отчёта только для 4-го этапа после завершения
   const showQualityButton = stageNumber === 4 && status === 'completed' && onShowQualityReport;
+  
+  // Показываем кнопку визуализации только для 6-го этапа после завершения
+  const showVisualizationButton = stageNumber === 6 && status === 'completed' && onShowVisualization;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -64,17 +68,31 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
           <span>{stageName}</span>
         </Space>
         
-        {/* Кнопка отчёта о качестве */}
-        {showQualityButton && (
-          <Button
-            type="link"
-            size="small"
-            icon={<FileTextOutlined />}
-            onClick={onShowQualityReport}
-          >
-            Просмотреть отчёт
-          </Button>
-        )}
+        <Space>
+          {/* Кнопка отчёта о качестве */}
+          {showQualityButton && (
+            <Button
+              type="link"
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={onShowQualityReport}
+            >
+              Просмотреть отчёт
+            </Button>
+          )}
+          
+          {/* Кнопка визуализации */}
+          {showVisualizationButton && (
+            <Button
+              type="primary"
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={onShowVisualization}
+            >
+              3D Визуализация
+            </Button>
+          )}
+        </Space>
       </Space>
       
       <Progress

@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons';
 import StageProgress from './StageProgress';
 import QualityReport from './QualityReport'; 
+import NIfTIViewer from './NIfTIViewer'; 
 import wsService from '../services/websocket';
 import { getPipelineStatus } from '../services/api';
 
@@ -22,6 +23,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   const [status, setStatus] = useState('running');
   const [error, setError] = useState(null);
   const [showQualityReport, setShowQualityReport] = useState(false); 
+  const [showVisualization, setShowVisualization] = useState(false); 
 
   /**
    * Подключение к WebSocket при монтировании компонента
@@ -80,6 +82,20 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   const handleWebSocketError = (error) => {
     console.error('WebSocket ошибка:', error);
     setError('Потеряно соединение с сервером');
+  };
+
+  /**
+   * Открыть 3D визуализацию
+   */
+  const handleShowVisualization = () => {
+    setShowVisualization(true);
+  };
+
+  /**
+   * Закрыть 3D визуализацию
+   */
+  const handleCloseVisualization = () => {
+    setShowVisualization(false);
   };
 
   /**
@@ -198,6 +214,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
             status={stageData.status}
             progress={Math.round(stageData.progress)}
             onShowQualityReport={stageData.stage_number === 4 ? handleShowQualityReport : null}
+            onShowVisualization={stageData.stage_number === 6 ? handleShowVisualization : null}
             />
         ))
         ) : (
@@ -223,6 +240,12 @@ const ProgressMonitor = ({ runId, onComplete }) => {
         runId={runId}
         visible={showQualityReport}
         onClose={handleCloseQualityReport}
+      />
+      {/* Модальное окно 3D визуализации */}
+      <NIfTIViewer
+        runId={runId}
+        visible={showVisualization}
+        onClose={handleCloseVisualization}
       />
     </Card>
   );
