@@ -15,10 +15,10 @@ steps:
   - name: reorient
     enabled: true
     params:
-      target_orientation: "LPS"
+      target_orientation: "LAS" #LPS
   
   - name: bias_correction
-    enabled: true
+    enabled: false
     params:
       shrink_factor: 4
       n_iterations: [50, 50, 50, 50]
@@ -26,7 +26,7 @@ steps:
       use_for_registration_only: true  # Применяется временно, финальные данные без correction
   
   - name: registration
-    enabled: true
+    enabled: false
     params:
       reference_modality: "t1c"           # Регистрируется к атласу первым
       registration_type: "Rigid"           # 6 DOF (rigid transformation)
@@ -40,6 +40,12 @@ steps:
       shrink_factors: [8, 4, 2, 1]        # Multi-resolution
       use_histogram_matching: true         # Для лучшей регистрации
       save_transformations: true
+
+  - name: resampling
+    enabled: true  # По умолчанию выключен для совместимости
+    params:
+      output_resolution: [1.0, 1.0, 1.0]  # Целевое разрешение в мм
+      interpolation: "linear"              # linear, nearestNeighbor, или bSpline
   
   - name: skull_stripping
     enabled: true

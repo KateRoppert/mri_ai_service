@@ -34,6 +34,7 @@ from preprocessing_steps.skull_stripping import (
     check_fsl_installed,
     process_subject_skull_stripping
 )
+from preprocessing_steps.resampling import process_subject_resampling
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +410,39 @@ def process_single_subject(
             logger.info(f"✓ Registration completed in {results['steps']['registration']['time']:.1f}s")
         else:
             logger.info("Step 3/4: Registration - SKIPPED (disabled in config)")
+
+
+        # STEP 3.5: Resampling (if registration is disabled)
+        step_name = "resampling"
+        if steps_config.get(step_name, {}).get('enabled', False):
+            logger.info("Step 3.5/4: Resampling to target resolution")
+            step_start = time.time()
+            
+            step_params = steps_config.get(step_name, {}).get('params', {})
+            
+            # Get input data (either from reorient or previous step)
+            if steps_config.get('registration', {}).get('enabled', False):
+                logger.warning("Both registration and resampling enabled - using registration output")
+                input_anat = output_dir / subject_id / session_id / "anat"
+            else:
+                input_anat = temp_reoriented / subject_id / session_id / "anat"
+            
+            resampling_results = process_subject_resampling(
+                subject_dir=input_anat,
+                output_dir=output_dir,
+                modalities=modalities,
+                params=step_params
+            )
+            
+            results['steps']['resampling'] = {
+                "success": all(r.get('success', False) for r in resampling_results.values() if not r.get('skipped')),
+                "results": resampling_results,
+                "time": time.time() - step_start
+            }
+            
+            logger.info(f"✓ Resampling completed in {results['steps']['resampling']['time']:.1f}s")
+        else:
+            logger.info("Step 3.5/4: Resampling - SKIPPED (disabled in config)")
         
         # STEP 4: Skull Stripping
         step_name = "skull_stripping"
