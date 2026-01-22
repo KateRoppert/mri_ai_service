@@ -166,6 +166,14 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       nv.opts.multiplanarPadPixels = 2;  // Отступ между срезами
       nv.opts.crosshairGap = 2;          // Зазор в кроссхейре
 
+      // Устанавливаем размеры для каждой панели в grid
+      nv.opts.multiplanarForceRender = true;
+      nv.opts.isRadiologicalConvention = false;
+
+      // Увеличиваем масштаб до максимума
+      // volScaleMultiplier увеличивает размер всех volume
+      nv.setScale(2.0);  // 2.0 = увеличение в 2 раза
+
       nv.drawScene();
       
       console.log('Файлы успешно загружены и отображены');
@@ -322,13 +330,15 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
             borderRadius: 4,
             overflow: 'hidden',
             background: '#000',
-            marginBottom: 8  // Было 0, добавили маленький отступ
+            marginBottom: 8,
+            width: '100%',    // ← Добавь
+            height: '85vh'    // ← Добавь
           }}>
             <canvas
               ref={canvasRef}
               style={{ 
                 width: '100%', 
-                height: '900px',
+                height: '100%',  // 100% от родительского div
                 display: 'block'
               }}
             />
