@@ -36,30 +36,33 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
    * Инициализируем niivue при монтировании
    */
   useEffect(() => {
-    if (canvasRef.current && !nvRef.current) {
-      try {
-        // Создаём экземпляр Niivue
-        const nv = new Niivue({
-          backColor: [0, 0, 0, 1],  // Чёрный фон
-          show3Dcrosshair: true,     // Показывать кроссхейр
-          crosshairWidth: 1,         // Тонкий кроссхейр
-          multiplanarLayout: 2,      // 2 = Grid (квадрат 2x2)
-          onLocationChange: handleLocationChange,
-        });
-        
-        nvRef.current = nv;
-        nv.attachToCanvas(canvasRef.current);
-        
-        // Устанавливаем мультипланарный режим
-        nv.setSliceType(nv.sliceTypeMultiplanar);
-        
-        console.log('Niivue инициализирован успешно');
-      } catch (err) {
-        console.error('Ошибка инициализации Niivue:', err);
-        setError(`Ошибка инициализации 3D визуализации: ${err.message}`);
+    // Небольшая задержка чтобы canvas точно был готов
+    const timer = setTimeout(() => {
+      if (canvasRef.current && !nvRef.current) {
+        try {
+          console.log('Инициализация Niivue...');
+          
+          // Создаём экземпляр Niivue
+          const nv = new Niivue({
+            backColor: [0, 0, 0, 1],
+            show3Dcrosshair: true,
+            crosshairWidth: 1,
+            logging: false,  // ← Убрать warnings
+          });
+          
+          nvRef.current = nv;
+          nv.attachToCanvas(canvasRef.current);
+          
+          console.log('Niivue инициализирован успешно');
+        } catch (err) {
+          console.error('Ошибка инициализации Niivue:', err);
+          setError(`Ошибка инициализации 3D визуализации: ${err.message}`);
+        }
       }
-    }
-  }, [canvasRef.current]);
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [visible]);  // Зависимость от visible - переинициализируем при открытии
 
   /**
    * Загружаем список доступных файлов
@@ -72,10 +75,24 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       const data = await getNIfTIFiles(runId);
       setFiles(data.files || []);
       
+      // Ждём пока Niivue инициализируется
+      const maxAttempts = 10;
+      let attempts = 0;
+      
+      while (!nvRef.current && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+      
+      if (!nvRef.current) {
+        setError('Не удалось инициализировать 3D визуализацию');
+        return;
+      }
+      
       // Автоматически загружаем первый файл
       if (data.files && data.files.length > 0) {
-        loadNIfTI(data.files[0]);
         setSelectedFile(data.files[0]);
+        await loadNIfTI(data.files[0]);
       }
     } catch (err) {
       console.error('Ошибка загрузки списка файлов:', err);
@@ -89,13 +106,19 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
    * Загружаем NIfTI файлы в niivue
    */
   const loadNIfTI = async (file) => {
+    console.log('=== loadNIfTI вызвана ===');
+    console.log('nvRef.current:', nvRef.current);
+    console.log('file:', file);
+    
     if (!nvRef.current) {
-      console.error('Niivue не инициализирован');
+      const errorMsg = 'Niivue не инициализирован';
+      console.error(errorMsg);
+      setError(errorMsg);
       return;
     }
 
     setLoading(true);
-    setError(null);  // Сброс предыдущей ошибки
+    setError(null);
     
     try {
       const nv = nvRef.current;
@@ -107,24 +130,44 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       console.log('Загрузка изображения:', imageUrl);
       console.log('Загрузка маски:', maskUrl);
       
-      // Загружаем основное изображение и маску
+      // Сначала проверим что файлы доступны
+      const imageResponse = await fetch(imageUrl);
+      if (!imageResponse.ok) {
+        throw new Error(`Не удалось загрузить изображение: ${imageResponse.status}`);
+      }
+      
+      const maskResponse = await fetch(maskUrl);
+      if (!maskResponse.ok) {
+        throw new Error(`Не удалось загрузить маску: ${maskResponse.status}`);
+      }
+      
+      console.log('Файлы доступны, загружаем в niivue...');
+      
+      // Загружаем в niivue
       await nv.loadVolumes([
         {
           url: imageUrl,
-          colormap: 'gray',  // Чёрно-белое изображение
+          colormap: 'gray',
           opacity: 1.0,
         },
         {
           url: maskUrl,
-          colormap: 'red',   // Маска красным цветом
+          colormap: 'red',
           opacity: maskOpacity,
         }
       ]);
       
-      // Устанавливаем мультипланарный режим после загрузки
+      // Устанавливаем grid layout
       nv.setSliceType(nv.sliceTypeMultiplanar);
+      nv.opts.multiplanarLayout = 2;
+
+      // Настройки для лучшего отображения
+      nv.opts.multiplanarPadPixels = 2;  // Отступ между срезами
+      nv.opts.crosshairGap = 2;          // Зазор в кроссхейре
+
+      nv.drawScene();
       
-      console.log('Файлы успешно загружены');
+      console.log('Файлы успешно загружены и отображены');
     } catch (err) {
       console.error('Ошибка загрузки NIfTI:', err);
       setError(`Не удалось загрузить изображение: ${err.message}`);
@@ -195,7 +238,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       }
       open={visible}
       onCancel={onClose}
-      width={1400}
+      width="95%"
       footer={null}
       style={{ top: 20 }}
     >
@@ -283,7 +326,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
               ref={canvasRef}
               style={{ 
                 width: '100%', 
-                height: '700px',
+                height: '800px',
                 display: 'block'
               }}
             />
