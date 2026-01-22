@@ -37,17 +37,27 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
    */
   useEffect(() => {
     if (canvasRef.current && !nvRef.current) {
-      // Создаём экземпляр Niivue
-      const nv = new Niivue({
-        backColor: [0, 0, 0, 1],  // Чёрный фон
-        show3Dcrosshair: true,
-        onLocationChange: handleLocationChange,
-      });
-      
-      nvRef.current = nv;
-      nv.attachToCanvas(canvasRef.current);
-      
-      console.log('Niivue инициализирован');
+      try {
+        // Создаём экземпляр Niivue
+        const nv = new Niivue({
+          backColor: [0, 0, 0, 1],  // Чёрный фон
+          show3Dcrosshair: true,     // Показывать кроссхейр
+          crosshairWidth: 1,         // Тонкий кроссхейр
+          multiplanarLayout: 2,      // 2 = Grid (квадрат 2x2)
+          onLocationChange: handleLocationChange,
+        });
+        
+        nvRef.current = nv;
+        nv.attachToCanvas(canvasRef.current);
+        
+        // Устанавливаем мультипланарный режим
+        nv.setSliceType(nv.sliceTypeMultiplanar);
+        
+        console.log('Niivue инициализирован успешно');
+      } catch (err) {
+        console.error('Ошибка инициализации Niivue:', err);
+        setError(`Ошибка инициализации 3D визуализации: ${err.message}`);
+      }
     }
   }, [canvasRef.current]);
 
@@ -85,6 +95,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
     }
 
     setLoading(true);
+    setError(null);  // Сброс предыдущей ошибки
     
     try {
       const nv = nvRef.current;
@@ -96,7 +107,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       console.log('Загрузка изображения:', imageUrl);
       console.log('Загрузка маски:', maskUrl);
       
-      // Загружаем основное изображение
+      // Загружаем основное изображение и маску
       await nv.loadVolumes([
         {
           url: imageUrl,
@@ -110,10 +121,13 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
         }
       ]);
       
+      // Устанавливаем мультипланарный режим после загрузки
+      nv.setSliceType(nv.sliceTypeMultiplanar);
+      
       console.log('Файлы успешно загружены');
     } catch (err) {
       console.error('Ошибка загрузки NIfTI:', err);
-      setError('Не удалось загрузить изображение для визуализации');
+      setError(`Не удалось загрузить изображение: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -181,7 +195,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       }
       open={visible}
       onCancel={onClose}
-      width={1200}
+      width={1400}
       footer={null}
       style={{ top: 20 }}
     >
@@ -269,7 +283,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
               ref={canvasRef}
               style={{ 
                 width: '100%', 
-                height: '600px',
+                height: '700px',
                 display: 'block'
               }}
             />
