@@ -13,6 +13,49 @@ import {
 import { Niivue } from '@niivue/niivue';
 import { getNIfTIFiles, getNIfTIFileUrl } from '../services/api';
 
+/**
+ * Создаём кастомную цветовую карту для multi-class сегментации
+ * Label 0: прозрачный (фон)
+ * Label 1: красный (некротические ткани/ядро)
+ * Label 2: зелёный (отёк)
+ * Label 3: синий (усиливающаяся опухоль)
+ */
+const createSegmentationColormap = () => {
+  const cmap = {
+    R: [],
+    G: [],
+    B: [],
+    A: [],
+    labels: ['Фон', 'Некротические ткани', 'Отёк', 'Усиливающаяся опухоль']
+  };
+  
+  // Label 0: Прозрачный фон
+  cmap.R.push(0);
+  cmap.G.push(0);
+  cmap.B.push(0);
+  cmap.A.push(0);  // Полностью прозрачный
+  
+  // Label 1: Красный (некротические ткани)
+  cmap.R.push(255);
+  cmap.G.push(0);
+  cmap.B.push(0);
+  cmap.A.push(255);  // Непрозрачный
+  
+  // Label 2: Зелёный (отёк)
+  cmap.R.push(0);
+  cmap.G.push(255);
+  cmap.B.push(0);
+  cmap.A.push(255);
+  
+  // Label 3: Синий (усиливающаяся опухоль)
+  cmap.R.push(0);
+  cmap.G.push(0);
+  cmap.B.push(255);
+  cmap.A.push(255);
+  
+  return cmap;
+};
+
 const NIfTIViewer = ({ runId, visible, onClose }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
@@ -144,6 +187,9 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       
       console.log('Файлы доступны, загружаем в niivue...');
       
+      // Создаём кастомную colormap для multi-class сегментации
+      const segColormap = createSegmentationColormap();
+
       // Загружаем в niivue
       await nv.loadVolumes([
         {
@@ -153,8 +199,10 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
         },
         {
           url: maskUrl,
-          colormap: 'red',
+          colormap: segColormap,  // ← Используем кастомную colormap
           opacity: maskOpacity,
+          cal_min: 0,  // Минимальное значение label
+          cal_max: 3,  // Максимальное значение label (если у тебя labels 1,2,4 - поставь 4)
         }
       ]);
       
@@ -369,6 +417,39 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
                 Как управлять?
               </Button>
             </Popover>
+            {/* Легенда цветов сегментации */}
+            <Space size="large" style={{ fontSize: 13 }}>
+              <Space size="small">
+                <div style={{ 
+                  width: 16, 
+                  height: 16, 
+                  background: 'rgb(255, 0, 0)', 
+                  border: '1px solid #ccc',
+                  borderRadius: 2
+                }} />
+                <span>Некротические ткани</span>
+              </Space>
+              <Space size="small">
+                <div style={{ 
+                  width: 16, 
+                  height: 16, 
+                  background: 'rgb(0, 255, 0)', 
+                  border: '1px solid #ccc',
+                  borderRadius: 2
+                }} />
+                <span>Отёк</span>
+              </Space>
+              <Space size="small">
+                <div style={{ 
+                  width: 16, 
+                  height: 16, 
+                  background: 'rgb(0, 0, 255)', 
+                  border: '1px solid #ccc',
+                  borderRadius: 2
+                }} />
+                <span>Усиливающаяся опухоль</span>
+              </Space>
+            </Space>
           </div>
         </>
       )}
