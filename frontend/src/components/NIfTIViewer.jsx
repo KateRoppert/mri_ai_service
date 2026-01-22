@@ -2,12 +2,13 @@
  * Компонент для 3D визуализации NIfTI файлов с niivue
  */
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col } from 'antd';
+import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col, Popover } from 'antd';
 import { 
   EyeOutlined, 
   EyeInvisibleOutlined,
   RotateLeftOutlined,
-  RotateRightOutlined 
+  RotateRightOutlined,
+  QuestionCircleOutlined 
 } from '@ant-design/icons';
 import { Niivue } from '@niivue/niivue';
 import { getNIfTIFiles, getNIfTIFileUrl } from '../services/api';
@@ -240,7 +241,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       onCancel={onClose}
       width="95%"
       footer={null}
-      style={{ top: 20 }}
+      style={{ top: 10 }}
     >
       {loading && files.length === 0 && (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
@@ -262,7 +263,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       {files.length > 0 && (
         <>
           {/* Панель управления */}
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 8 }}>
             <Row gutter={16} align="middle">
               {/* Выбор файла */}
               <Col span={10}>
@@ -320,35 +321,45 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
             border: '1px solid #d9d9d9', 
             borderRadius: 4,
             overflow: 'hidden',
-            background: '#000'
+            background: '#000',
+            marginBottom: 8  // Было 0, добавили маленький отступ
           }}>
             <canvas
               ref={canvasRef}
               style={{ 
                 width: '100%', 
-                height: '800px',
+                height: '900px',
                 display: 'block'
               }}
             />
           </div>
 
-          {/* Инструкция */}
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginTop: 16 }}
-            description={
-              <div>
-                <strong>Управление:</strong>
-                <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
-                  <li>ЛКМ + перетаскивание - панорамирование</li>
-                  <li>ПКМ + перетаскивание - изменение контрастности/яркости</li>
-                  <li>Колесо мыши - навигация по срезам</li>
-                  <li>Двойной клик - центрирование на точке</li>
-                </ul>
-              </div>
-            }
-          />
+          {/* Инструкция - показывается при наведении на иконку */}
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Popover
+              content={
+                <div style={{ maxWidth: 400 }}>
+                  <strong>Управление:</strong>
+                  <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
+                    <li>ЛКМ + перетаскивание - панорамирование</li>
+                    <li>ПКМ + перетаскивание - изменение контрастности/яркости</li>
+                    <li>Колесо мыши - навигация по срезам</li>
+                    <li>Двойной клик - центрирование на точке</li>
+                  </ul>
+                </div>
+              }
+              title="Управление визуализацией"
+              trigger="hover"
+            >
+              <Button 
+                type="text" 
+                icon={<QuestionCircleOutlined />}
+                style={{ color: '#1890ff' }}
+              >
+                Как управлять?
+              </Button>
+            </Popover>
+          </div>
         </>
       )}
     </Modal>
