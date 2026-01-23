@@ -46,6 +46,7 @@ from database import (
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor
 from pipeline_manager import PipelineManager
+from fastapi.middleware.cors import CORSMiddleware
 
 # Настройка логирования
 logging.basicConfig(
@@ -79,10 +80,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Настройка CORS
+# Добавляем CORS middleware ← ДОБАВЬ ЭТО
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["http://localhost:5173"],  # Frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -385,13 +386,15 @@ async def get_history(
             input_path=run.input_path,
             output_path=run.output_path,
             status=PipelineStatus(run.status),
+            current_stage=run.current_stage, 
             quality_score=run.quality_score,
             quality_category=run.quality_category,
             created_at=run.created_at,
+            started_at=run.started_at,  
             completed_at=run.completed_at,
             duration_seconds=(
-                int((run.completed_at - run.created_at).total_seconds())
-                if run.completed_at else None
+                int((run.completed_at - run.started_at).total_seconds()) 
+                if run.completed_at and run.started_at else None
             )
         )
         for run in runs

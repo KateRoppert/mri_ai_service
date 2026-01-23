@@ -164,14 +164,16 @@ class QualityReportListResponse(BaseModel):
 # ============================================
 
 class PipelineRunHistoryItem(BaseModel):
-    """Элемент истории запусков"""
+    """История одного запуска"""
     run_id: str = Field(..., description="ID запуска")
     input_path: str = Field(..., description="Путь к входным данным")
-    output_path: str = Field(..., description="Путь к результатам")
+    output_path: str = Field(..., description="Путь к выходным данным")
     status: PipelineStatus = Field(..., description="Статус выполнения")
+    current_stage: int = Field(..., description="Текущий этап (1-6)")  # ← Добавь
     quality_score: Optional[float] = Field(None, description="Оценка качества")
     quality_category: Optional[str] = Field(None, description="Категория качества")
-    created_at: datetime = Field(..., description="Время запуска")
+    created_at: datetime = Field(..., description="Время создания")
+    started_at: Optional[datetime] = Field(None, description="Время начала выполнения")  # ← Добавь
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     duration_seconds: Optional[int] = Field(None, description="Длительность в секундах")
 
