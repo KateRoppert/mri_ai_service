@@ -6,6 +6,9 @@ import { Layout, Typography, Space, Divider } from 'antd';
 import { RocketOutlined } from '@ant-design/icons';
 import PipelineForm from './components/PipelineForm';
 import ProgressMonitor from './components/ProgressMonitor';
+import PipelineHistory from './components/PipelineHistory';
+import QualityReport from './components/QualityReport';
+import NIfTIViewer from './components/NIfTIViewer';
 import './App.css';
 
 const { Header, Content } = Layout;
@@ -14,6 +17,28 @@ const { Title, Text } = Typography;
 function App() {
   const [activeRun, setActiveRun] = useState(null);
   const [completedRuns, setCompletedRuns] = useState([]);
+
+  const [historyQualityReportRunId, setHistoryQualityReportRunId] = useState(null);
+  const [historyVisualizationRunId, setHistoryVisualizationRunId] = useState(null);
+  const [showHistoryQualityReport, setShowHistoryQualityReport] = useState(false);
+  const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
+
+
+  /**
+   * Показать отчёт из истории
+   */
+  const handleShowHistoryQualityReport = (runId) => {
+    setHistoryQualityReportRunId(runId);
+    setShowHistoryQualityReport(true);
+  };
+
+  /**
+   * Показать визуализацию из истории
+   */
+  const handleShowHistoryVisualization = (runId) => {
+    setHistoryVisualizationRunId(runId);
+    setShowHistoryVisualization(true);
+  };
 
   /**
    * Обработчик успешного запуска pipeline
@@ -46,60 +71,87 @@ function App() {
   };
 
   return (
-    <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
-      {/* Шапка */}
-      <Header style={{ 
-        background: '#fff', 
-        padding: '0 24px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-      }}>
-        <Space align="center" size="middle">
-          <RocketOutlined style={{ fontSize: 32, color: '#1890ff' }} />
-          <div>
-            <Title level={3} style={{ margin: 0, color: '#1890ff' }}>
-              AI-Сервис Распознавания Поражений Головного Мозга
-            </Title>
-            <Text type="secondary">Клиническое применение</Text>
-          </div>
-        </Space>
-      </Header>
+  <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
+    <Layout.Header style={{ background: '#1890ff', padding: '0 24px' }}>
+      <Typography.Title level={3} style={{ color: 'white', margin: '16px 0' }}>
+        🧠 Система распознавания поражений головного мозга
+      </Typography.Title>
+    </Layout.Header>
+    
+    <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
+      <Tabs
+        defaultActiveKey="pipeline"
+        size="large"
+        items={[
+          {
+            key: 'pipeline',
+            label: (
+              <span>
+                <RocketOutlined />
+                Запуск обработки
+              </span>
+            ),
+            children: (
+              <>
+                {!activeRun ? (
+                  <Card>
+                    <PipelineForm onPipelineStarted={handlePipelineStarted} />
+                  </Card>
+                ) : (
+                  <ProgressMonitor
+                    runId={activeRun}
+                    onComplete={handlePipelineComplete}
+                  />
+                )}
 
-      {/* Основной контент */}
-      <Content style={{ padding: '24px' }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-          
-          {/* Форма запуска */}
-          {!activeRun && (
-            <PipelineForm onPipelineStarted={handlePipelineStarted} />
-          )}
-
-          {/* Мониторинг активного запуска */}
-          {activeRun && (
-            <>
-              <ProgressMonitor
-                runId={activeRun.runId}
-                onComplete={handlePipelineComplete}
+                {completedRuns.length > 0 && (
+                  <>
+                    <Divider>Новая обработка</Divider>
+                    <Card>
+                      <PipelineForm onPipelineStarted={handlePipelineStarted} />
+                    </Card>
+                  </>
+                )}
+              </>
+            ),
+          },
+          {
+            key: 'history',
+            label: (
+              <span>
+                <HistoryOutlined />
+                История запусков
+              </span>
+            ),
+            children: (
+              <PipelineHistory
+                onShowQualityReport={handleShowHistoryQualityReport}
+                onShowVisualization={handleShowHistoryVisualization}
               />
-              
-              <Divider />
-              
-              {/* Кнопка для запуска нового pipeline */}
-              <PipelineForm onPipelineStarted={handlePipelineStarted} />
-            </>
-          )}
+            ),
+          },
+        ]}
+      />
 
-          {/* История завершённых запусков (опционально) */}
-          {completedRuns.length > 0 && (
-            <div style={{ marginTop: 24 }}>
-              <Text type="secondary">
-                Завершено запусков: {completedRuns.length}
-              </Text>
-            </div>
-          )}
-        </div>
-      </Content>
-    </Layout>
-  );
+      {/* Модальные окна для истории */}
+      {showHistoryQualityReport && (
+        <QualityReport
+          runId={historyQualityReportRunId}
+          visible={showHistoryQualityReport}
+          onClose={() => setShowHistoryQualityReport(false)}
+        />
+      )}
+
+      {showHistoryVisualization && (
+        <NIfTIViewer
+          runId={historyVisualizationRunId}
+          visible={showHistoryVisualization}
+          onClose={() => setShowHistoryVisualization(false)}
+        />
+      )}
+    </Layout.Content>
+  </Layout>
+);
 }
 
 export default App;
