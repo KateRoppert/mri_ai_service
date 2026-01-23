@@ -13,20 +13,21 @@ import {
 import { Niivue } from '@niivue/niivue';
 import { getNIfTIFiles, getNIfTIFileUrl } from '../services/api';
 
-  /**
-   * Создаём кастомную цветовую карту для multi-class сегментации
-   * Label 0: прозрачный (фон)
-   * Label 1: красный (некротические ткани)
-   * Label 2: зелёный (отёк)
-   * Label 3: синий (усиливающаяся опухоль)
-   */
+/**
+ * Создаём кастомную цветовую карту для multi-class сегментации
+ * Label 0: прозрачный (фон)
+ * Label 1: красный (NCR - некротическое ядро)
+ * Label 2: зелёный (ED - отёк)
+ * Label 3: жёлтый (NET - неусиливающаяся опухоль)
+ * Label 4: синий (ET - усиливающаяся опухоль)
+ */
 const createSegmentationColormap = () => {
-  // Создаём массивы RGBA для каждого label (0-3)
+  // Создаём массивы RGBA для каждого label (0-4)
   const colors = {
-    R: [0,   255, 0,   0],    // Label 0: черный, Label 1: красный, 2: черный, 3: черный
-    G: [0,   0,   255, 0],    // Label 0: черный, Label 1: черный, 2: зеленый, 3: черный
-    B: [0,   0,   0,   255],  // Label 0: черный, Label 1: черный, 2: черный, 3: синий
-    A: [0,   255, 255, 255],  // Label 0: прозрачный, остальные непрозрачные
+    R: [0,   255, 0,   255, 0],      // 0: черный, 1: красный, 2: черный, 3: желтый, 4: черный
+    G: [0,   0,   255, 255, 0],      // 0: черный, 1: черный, 2: зеленый, 3: желтый, 4: черный
+    B: [0,   0,   0,   0,   255],    // 0: черный, 1: черный, 2: черный, 3: черный, 4: синий
+    A: [0,   255, 255, 255, 255],    // 0: прозрачный, остальные непрозрачные
   };
   
   return colors;
@@ -181,7 +182,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
           colormap: 'seg_custom',  // ← Используем имя зарегистрированной colormap
           opacity: maskOpacity,
           cal_min: 0,    // Минимальный label
-          cal_max: 3,    // Максимальный label
+          cal_max: 4,    // Максимальный label
         }
       ]);
 
@@ -408,7 +409,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
                   border: '1px solid #ccc',
                   borderRadius: 2
                 }} />
-                <span>Некротические ткани</span>
+                <span>Некротическое ядро (NCR)</span>
               </Space>
               <Space size="small">
                 <div style={{ 
@@ -418,7 +419,17 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
                   border: '1px solid #ccc',
                   borderRadius: 2
                 }} />
-                <span>Отёк</span>
+                <span>Отёк (ED)</span>
+              </Space>
+              <Space size="small">
+                <div style={{ 
+                  width: 16, 
+                  height: 16, 
+                  background: 'rgb(255, 255, 0)', 
+                  border: '1px solid #ccc',
+                  borderRadius: 2
+                }} />
+                <span>Неусиливающаяся опухоль (NET)</span>
               </Space>
               <Space size="small">
                 <div style={{ 
@@ -428,7 +439,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
                   border: '1px solid #ccc',
                   borderRadius: 2
                 }} />
-                <span>Усиливающаяся опухоль</span>
+                <span>Усиливающаяся опухоль (ET)</span>
               </Space>
             </Space>
           </div>
