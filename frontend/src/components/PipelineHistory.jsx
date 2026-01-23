@@ -103,19 +103,15 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport }) => {
   };
 
   /**
-   * Вычислить длительность
-   */
-  const getDuration = (startedAt, completedAt) => {
-    if (!startedAt || !completedAt) return '-';
-    
-    const start = new Date(startedAt);
-    const end = new Date(completedAt);
-    const diffMs = end - start;
-    
-    const minutes = Math.floor(diffMs / 60000);
-    const seconds = Math.floor((diffMs % 60000) / 1000);
-    
-    return `${minutes}м ${seconds}с`;
+    * Форматировать длительность из секунд
+    */
+  const formatDuration = (durationSeconds) => {
+  if (!durationSeconds) return '-';
+
+  const minutes = Math.floor(durationSeconds / 60);
+  const seconds = durationSeconds % 60;
+
+  return `${minutes}м ${seconds}с`;
   };
 
   /**
@@ -191,7 +187,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport }) => {
       title: 'Длительность',
       key: 'duration',
       width: 100,
-      render: (_, record) => getDuration(record.started_at, record.completed_at),
+      render: (_, record) => formatDuration(record.duration_seconds),
     },
     {
       title: 'Действия',
