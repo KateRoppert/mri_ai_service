@@ -13,47 +13,23 @@ import {
 import { Niivue } from '@niivue/niivue';
 import { getNIfTIFiles, getNIfTIFileUrl } from '../services/api';
 
-/**
- * Создаём кастомную цветовую карту для multi-class сегментации
- * Label 0: прозрачный (фон)
- * Label 1: красный (некротические ткани/ядро)
- * Label 2: зелёный (отёк)
- * Label 3: синий (усиливающаяся опухоль)
- */
+  /**
+   * Создаём кастомную цветовую карту для multi-class сегментации
+   * Label 0: прозрачный (фон)
+   * Label 1: красный (некротические ткани)
+   * Label 2: зелёный (отёк)
+   * Label 3: синий (усиливающаяся опухоль)
+   */
 const createSegmentationColormap = () => {
-  const cmap = {
-    R: [],
-    G: [],
-    B: [],
-    A: [],
-    labels: ['Фон', 'Некротические ткани', 'Отёк', 'Усиливающаяся опухоль']
+  // Создаём массивы RGBA для каждого label (0-3)
+  const colors = {
+    R: [0,   255, 0,   0],    // Label 0: черный, Label 1: красный, 2: черный, 3: черный
+    G: [0,   0,   255, 0],    // Label 0: черный, Label 1: черный, 2: зеленый, 3: черный
+    B: [0,   0,   0,   255],  // Label 0: черный, Label 1: черный, 2: черный, 3: синий
+    A: [0,   255, 255, 255],  // Label 0: прозрачный, остальные непрозрачные
   };
   
-  // Label 0: Прозрачный фон
-  cmap.R.push(0);
-  cmap.G.push(0);
-  cmap.B.push(0);
-  cmap.A.push(0);  // Полностью прозрачный
-  
-  // Label 1: Красный (некротические ткани)
-  cmap.R.push(255);
-  cmap.G.push(0);
-  cmap.B.push(0);
-  cmap.A.push(255);  // Непрозрачный
-  
-  // Label 2: Зелёный (отёк)
-  cmap.R.push(0);
-  cmap.G.push(255);
-  cmap.B.push(0);
-  cmap.A.push(255);
-  
-  // Label 3: Синий (усиливающаяся опухоль)
-  cmap.R.push(0);
-  cmap.G.push(0);
-  cmap.B.push(255);
-  cmap.A.push(255);
-  
-  return cmap;
+  return colors;
 };
 
 const NIfTIViewer = ({ runId, visible, onClose }) => {
@@ -190,6 +166,9 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       // Создаём кастомную colormap для multi-class сегментации
       const segColormap = createSegmentationColormap();
 
+      // Регистрируем colormap в niivue
+      nv.addColormap('seg_custom', segColormap);
+
       // Загружаем в niivue
       await nv.loadVolumes([
         {
@@ -199,12 +178,14 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
         },
         {
           url: maskUrl,
-          colormap: segColormap,  // ← Используем кастомную colormap
+          colormap: 'seg_custom',  // ← Используем имя зарегистрированной colormap
           opacity: maskOpacity,
-          cal_min: 0,  // Минимальное значение label
-          cal_max: 3,  // Максимальное значение label (если у тебя labels 1,2,4 - поставь 4)
+          cal_min: 0,    // Минимальный label
+          cal_max: 3,    // Максимальный label
         }
       ]);
+
+      console.log('Файлы доступны, загружаем в niivue...');
       
       // Устанавливаем grid layout
       nv.setSliceType(nv.sliceTypeMultiplanar);
