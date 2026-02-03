@@ -132,12 +132,12 @@ class QualityReportResponse(BaseModel):
     metrics: QualityMetrics = Field(..., description="Подробные метрики")
 
 class QualityReportListResponse(BaseModel):
-    """Список отчётов о качестве для всех обработанных файлов"""
-    total: int = Field(..., description="Общее количество отчётов")
-    reports: List[QualityReportResponse] = Field(..., description="Список отчётов")
+    total: int
+    reports: List[QualityReportResponse]
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "total": 3,
                 "reports": [
@@ -157,6 +157,7 @@ class QualityReportListResponse(BaseModel):
                 ]
             }
         }
+    )
 
 
 # ============================================
@@ -169,11 +170,11 @@ class PipelineRunHistoryItem(BaseModel):
     input_path: str = Field(..., description="Путь к входным данным")
     output_path: str = Field(..., description="Путь к выходным данным")
     status: PipelineStatus = Field(..., description="Статус выполнения")
-    current_stage: int = Field(..., description="Текущий этап (1-6)")  # ← Добавь
+    current_stage: Optional[int] = Field(0, description="Текущий этап (1-6)") 
     quality_score: Optional[float] = Field(None, description="Оценка качества")
     quality_category: Optional[str] = Field(None, description="Категория качества")
     created_at: datetime = Field(..., description="Время создания")
-    started_at: Optional[datetime] = Field(None, description="Время начала выполнения")  # ← Добавь
+    started_at: Optional[datetime] = Field(None, description="Время начала выполнения")
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     duration_seconds: Optional[int] = Field(None, description="Длительность в секундах")
 
