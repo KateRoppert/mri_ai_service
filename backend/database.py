@@ -3,9 +3,8 @@
 """
 
 from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from datetime import datetime
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from datetime import datetime, timezone
 from typing import List, Optional
 import uuid
 
@@ -100,7 +99,7 @@ def create_pipeline_run(
         input_path=input_path,
         output_path=output_path,
         status="pending",
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     
     db.add(run)

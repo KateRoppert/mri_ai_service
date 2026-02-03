@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 import logging
@@ -115,7 +115,7 @@ def run_pipeline_background(
     logger.info(f"Фоновый запуск pipeline для run_id: {run_id}")
     
     # Обновляем статус на "running"
-    update_pipeline_run(db, run_id, status="running", started_at=datetime.utcnow())
+    update_pipeline_run(db, run_id, status="running", started_at=datetime.now(timezone.utc))
     
     # Запускаем pipeline
     process = pipeline_manager.start_pipeline(run_id, input_path, output_path)
@@ -127,7 +127,7 @@ def run_pipeline_background(
             run_id,
             status="failed",
             error_message="Не удалось запустить pipeline",
-            completed_at=datetime.utcnow()
+            completed_at=datetime.now(timezone.utc)
         )
         logger.error(f"Не удалось запустить pipeline для run_id: {run_id}")
         return
@@ -226,7 +226,7 @@ async def root():
     """Health check endpoint"""
     return HealthCheckResponse(
         status="ok",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         version=settings.app_version
     )
 
@@ -386,14 +386,14 @@ async def get_history(
             input_path=run.input_path,
             output_path=run.output_path,
             status=PipelineStatus(run.status),
-            current_stage=run.current_stage, 
+            current_stage=run.current_stage if run.current_stage is not None else 0,
             quality_score=run.quality_score,
             quality_category=run.quality_category,
             created_at=run.created_at,
-            started_at=run.started_at,  
+            started_at=run.started_at,
             completed_at=run.completed_at,
             duration_seconds=(
-                int((run.completed_at - run.started_at).total_seconds()) 
+                int((run.completed_at - run.started_at).total_seconds())
                 if run.completed_at and run.started_at else None
             )
         )
