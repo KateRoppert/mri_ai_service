@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Auto segmentation</title>
+</head>
+<body>
+    {% if error %}
+        <p><strong>Error</strong>: {{error}}</p>
+    {% endif %}
+<form action="/" method="POST"
+      enctype="multipart/form-data">
+    T1: <input type="file" name="file_t1"/>
+    <br/>
+    T1C: <input type="file" name="file_t1c"/>
+    <br/>
+    T2: <input type="file" name="file_t2"/>
+    <br/>
+    T2FL: <input type="file" name="file_t2fl"/>
+    <br/>
+    Patient ID: <input type="text" name="id" value=""/>
+    <br/>
+    Net (Resnet, Unet, Unet+Folds, Unet+Folds+TTA): <input type="text" name="net" value="Resnet"/>
+    <br/>
+    <input type="submit"/>
+</form>
+
+</body>
+</html>

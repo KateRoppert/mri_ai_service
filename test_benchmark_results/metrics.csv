@@ -1,0 +1,6 @@
+experiment_id,timestamp,stage,parallelism_type,parallelism_level,server_name,gpu_count,gpu_ids,mode,workers,total_series,successful,failed,skipped,total_time,time_per_series,throughput,cpu_avg,cpu_max,memory_avg_mb,memory_peak_mb,speedup,efficiency
+cpu_baseline_w1,2025-12-19T13:16:40.020593,preprocessing,cpu_workers,1,,,,sequential,1,10,10,0,0,100.000,10.000,0.100,,,,,1.000,1.000
+cpu_parallel_w4,2025-12-19T13:16:40.021260,preprocessing,cpu_workers,4,,,,parallel,4,10,10,0,0,30.000,3.000,0.333,,,,,3.330,0.833
+gpu_baseline_barguzin_c1,2025-12-19T13:16:40.021894,segmentation,gpu_concurrent,1,barguzin,2,"0,1",,,20,20,0,0,200.000,10.000,0.100,,,,,1.000,1.000
+gpu_parallel_barguzin_c8,2025-12-19T13:16:40.022663,segmentation,gpu_concurrent,8,barguzin,2,"0,1",,,20,20,0,0,60.000,3.000,0.333,,,,,3.330,0.416
+gpu_baseline_cube_c1,2025-12-19T13:16:40.023280,segmentation,gpu_concurrent,1,cube,4,"0,1,2,3",,,20,20,0,0,180.000,9.000,0.111,,,,,1.000,1.000

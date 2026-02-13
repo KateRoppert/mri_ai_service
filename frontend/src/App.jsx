@@ -2,8 +2,8 @@
  * Главный компонент приложения
  */
 import { useState } from 'react';
-import { Layout, Typography, Space, Divider } from 'antd';
-import { RocketOutlined } from '@ant-design/icons';
+import { Layout, Typography, Space, Divider, Tabs, Card } from 'antd';
+import { RocketOutlined, HistoryOutlined } from '@ant-design/icons';
 import PipelineForm from './components/PipelineForm';
 import ProgressMonitor from './components/ProgressMonitor';
 import PipelineHistory from './components/PipelineHistory';
@@ -71,87 +71,87 @@ function App() {
   };
 
   return (
-  <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
-    <Layout.Header style={{ background: '#1890ff', padding: '0 24px' }}>
-      <Typography.Title level={3} style={{ color: 'white', margin: '16px 0' }}>
-        🧠 Система распознавания поражений головного мозга
-      </Typography.Title>
-    </Layout.Header>
-    
-    <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
-      <Tabs
-        defaultActiveKey="pipeline"
-        size="large"
-        items={[
-          {
-            key: 'pipeline',
-            label: (
-              <span>
-                <RocketOutlined />
-                Запуск обработки
-              </span>
-            ),
-            children: (
-              <>
-                {!activeRun ? (
-                  <Card>
-                    <PipelineForm onPipelineStarted={handlePipelineStarted} />
-                  </Card>
-                ) : (
-                  <ProgressMonitor
-                    runId={activeRun}
-                    onComplete={handlePipelineComplete}
-                  />
-                )}
-
-                {completedRuns.length > 0 && (
-                  <>
-                    <Divider>Новая обработка</Divider>
+    <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
+      <Layout.Header style={{ background: '#1890ff', padding: '0 24px' }}>
+        <Typography.Title level={3} style={{ color: 'white', margin: '16px 0' }}>
+          🧠 Система распознавания поражений головного мозга
+        </Typography.Title>
+      </Layout.Header>
+      
+      <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
+        <Tabs
+          defaultActiveKey="pipeline"
+          size="large"
+          items={[
+            {
+              key: 'pipeline',
+              label: (
+                <span>
+                  <RocketOutlined />
+                  Запуск обработки
+                </span>
+              ),
+              children: (
+                <>
+                  {!activeRun ? (
                     <Card>
                       <PipelineForm onPipelineStarted={handlePipelineStarted} />
                     </Card>
-                  </>
-                )}
-              </>
-            ),
-          },
-          {
-            key: 'history',
-            label: (
-              <span>
-                <HistoryOutlined />
-                История запусков
-              </span>
-            ),
-            children: (
-              <PipelineHistory
-                onShowQualityReport={handleShowHistoryQualityReport}
-                onShowVisualization={handleShowHistoryVisualization}
-              />
-            ),
-          },
-        ]}
-      />
+                  ) : (
+                    <ProgressMonitor
+                      runId={activeRun.runId}
+                      onComplete={handlePipelineComplete}
+                    />
+                  )}
 
-      {/* Модальные окна для истории */}
-      {showHistoryQualityReport && (
-        <QualityReport
-          runId={historyQualityReportRunId}
-          visible={showHistoryQualityReport}
-          onClose={() => setShowHistoryQualityReport(false)}
+                  {completedRuns.length > 0 && (
+                    <>
+                      <Divider>Новая обработка</Divider>
+                      <Card>
+                        <PipelineForm onPipelineStarted={handlePipelineStarted} />
+                      </Card>
+                    </>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'history',
+              label: (
+                <span>
+                  <HistoryOutlined />
+                  История запусков
+                </span>
+              ),
+              children: (
+                <PipelineHistory
+                  onShowQualityReport={handleShowHistoryQualityReport}
+                  onShowVisualization={handleShowHistoryVisualization}
+                />
+              ),
+            },
+          ]}
         />
-      )}
 
-      {showHistoryVisualization && (
-        <NIfTIViewer
-          runId={historyVisualizationRunId}
-          visible={showHistoryVisualization}
-          onClose={() => setShowHistoryVisualization(false)}
-        />
-      )}
-    </Layout.Content>
-  </Layout>
-);
+        {/* Модальные окна для истории */}
+        {showHistoryQualityReport && (
+          <QualityReport
+            runId={historyQualityReportRunId}
+            visible={showHistoryQualityReport}
+            onClose={() => setShowHistoryQualityReport(false)}
+          />
+        )}
+
+        {showHistoryVisualization && (
+          <NIfTIViewer
+            runId={historyVisualizationRunId}
+            visible={showHistoryVisualization}
+            onClose={() => setShowHistoryVisualization(false)}
+          />
+        )}
+      </Layout.Content>
+    </Layout>
+  );
 }
 
 export default App;

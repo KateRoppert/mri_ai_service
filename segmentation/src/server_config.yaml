@@ -1,0 +1,167 @@
+# ========================================================================
+# Server Configuration for simple_server.py
+# ========================================================================
+# This configuration file defines paths and settings for the segmentation
+# server. It should be placed in the same directory as simple_server.py
+# or its path can be specified via SERVER_CONFIG environment variable.
+#
+# Usage:
+#   python simple_server.py
+#   # The script will automatically load this config
+#
+# Or specify custom config location:
+#   export SERVER_CONFIG=/path/to/custom_config.yaml
+#   python simple_server.py
+# ========================================================================
+
+server:
+  # ======================================================================
+  # nnUNet Paths Configuration
+  # ======================================================================
+  
+  # Path to nnUNet source code directory
+  # This should contain the nnUNet Python package
+  nnunet_path: "/media/ssd/roppert/segmentation_server/nnUNet"
+  
+  # Path to nnUNet v1 data directory (RESULTS_FOLDER)
+  # This should contain:
+  #   - nnUNet/3d_fullres/TaskXXX/.../fold_X/
+  #   - Trained model weights
+  nnunet_models: "/media/ssd/roppert/segmentation_server/nnUNetv1_data"
+  
+  # ======================================================================
+  # Model Configuration
+  # ======================================================================
+  
+  # Task name to use for inference
+  # This corresponds to the trained model directory:
+  # {nnunet_models}/nnUNet/3d_fullres/{task_name}/nnUNetTrainerV2__nnUNetPlansv2.1/
+  task_name: "Task115_AllData5foldsMeta"
+  
+  # ======================================================================
+  # GPU Configuration
+  # ======================================================================
+  
+  # List of GPU IDs to use for inference
+  # The server will distribute tasks across these GPUs
+  # Examples:
+  #   - Single GPU:   [0]
+  #   - Multiple GPUs: [0, 1, 2]
+  #   - Skip GPU 3:   [0, 1, 2]  (if GPU 3 has issues)
+  gpu_ids: [0]
+  
+  # ======================================================================
+  # Server Network Settings
+  # ======================================================================
+  
+  # Host to bind the server to
+  # "0.0.0.0" - accessible from any network interface (default for servers)
+  # "127.0.0.1" or "localhost" - only accessible locally
+  host: "0.0.0.0"
+  
+  # Port to listen on
+  port: 5000
+  
+  # Enable debug mode (verbose logging, auto-reload on code changes)
+  # Set to false for production
+  debug: true
+  
+  # ======================================================================
+  # Directory Configuration
+  # ======================================================================
+  
+  # These directories are created relative to simple_server.py location
+  # You typically don't need to change these unless you have specific
+  # requirements for data organization
+  
+  # Input directory for uploaded NIfTI files
+  # Relative path from simple_server.py: ../data/input
+  input_dir: "data/input"
+  
+  # Output directory for segmentation results
+  # Relative path from simple_server.py: ../data/output
+  output_dir: "data/output"
+  
+  # Temporary directory for processing
+  # Relative path from simple_server.py: ../data/tmp
+  tmp_dir: "data/tmp"
+  
+  # ======================================================================
+  # Processing Configuration
+  # ======================================================================
+  
+  # Maximum number of parallel segmentation tasks
+  # Should not exceed the number of available GPUs
+  max_parallel_tasks: 1
+  
+  # Timeout for individual segmentation tasks (seconds)
+  task_timeout: 600
+  
+  # Maximum upload file size (bytes)
+  # Default: 1GB (1024 * 1000 * 1000)
+  max_content_length: 1024000000
+
+
+# ========================================================================
+# Example Configurations for Different Environments
+# ========================================================================
+
+# --- Local Development (Kate's laptop) ---
+# server:
+#   nnunet_path: "/home/kate/projects/nnUNet"
+#   nnunet_models: "/home/kate/nnUNet_results"
+#   task_name: "Task115_AllData5foldsMeta"
+#   gpu_ids: [0]  # Single GPU
+#   host: "127.0.0.1"  # Only local access
+#   port: 5000
+#   debug: true
+#   max_parallel_tasks: 1
+
+# --- NSU GPU Server (Production) ---
+# server:
+#   nnunet_path: "/media/storage2/pavlovskiy/Slicer_plugin/server/nnUNet"
+#   nnunet_models: "/media/storage2/pavlovskiy/Slicer_plugin/server/nnUNetv1_data"
+#   task_name: "Task115_AllData5foldsMeta"
+#   gpu_ids: [0, 1, 2]  # Multiple GPUs
+#   host: "0.0.0.0"  # Network accessible
+#   port: 5000
+#   debug: false
+#   max_parallel_tasks: 3
+
+# --- Different Task/Model ---
+# server:
+#   nnunet_path: "/path/to/nnUNet"
+#   nnunet_models: "/path/to/models"
+#   task_name: "Task500_MSLesions_ISBI"  # Different task
+#   gpu_ids: [0]
+#   host: "0.0.0.0"
+#   port: 5000
+#   debug: false
+#   max_parallel_tasks: 1
+
+
+# ========================================================================
+# Validation Checklist
+# ========================================================================
+# Before starting the server, verify:
+# 
+# 1. nnunet_path exists and contains nnUNet Python package
+#    Check: ls {nnunet_path}/nnunet/
+# 
+# 2. nnunet_models exists and contains trained models
+#    Check: ls {nnunet_models}/nnUNet/3d_fullres/{task_name}/
+# 
+# 3. Model checkpoint files exist
+#    Check: ls {nnunet_models}/nnUNet/3d_fullres/{task_name}/nnUNetTrainerV2__nnUNetPlansv2.1/fold_*/model_final_checkpoint.model
+# 
+# 4. GPU IDs are valid for your system
+#    Check: nvidia-smi
+# 
+# 5. Port is not already in use
+#    Check: netstat -tuln | grep {port}
+# 
+# 6. Directories will be created automatically:
+#    - data/input/
+#    - data/output/
+#    - data/tmp/
+# ========================================================================

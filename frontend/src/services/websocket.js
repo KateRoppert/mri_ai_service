@@ -17,8 +17,9 @@ class WebSocketService {
   connect(runId, onMessage, onError) {
     this.runId = runId;
     
-    // WebSocket URL (прокси настроен в vite.config.js)
-    const wsUrl = `ws://${window.location.host}/ws/pipeline/${runId}`;
+    // WebSocket URL - подключаемся напрямую к backend
+    // Через SSH туннель прокси не работает, поэтому используем порт 8000
+    const wsUrl = `ws://localhost:8000/ws/pipeline/${runId}`;
     
     console.log('Подключение к WebSocket:', wsUrl);
     

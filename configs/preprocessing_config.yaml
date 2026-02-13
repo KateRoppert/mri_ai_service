@@ -18,7 +18,7 @@ steps:
       target_orientation: "LAS" #LPS
   
   - name: bias_correction
-    enabled: false
+    enabled: true
     params:
       shrink_factor: 4
       n_iterations: [50, 50, 50, 50]
@@ -26,9 +26,9 @@ steps:
       use_for_registration_only: true  # Применяется временно, финальные данные без correction
   
   - name: registration
-    enabled: false
+    enabled: true
     params:
-      reference_modality: "t1c"           # Регистрируется к атласу первым
+      reference_modality: "t1"           # Регистрируется к атласу первым
       registration_type: "Rigid"           # 6 DOF (rigid transformation)
       output_resolution: [1.0, 1.0, 1.0]  # 1mm isotropic
       metric: "MI"                         # Mutual Information
@@ -42,7 +42,7 @@ steps:
       save_transformations: true
 
   - name: resampling
-    enabled: true  # По умолчанию выключен для совместимости
+    enabled: false  # По умолчанию выключен для совместимости
     params:
       output_resolution: [1.0, 1.0, 1.0]  # Целевое разрешение в мм
       interpolation: "linear"              # linear, nearestNeighbor, или bSpline
@@ -51,7 +51,7 @@ steps:
     enabled: true
     params:
       method: "bet"                        # FSL BET
-      reference_modality: "t1c"           # На какой модальности создавать маску
+      reference_modality: "t1"           # На какой модальности создавать маску
       fractional_intensity: 0.35           # -f parameter (0.0-1.0)
       vertical_gradient: -0.1               # -g parameter (-1.0-1.0)
       apply_to_all: true                  # Применить маску ко всем модальностям

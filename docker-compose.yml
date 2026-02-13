@@ -1,0 +1,29 @@
+version: '3.8'
+services:
+  web:
+    build:
+      context: .
+      dockerfile: web.Dockerfile
+    ports:
+      - "8000:8000"
+      - "5000:5000"
+    environment:
+      - SEGMENTATION_URL=http://segmentation:8080
+    depends_on:
+      - segmentation
+    profiles: ["full"]
+  
+  segmentation:
+    build: ./segmentation
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./model_weights:/app/weights:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["full", "gpu"]

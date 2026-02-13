@@ -31,3 +31,10 @@ mni_templates/
 # Файлы операционной системы / редакторов
 .DS_Store
 *.swp
+
+model_weights/
+   *.pth
+   *.pt
+   *.onnx
+   __pycache__/
+   .env

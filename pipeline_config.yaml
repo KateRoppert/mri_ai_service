@@ -5,10 +5,10 @@
 # Общие настройки
 general:
   root_input_dir: /mnt/datastorage/nbia/nbia/manifest-1669766397961/UPENN-GBM
-  root_output_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3
-  max_subjects: 3                    # null = все субъекты, или число для теста
+  root_output_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_5
+  max_subjects: 1                    # null = все субъекты, или число для теста
   skip_existing: true                   # Глобальное возобновление прерванной работы
-  benchmark_results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results
+  benchmark_results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_5/benchmark_results
 
 # Структура поддиректорий внутри root_output_dir
 output_structure:
@@ -17,7 +17,6 @@ output_structure:
   stage_03: nifti
   stage_04: quality_reports
   stage_05_data: preprocessed
-  stage_05_transforms: preprocessing_transforms
   stage_06: segmentation
   logs: logs
   reports: reports
@@ -41,11 +40,11 @@ stages:
       workers: 18
       dry_run: false
       force: false
-      benchmark: true
+      benchmark: false
       batch_size: null
       max_subjects: null
       validate: false  # Пока не реализовано
-      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_01
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_01
 
   stage_02_metadata:
     enabled: true
@@ -55,10 +54,10 @@ stages:
       mode: parallel 
       workers: 14
       force: false
-      benchmark: true
+      benchmark: false
       max_subjects: null
       validate: false  # Пока не реализовано
-      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_02
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_02
 
   stage_03_convert:
     enabled: true
@@ -67,10 +66,10 @@ stages:
       mode: parallel
       workers: 14
       force: false
-      benchmark: true
+      benchmark: false
       max_subjects: null
       validate: false  # Пока не реализовано
-      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_03
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_03
 
   stage_04_quality:
     enabled: true
@@ -82,9 +81,9 @@ stages:
       workers: 12
       skip-existing: true
       force: false
-      benchmark: true
+      benchmark: false
       max_subjects: null
-      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_04
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_04
 
   stage_05_preprocessing:
     enabled: true
@@ -94,10 +93,10 @@ stages:
       mode: parallel
       workers: 14
       skip-existing: true
-      benchmark: true
+      benchmark: false
       validate: true
       max_subjects: null
-      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_05
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_05
 
   stage_06_segmentation:
     enabled: true
@@ -107,13 +106,13 @@ stages:
       console-log-level: INFO
       max-concurrent: 2
       skip-existing: true
-      benchmark: true
+      benchmark: false
       validate: true
       server_name: null
       gpu_count: null
       gpu_ids: null
       max_subjects: null
-      results-dir: /media/ssd/roppert/UPENN-GBM_preprocessed_3/benchmark_results/stage_06
+      results-dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_06
 
 # ============================================
 # НАСТРОЙКИ ОТЧЕТНОСТИ

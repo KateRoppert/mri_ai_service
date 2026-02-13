@@ -1,0 +1,79 @@
+# Preprocessing Configuration for MS60 Dataset
+# Aligned with MSLesSeg preprocessing pipeline for dataset compatibility
+# 
+# MSLesSeg preprocessing: Co-registration to MNI152, 1mm³, 182×218×182, LAS
+# This config replicates the same pipeline for MS60
+
+# FSL configuration
+fsl:
+  fsl_dir: "/media/storage/roppert/fsl/share/fsl"
+
+# Atlas configuration - MNI152 Template (matching MSLesSeg)
+atlas:
+  name: "MNI152"
+  # FSL MNI152 T1 1mm brain template
+  url: "$FSLDIR/data/standard/MNI152_T1_1mm.nii.gz"
+  cache_dir: "data/templates"
+  filename: "MNI152_T1_1mm.nii.gz"
+  # Alternative: Download from https://www.bic.mni.mcgill.ca/ServicesAtlases/ICBM152NLin2009
+  # Or use: /usr/share/fsl/data/standard/MNI152_T1_1mm.nii.gz
+
+# Processing steps
+steps:
+  - name: reorient
+    enabled: true
+    params:
+      target_orientation: "LAS" #LPS
+  
+  - name: bias_correction
+    enabled: true
+    params:
+      shrink_factor: 4
+      n_iterations: [50, 50, 50, 50]
+      convergence_threshold: 0.001
+      use_for_registration_only: true  # Применяется временно, финальные данные без correction
+  
+  - name: registration
+    enabled: true 
+    params:
+      reference_modality: "t1"           # Регистрируется к атласу первым
+      registration_type: "Rigid"           # 6 DOF (rigid transformation)
+      output_resolution: [1.0, 1.0, 1.0]  # 1mm isotropic
+      metric: "MI"                         # Mutual Information
+      metric_weight: 1.0
+      number_of_iterations: 1000
+      convergence_threshold: 1e-6
+      convergence_window_size: 10
+      smoothing_sigmas: [3, 2, 1, 0]      # Multi-resolution
+      shrink_factors: [8, 4, 2, 1]        # Multi-resolution
+      use_histogram_matching: true         # Для лучшей регистрации
+      save_transformations: true
+
+  - name: resampling
+    enabled: false  # По умолчанию выключен для совместимости
+    params:
+      output_resolution: [1.0, 1.0, 1.0]  # Целевое разрешение в мм
+      interpolation: "linear"              # linear, nearestNeighbor, или bSpline
+  
+  - name: skull_stripping
+    enabled: true
+    params:
+      method: "bet"                        # FSL BET
+      reference_modality: "t1"           # На какой модальности создавать маску
+      fractional_intensity: 0.35           # -f parameter (0.0-1.0)
+      vertical_gradient: -0.1               # -g parameter (-1.0-1.0)
+      apply_to_all: true                  # Применить маску ко всем модальностям
+      cleanup: true                       # Удалить промежуточные файлы
+
+# Expected modalities (BIDS suffixes)
+modalities:
+  - "t1c"   # T1-weighted post-contrast
+  - "t1"    # T1-weighted native
+  - "t2"    # T2-weighted
+  - "t2fl"  # T2-FLAIR
+
+# Logging configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"

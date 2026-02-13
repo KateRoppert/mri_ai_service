@@ -15,7 +15,7 @@ segmentation:
   # Active profile - change this to switch servers
   # Options: "local", "cube", "barguzin"
   # ============================================
-  active_profile: "cube"
+  active_profile: "local"
   
   profiles:
     # ==========================================

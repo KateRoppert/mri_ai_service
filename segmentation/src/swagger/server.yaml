@@ -1,0 +1,116 @@
+iopenapi: 3.0.0
+info:
+  title: AI Annotation Assistance server API
+  description: >-
+    NVIDIA Deep Learning for Medical Imaging.  Artificial Intelligence
+    Annotation Assistance server API specification.  This specification defines
+    the inferencing and smart polygon API.
+  version: '0.1'
+paths:
+  /v1/models:
+    get:
+      summary: Retrieve the list of all available models
+      description: >-
+        Retrieve the list of all models currently available from this AIAA
+        server.  Multiple models can be instantiated on the same server.
+      operationId: server.get_models
+      tags:
+        - Registry
+      parameters:
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: Filter models which serve the provided label. If not provided then label matching will not be performed.
+        - in: query
+          name: type
+          required: false
+          schema:
+            type: string
+          description: Enum - "annotation" "segmentation". Filter models of provided type. If not provided all models will be returned by default.
+
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOfModels'
+  /v1/inference:
+    post:
+      summary: Run inference for model
+      description: Run inference for model
+      operationId: server.inference
+      tags:
+        - Registry
+      parameters:
+        - in: query
+          name: model
+          required: true
+          schema:
+            type: string
+          description: The model name
+      requestBody:
+        content:
+          multipart/form-data: # Media type
+            schema: # Request payload
+              type: object
+              properties: # Request parts
+                params: # Part 1 (string value)
+                  type: string
+                datapoint: # Part2 (object)
+                  type: string
+                  format: binary
+            encoding:
+              datapoint: # Property name
+                contentType: application/octet-stream
+      responses:
+        '200':
+          description: OK
+
+components:
+  schemas:
+    Model:
+      type: object
+      properties:
+        name:
+          type: string
+        internal name:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        roi:
+          type: array
+          items:
+            type: integer
+        sigma:
+          type: number
+          format: double
+        padding:
+          type: number
+          format: double
+        version:
+          type: string
+      example:
+        name: Liver
+        internal name: DExtr3D+Liver
+        labels:
+          - liver
+        description: 3D Liver Segmentation model
+        roi:
+          - 128
+          - 128
+          - 128
+        sigma: 3
+        padding: 20
+        version: rc6
+    ListOfModels:
+      type: array
+      items:
+        $ref: '#/components/schemas/Model'
+
