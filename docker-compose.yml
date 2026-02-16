@@ -1,24 +1,37 @@
 version: '3.8'
+
 services:
+  # Сервис 1: веб-интерфейс + бэкенд + препроцессинг
   web:
     build:
       context: .
       dockerfile: web.Dockerfile
+    image: brain-lesion-web:demo
     ports:
-      - "8000:8000"
-      - "5000:5000"
+      - "8000:8000"  # Только один порт - фронтенд и API на 8000
     environment:
-      - SEGMENTATION_URL=http://segmentation:8080
+      - SEGMENTATION_URL=http://segmentation:5000  # ← Исправлено с :8080 на :5000
+      - FSLDIR=${FSLDIR:-/usr/local/fsl}  # Путь к FSL в образе
+    volumes:
+        - /home:/home:rw              # Вся домашняя директория
+        - ./demo_workspace:/workspace:rw  # Локальная папка
     depends_on:
       - segmentation
     profiles: ["full"]
   
+  # Сервис 2: сегментация на GPU
   segmentation:
-    build: ./segmentation
+    build:
+      context: ./segmentation
+      dockerfile: Dockerfile
+    image: brain-lesion-segmentation:demo
     ports:
-      - "8080:8080"
+      - "5000:5000"  # ← Исправлено с 8080 на 5000
+    environment:
+      - WEIGHTS_PATH=/app/weights
+      - DEVICE=cuda
     volumes:
-      - ./model_weights:/app/weights:ro
+      - ./model_weights:/app/weights:ro  # Веса модели
     deploy:
       resources:
         reservations:

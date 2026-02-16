@@ -5,9 +5,10 @@ venv/
 # Кэш Python
 __pycache__/
 *.pyc
-
+.pytest_cache
 # Лог-файлы
 *.log
+logs/
 
 # Данные и результаты обработки
 runs_data/
@@ -24,6 +25,8 @@ preprocessed_data/
 transformations/
 output/
 results/
+runtime_configs/
+test_benchmark_results/
 
 # Шаблоны для предобработки
 mni_templates/

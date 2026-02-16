@@ -6,6 +6,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,10 +81,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Добавляем CORS middleware ← ДОБАВЬ ЭТО
+# CORS middleware для production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Frontend URL
+    allow_origins=["*"],  # Для Docker - фронт и бэк на одном порту
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -632,6 +633,22 @@ async def get_nifti_files_list(
         files=nifti_files
     )
 
+# ============================================
+# СТАТИКА ФРОНТЕНДА (React production build)
+# ============================================
+
+from fastapi.staticfiles import StaticFiles
+
+# Путь к собранному фронтенду
+frontend_dist_path = Path(__file__).parent.parent / "frontend" / "dist"
+
+if frontend_dist_path.exists():
+    # Монтируем React статику на корень
+    # ВАЖНО: это должно быть ПОСЛЕДНИМ, чтобы не перекрывать API роуты
+    app.mount("/", StaticFiles(directory=str(frontend_dist_path), html=True), name="frontend")
+    logger.info(f"Фронтенд смонтирован из: {frontend_dist_path}")
+else:
+    logger.warning(f"Директория фронтенда не найдена: {frontend_dist_path}")
 
 # ============================================
 # ЗАПУСК СЕРВЕРА
