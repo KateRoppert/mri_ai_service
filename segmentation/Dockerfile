@@ -27,7 +27,7 @@ WORKDIR /app
 # Копируем и устанавливаем зависимости
 COPY requirements.txt .
 # Используем python3 -m pip для уверенности, что ставим в 3.11
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --ignore-installed -r requirements.txt
 
 # Копируем код сегментации
 COPY *.py .
