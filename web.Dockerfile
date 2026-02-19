@@ -12,7 +12,7 @@ RUN apt-get update && \
 
 # Копируем и собираем фронтенд
 COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm ci --only=production
+RUN cd frontend && npm install
 
 COPY frontend/ ./frontend/
 RUN cd frontend && npm run build
