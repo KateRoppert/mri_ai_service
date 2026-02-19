@@ -15,6 +15,9 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Копируем код сегментации
 COPY *.py .
 COPY src/ ./src/
+COPY nnUNet/ .nnUNet/
+COPY nnUNetv1_data/ ./nnUNetv1_data/
+COPY nnUNetv2_data/ ./nnUNetv2_data/
 
 # Открываем порт 5000 (не 8080!)
 EXPOSE 5000

@@ -30,8 +30,6 @@ services:
     environment:
       - WEIGHTS_PATH=/app/weights
       - DEVICE=cuda
-    volumes:
-      - ./model_weights:/app/weights:ro  # Веса модели
     deploy:
       resources:
         reservations:
