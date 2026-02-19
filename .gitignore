@@ -35,9 +35,7 @@ mni_templates/
 .DS_Store
 *.swp
 
-model_weights/
-   *.pth
-   *.pt
-   *.onnx
-   __pycache__/
-   .env
+segmentation/nnUNetv1_data/
+segmentation/nnUNetv2_data/
+*.pth
+*.pt
