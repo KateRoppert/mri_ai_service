@@ -38,6 +38,8 @@ COPY pipeline_config.yaml .
 # 8. Открываем порт
 EXPOSE 8000
 
-# 9. ГЛАВНОЕ: Переопределяем команду запуска.
-# Теперь запустится ваш новый скрипт, а старый Flask даже не узнает об этом.
-CMD ["python3", "backend/app.py"]
+# Сбрасываем старый ENTRYPOINT из базового образа
+ENTRYPOINT []
+
+# Указываем явно команду запуска как ENTRYPOINT
+ENTRYPOINT ["python3", "backend/app.py"]
