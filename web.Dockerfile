@@ -1,81 +1,32 @@
-# Используем чистую Ubuntu 22.04 как фундамент
-FROM ubuntu:22.04
+# 1. Берем старый образ как фундамент (там уже есть рабочие FSL и ANTs)
+FROM kateroppert/mri-ai-service:latest
 
-# Настройки для автоматической установки пакетов
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
+# 2. Переключаемся под пользователя root, чтобы иметь права на очистку
+USER root
+
+# 3. УДАЛЯЕМ старый код полностью, чтобы он не мешался
+RUN rm -rf /app/* && rm -rf /workspace/*
 
 WORKDIR /app
 
-# --- 1. Установка системных зависимостей, Python 3.11 и инструментов ---
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    curl \
-    wget \
-    git \
-    build-essential \
-    zlib1g-dev \
-    libgl1-mesa-glx \
-    libglu1-mesa \
-    libsm6 \
-    libxrender1 \
-    libxext6 \
-    bc \
-    dc \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-dev \
-    python3.11-distutils \
-    python3-pip \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Делаем Python 3.11 основным
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-    && python3 -m pip install --upgrade pip
-
-# --- 2. Установка FSL через NeuroDebian (Версия 6.0 для Ubuntu 22.04) ---
-RUN apt-get update && apt-get install -y gnupg wget curl && \
-    wget -O- http://neuro.debian.net/lists/jammy.us-nh.full | tee /etc/apt/sources.list.d/neurodebian.sources.list && \
-    apt-key adv --recv-keys --keyserver hkps://keyserver.ubuntu.com 0xA5D32F012649A5A9 && \
-    apt-get update && \
-    # В Ubuntu 22.04 пакет называется просто fsl-core (это будет FSL 6.x)
-    apt-get install -y fsl-core && \
+# 4. Устанавливаем Node.js (он нужен для сборки вашего нового React фронтенда)
+RUN apt-get update && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Настройка путей для FSL 6.0
-ENV FSLDIR=/usr/lib/fsl/6.0
-ENV PATH=${FSLDIR}:${PATH}
-ENV FSLOUTPUTTYPE=NIFTI_GZ
-
-# --- 3. Установка ANTs (бинарная сборка) ---
-# Используем проверенную ссылку на бинарники для Ubuntu 22.04
-RUN wget -q https://github.com/ANTsX/ANTs/releases/download/v2.4.3/antX-v2.4.3-Ubuntu22.04.tar.gz \
-    && tar -xzf antX-v2.4.3-Ubuntu22.04.tar.gz \
-    && mv install/* /usr/local/ \
-    && rm antX-v2.4.3-Ubuntu22.04.tar.gz && rm -rf install
-
-ENV ANTSPATH=/usr/local/bin/
-ENV PATH=${ANTSPATH}:${PATH}
-
-# --- 4. Установка Node.js для фронтенда ---
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs
-
-# --- 5. Сборка React фронтенда ---
+# 5. Собираем ВАШ НОВЫЙ фронтенд
 COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm install
-
 COPY frontend/ ./frontend/
 RUN cd frontend && npm run build
 
-# --- 6. Установка Python зависимостей ---
+# 6. Устанавливаем ВАШИ Python-зависимости
+# В старом образе точно есть питон. Ставим поверх нужные вам библиотеки.
 COPY requirements.txt .
-# Используем флаг --break-system-packages для Ubuntu 22.04
-RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
 
-# --- 7. Копирование кода сервиса ---
+# 7. Копируем ВАШ НОВЫЙ код бэкенда и оркестратора
 COPY backend/ ./backend/
 COPY configs/ ./configs/
 COPY scripts/ ./scripts/
@@ -84,8 +35,9 @@ COPY utils/ ./utils/
 COPY orchestrator.py .
 COPY pipeline_config.yaml .
 
-# Порт бэкенда
+# 8. Открываем порт
 EXPOSE 8000
 
-# Запуск
+# 9. ГЛАВНОЕ: Переопределяем команду запуска.
+# Теперь запустится ваш новый скрипт, а старый Flask даже не узнает об этом.
 CMD ["python3", "backend/app.py"]
