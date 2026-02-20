@@ -37,20 +37,21 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
 # --- 2. Установка FSL через NeuroDebian ---
 RUN apt-get update && apt-get install -y gnupg wget && \
-    # Добавляем ключи и репозиторий NeuroDebian
+    # 1. Добавляем репозиторий NeuroDebian
     wget -O- http://neuro.debian.net/lists/jammy.us-nh.full | tee /etc/apt/sources.list.d/neurodebian.sources.list && \
-    apt-key adv --recv-keys --keyserver hkps://keyserver.ubuntu.com 0xA5D32F012649A5A9 && \
+    # 2. Правильный способ добавления ключа (без предупреждений о legacy)
+    wget -qO - https://neuro.debian.net/_static/neuro.debian.net.asc | apt-key add - && \
     apt-get update && \
-    # Устанавливаем fsl-core (минимальный набор без тяжелых атласов, если они не нужны)
-    apt-get install -y fsl-core && \
+    # 3. Устанавливаем конкретные пакеты версии 5.0
+    # Мы используем fsl-5.0-core. Атласы (fsl-5.0-atlases) весят много, 
+    # если они не нужны для работы ваших скриптов, их можно не ставить.
+    apt-get install -y fsl-5.0-core && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Настройка переменных окружения для FSL (в NeuroDebian пути именно такие)
+# Настройка переменных окружения для FSL 5.0
 ENV FSLDIR=/usr/lib/fsl/5.0
 ENV PATH=${FSLDIR}:${PATH}
 ENV FSLOUTPUTTYPE=NIFTI_GZ
-# Важно: NeuroDebian использует скрипт для настройки, добавим его в профиль
-ENV POSSUMDIR=$FSLDIR
 ENV LD_LIBRARY_PATH=${FSLDIR}:${LD_LIBRARY_PATH}
 
 # --- 3. Установка ANTs (бинарная сборка) ---
