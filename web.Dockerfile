@@ -35,19 +35,26 @@ RUN apt-get update && apt-get install -y \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
     && python3 -m pip install --upgrade pip
 
-# --- 2. Установка FSL (Core components) ---
-# Устанавливаем только необходимые части FSL для экономии места
-RUN apt-get update && apt-get install -y fsl-core fsl-atlases \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# --- 2. Установка FSL через NeuroDebian ---
+RUN apt-get update && apt-get install -y gnupg wget && \
+    # Добавляем ключи и репозиторий NeuroDebian
+    wget -O- http://neuro.debian.net/lists/jammy.us-nh.full | tee /etc/apt/sources.list.d/neurodebian.sources.list && \
+    apt-key adv --recv-keys --keyserver hkps://keyserver.ubuntu.com 0xA5D32F012649A5A9 && \
+    apt-get update && \
+    # Устанавливаем fsl-core (минимальный набор без тяжелых атласов, если они не нужны)
+    apt-get install -y fsl-core && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Настройка переменных окружения для FSL
-ENV FSLDIR=/usr/share/fsl/5.0
-ENV PATH=${FSLDIR}/bin:${PATH}
+# Настройка переменных окружения для FSL (в NeuroDebian пути именно такие)
+ENV FSLDIR=/usr/lib/fsl/5.0
+ENV PATH=${FSLDIR}:${PATH}
 ENV FSLOUTPUTTYPE=NIFTI_GZ
-ENV LD_LIBRARY_PATH=${FSLDIR}/lib:${LD_LIBRARY_PATH}
+# Важно: NeuroDebian использует скрипт для настройки, добавим его в профиль
+ENV POSSUMDIR=$FSLDIR
+ENV LD_LIBRARY_PATH=${FSLDIR}:${LD_LIBRARY_PATH}
 
 # --- 3. Установка ANTs (бинарная сборка) ---
-# Скачиваем скомпилированный ANTs (быстрее, чем собирать из исходников)
+# Используем проверенную ссылку на бинарники для Ubuntu 22.04
 RUN wget -q https://github.com/ANTsX/ANTs/releases/download/v2.4.3/antX-v2.4.3-Ubuntu22.04.tar.gz \
     && tar -xzf antX-v2.4.3-Ubuntu22.04.tar.gz \
     && mv install/* /usr/local/ \
