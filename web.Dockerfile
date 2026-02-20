@@ -36,6 +36,7 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
     && python3 -m pip install --upgrade pip
 
 # --- 2. Установка FSL через NeuroDebian ---
+RUN apt-cache search fsl
 RUN apt-get update && apt-get install -y gnupg wget && \
     # 1. Добавляем репозиторий NeuroDebian
     wget -O- http://neuro.debian.net/lists/jammy.us-nh.full | tee /etc/apt/sources.list.d/neurodebian.sources.list && \
