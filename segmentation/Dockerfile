@@ -39,4 +39,4 @@ COPY nnUNetv2_data/ ./nnUNetv2_data/
 EXPOSE 5000
 
 # Запускаем сервер
-CMD ["python3", "simple_server.py"]
+CMD ["python3", "src/simple_server.py"]
