@@ -35,25 +35,19 @@ RUN apt-get update && apt-get install -y \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
     && python3 -m pip install --upgrade pip
 
-# --- 2. Установка FSL через NeuroDebian ---
-RUN apt-cache search fsl
-RUN apt-get update && apt-get install -y gnupg wget && \
-    # 1. Добавляем репозиторий NeuroDebian
+# --- 2. Установка FSL через NeuroDebian (Версия 6.0 для Ubuntu 22.04) ---
+RUN apt-get update && apt-get install -y gnupg wget curl && \
     wget -O- http://neuro.debian.net/lists/jammy.us-nh.full | tee /etc/apt/sources.list.d/neurodebian.sources.list && \
-    # 2. Правильный способ добавления ключа (без предупреждений о legacy)
-    wget -qO - https://neuro.debian.net/_static/neuro.debian.net.asc | apt-key add - && \
+    apt-key adv --recv-keys --keyserver hkps://keyserver.ubuntu.com 0xA5D32F012649A5A9 && \
     apt-get update && \
-    # 3. Устанавливаем конкретные пакеты версии 5.0
-    # Мы используем fsl-5.0-core. Атласы (fsl-5.0-atlases) весят много, 
-    # если они не нужны для работы ваших скриптов, их можно не ставить.
-    apt-get install -y fsl-5.0-core && \
+    # В Ubuntu 22.04 пакет называется просто fsl-core (это будет FSL 6.x)
+    apt-get install -y fsl-core && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Настройка переменных окружения для FSL 5.0
-ENV FSLDIR=/usr/lib/fsl/5.0
+# Настройка путей для FSL 6.0
+ENV FSLDIR=/usr/lib/fsl/6.0
 ENV PATH=${FSLDIR}:${PATH}
 ENV FSLOUTPUTTYPE=NIFTI_GZ
-ENV LD_LIBRARY_PATH=${FSLDIR}:${LD_LIBRARY_PATH}
 
 # --- 3. Установка ANTs (бинарная сборка) ---
 # Используем проверенную ссылку на бинарники для Ubuntu 22.04

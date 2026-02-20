@@ -1,6 +1,6 @@
 # FSL configuration
 fsl:
-  fsl_dir: "/usr/share/fsl/5.0"  # Путь к FSL /media/storage/roppert/fsl/share/fsl
+  fsl_dir: "/usr/share/fsl/6.0"  # Путь к FSL /media/storage/roppert/fsl/share/fsl
 
 # Atlas configuration
 atlas:
