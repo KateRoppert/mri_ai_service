@@ -339,6 +339,65 @@ class PipelineManager:
         
         logger.info(f"Успешно загружено {len(reports)} отчётов")
         return reports
+
+    def get_volume_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Получить все отчёты об объёмах из segmentation/
+        
+        Структура: segmentation/sub-XXX/ses-XXX/anat/*_volume_report.txt
+        
+        Returns:
+            Список словарей с отчётами
+        """
+        seg_dir = Path(output_path) / "segmentation"
+        
+        if not seg_dir.exists():
+            logger.warning(f"Директория сегментации не найдена: {seg_dir}")
+            return None
+        
+        report_files = list(seg_dir.rglob("*_volume_report.txt"))
+        
+        if not report_files:
+            logger.warning(f"Отчёты об объёмах не найдены в {seg_dir}")
+            return None
+        
+        logger.info(f"Найдено {len(report_files)} отчётов об объёмах")
+        
+        reports = []
+        
+        for report_file in report_files:
+            try:
+                report_text = report_file.read_text(encoding='utf-8')
+                
+                # Парсим patient_id и session_id из имени файла
+                # sub-001_ses-001_T1w_volume_report.txt
+                name = report_file.name.replace("_volume_report.txt", "")
+                parts = name.split("_")
+                patient_id = parts[0] if len(parts) > 0 else "unknown"
+                session_id = parts[1] if len(parts) > 1 else "ses-001"
+                
+                # Имя маски — тот же базовый файл но с _segmask.nii.gz
+                mask_file = name + "_segmask.nii.gz"
+                
+                reports.append({
+                    "mask_file": mask_file,
+                    "patient_id": patient_id,
+                    "session_id": session_id,
+                    "report_text": report_text,
+                })
+                
+                logger.info(f"Отчёт загружен: {report_file.name}")
+            
+            except Exception as e:
+                logger.error(f"Ошибка чтения отчёта {report_file}: {e}")
+                continue
+        
+        if not reports:
+            logger.warning("Не удалось загрузить ни одного отчёта об объёмах")
+            return None
+        
+        logger.info(f"Успешно загружено {len(reports)} отчётов об объёмах")
+        return reports
     
     def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
         """

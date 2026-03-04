@@ -32,7 +32,8 @@ from models import (
     QualityReportListResponse,
     QualityMetrics,
     NIfTIFile,     
-    NIfTIFilesResponse 
+    NIfTIFilesResponse,
+    VolumeReportListResponse 
 )
 from database import (
     get_db,
@@ -630,6 +631,39 @@ async def get_nifti_files_list(
     return NIfTIFilesResponse(
         total=len(nifti_files),
         files=nifti_files
+    )
+
+@app.get("/api/volume-reports/{run_id}", response_model=VolumeReportListResponse)
+async def get_volume_reports(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить отчёты об объёмах опухоли
+    """
+    logger.info(f"Запрос отчётов об объёмах для run_id: {run_id}")
+    
+    run = get_pipeline_run(db, run_id)
+    
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    
+    if run.current_stage < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Segmentation stage not yet completed"
+        )
+    
+    reports = pipeline_manager.get_volume_reports(run.output_path)
+    
+    if not reports:
+        raise HTTPException(status_code=404, detail="Volume reports not found")
+    
+    logger.info(f"Найдено {len(reports)} отчётов об объёмах для run_id: {run_id}")
+    
+    return VolumeReportListResponse(
+        total=len(reports),
+        reports=reports
     )
 
 # ============================================

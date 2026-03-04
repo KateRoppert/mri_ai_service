@@ -40,6 +40,29 @@ class NIfTIFilesResponse(BaseModel):
     files: List[NIfTIFile] = Field(..., description="Список файлов")
 
 # ============================================
+# МОДЕЛИ ДЛЯ ОТЧЁТА ОБ ОБЪЁМАХ ОПУХОЛИ
+# ============================================
+
+class VolumeClass(BaseModel):
+    """Объём одного класса сегментации"""
+    name: str = Field(..., description="Название класса")
+    voxel_count: int = Field(..., description="Количество вокселей")
+    volume_mm3: float = Field(..., description="Объём в мм³")
+    volume_cm3: float = Field(..., description="Объём в см³")
+
+class VolumeReportResponse(BaseModel):
+    """Отчёт об объёмах опухоли для одной маски"""
+    mask_file: str = Field(..., description="Имя файла маски")
+    patient_id: str = Field(..., description="ID пациента")
+    session_id: str = Field(..., description="ID сессии")
+    report_text: str = Field(..., description="Полный текст отчёта")
+
+class VolumeReportListResponse(BaseModel):
+    """Список отчётов об объёмах"""
+    total: int = Field(..., description="Количество отчётов")
+    reports: List[VolumeReportResponse] = Field(..., description="Список отчётов")
+
+# ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
 # ============================================
 
