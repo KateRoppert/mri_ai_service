@@ -222,7 +222,7 @@ def run_pipeline_background(
 # API ENDPOINTS
 # ============================================
 
-@app.get("/", response_model=HealthCheckResponse)
+@app.get("/api/health", response_model=HealthCheckResponse)
 async def root():
     """Health check endpoint"""
     return HealthCheckResponse(
@@ -593,34 +593,33 @@ async def get_nifti_files_list(
         mask_filename = mask_path.name
         
         # Извлекаем base name без _segmask
-        # Например: sub-001_ses-001_t1_segmask.nii.gz -> sub-001_ses-001_t1
         base_name = mask_filename.replace("_segmask.nii.gz", "")
-        
-        # Парсим имя файла
         parts = base_name.split("_")
         
         try:
             patient_id = parts[0]  # sub-001
-            session_id = parts[1] if len(parts) > 1 else "ses-001"  # ses-001
-            modality = parts[2] if len(parts) > 2 else "unknown"  # t1, t2, flair
+            session_id = parts[1] if len(parts) > 1 else "ses-001"
             
-            # Проверяем что есть соответствующий preprocessed файл
-            if base_name in preprocessed_files:
-                preprocessed_filename = preprocessed_files[base_name]
-                
-                nifti_files.append(NIfTIFile(
-                    filename=preprocessed_filename,  # Основной файл
-                    mask_filename=mask_filename,     # Маска
-                    patient_id=patient_id,
-                    session_id=session_id,
-                    modality=modality.upper(),
-                    image_url=f"/api/nifti/{run_id}/preprocessed/{preprocessed_filename}",
-                    mask_url=f"/api/nifti/{run_id}/segmentation/{mask_filename}"
-                ))
-                
-                logger.info(f"Добавлен файл: {preprocessed_filename} с маской {mask_filename}")
-            else:
-                logger.warning(f"Не найден preprocessed файл для маски: {mask_filename}")
+            # Формируем префикс пациент+сессия
+            prefix = f"{patient_id}_{session_id}_"
+            
+            # Ищем ВСЕ preprocessed файлы с этим префиксом
+            for prep_base, prep_filename in preprocessed_files.items():
+                if prep_base.startswith(prefix):
+                    prep_parts = prep_base.split("_")
+                    modality = prep_parts[2] if len(prep_parts) > 2 else "unknown"
+                    
+                    nifti_files.append(NIfTIFile(
+                        filename=prep_filename,
+                        mask_filename=mask_filename,
+                        patient_id=patient_id,
+                        session_id=session_id,
+                        modality=modality.upper(),
+                        image_url=f"/api/nifti/{run_id}/preprocessed/{prep_filename}",
+                        mask_url=f"/api/nifti/{run_id}/segmentation/{mask_filename}",
+                    ))
+                    
+                    logger.info(f"Добавлен файл: {prep_filename} с маской {mask_filename}")
         
         except Exception as e:
             logger.warning(f"Не удалось распарсить имя файла {mask_filename}: {e}")
