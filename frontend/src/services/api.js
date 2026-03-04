@@ -53,6 +53,14 @@ export const getQualityReport = async (runId) => {
 };
 
 /**
+ * Получить отчёты об объёмах опухоли
+ */
+export const getVolumeReports = async (runId) => {
+  const response = await apiClient.get(`/volume-reports/${runId}`);
+  return response.data;
+};
+
+/**
  * Получить список доступных NIfTI файлов для визуализации
  */
 export const getNIfTIFiles = async (runId) => {
@@ -74,6 +82,7 @@ export default {
   getPipelineStatus,
   getPipelineHistory,
   getQualityReport,
+  getVolumeReports,
   getNIfTIFiles,     
   getNIfTIFileUrl,    
 };

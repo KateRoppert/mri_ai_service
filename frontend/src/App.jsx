@@ -8,6 +8,7 @@ import PipelineForm from './components/PipelineForm';
 import ProgressMonitor from './components/ProgressMonitor';
 import PipelineHistory from './components/PipelineHistory';
 import QualityReport from './components/QualityReport';
+import VolumeReport from './components/VolumeReport';
 import NIfTIViewer from './components/NIfTIViewer';
 import './App.css';
 
@@ -22,6 +23,8 @@ function App() {
   const [historyVisualizationRunId, setHistoryVisualizationRunId] = useState(null);
   const [showHistoryQualityReport, setShowHistoryQualityReport] = useState(false);
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
+  const [historyVolumeReportRunId, setHistoryVolumeReportRunId] = useState(null);
+  const [showHistoryVolumeReport, setShowHistoryVolumeReport] = useState(false);
 
 
   /**
@@ -38,6 +41,11 @@ function App() {
   const handleShowHistoryVisualization = (runId) => {
     setHistoryVisualizationRunId(runId);
     setShowHistoryVisualization(true);
+  };
+
+  const handleShowHistoryVolumeReport = (runId) => {
+    setHistoryVolumeReportRunId(runId);
+    setShowHistoryVolumeReport(true);
   };
 
   /**
@@ -127,6 +135,7 @@ function App() {
                 <PipelineHistory
                   onShowQualityReport={handleShowHistoryQualityReport}
                   onShowVisualization={handleShowHistoryVisualization}
+                  onShowVolumeReport={handleShowHistoryVolumeReport}
                 />
               ),
             },
@@ -147,6 +156,14 @@ function App() {
             runId={historyVisualizationRunId}
             visible={showHistoryVisualization}
             onClose={() => setShowHistoryVisualization(false)}
+          />
+        )}
+
+        {showHistoryVolumeReport && (
+          <VolumeReport
+            runId={historyVolumeReportRunId}
+            visible={showHistoryVolumeReport}
+            onClose={() => setShowHistoryVolumeReport(false)}
           />
         )}
       </Layout.Content>
