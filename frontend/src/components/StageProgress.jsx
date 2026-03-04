@@ -8,10 +8,11 @@ import {
   SyncOutlined,
   ClockCircleOutlined,
   FileTextOutlined,
-  EyeOutlined
+  EyeOutlined,
+  PieChartOutlined,
 } from '@ant-design/icons';
 
-const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization }) => {
+const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization, onShowVolumeReport }) => {
   /**
    * Определяем цвет и иконку в зависимости от статуса
    */
@@ -56,6 +57,7 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
   
   // Показываем кнопку визуализации только для 6-го этапа после завершения
   const showVisualizationButton = stageNumber === 6 && status === 'completed' && onShowVisualization;
+  const showVolumeButton = stageNumber === 6 && status === 'completed' && onShowVolumeReport;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -78,6 +80,18 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
               onClick={onShowQualityReport}
             >
               Просмотреть отчёт
+            </Button>
+          )}
+
+          {/* Кнопка отчёта об объёмах */}
+          {showVolumeButton && (
+            <Button
+              type="link"
+              size="small"
+              icon={<PieChartOutlined />}
+              onClick={onShowVolumeReport}
+            >
+              Объёмы опухоли
             </Button>
           )}
           
