@@ -1176,6 +1176,13 @@ class SegmentationRunner:
                     if success:
                         self.stats.successful += 1
                         
+                        # compute volume report
+                        try:
+                            from compute_volumes import compute_and_save_volume_report
+                            compute_and_save_volume_report(session.output_mask_path)
+                        except Exception as e:
+                            logger.warning(f"  Volume report failed for {identifier}: {e}")
+                        
                         # Collect GPU metrics if benchmarking
                         if self.args.benchmark and task_status and 'gpu_metrics' in task_status:
                             self.gpu_metrics_collected.append(task_status['gpu_metrics'])
