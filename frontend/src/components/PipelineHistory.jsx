@@ -193,9 +193,9 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolum
     {
       title: 'Действия',
       key: 'actions',
-      width: 180,
+      width: 120,
       render: (_, record) => (
-        <Space size="small">
+        <Space direction="vertical" size={2}>
           {record.status === 'completed' && record.current_stage >= 4 && (
             <Button
               type="link"
