@@ -667,6 +667,50 @@ async def get_volume_reports(
     )
 
 # ============================================
+# KAPPA AUTH ENDPOINTS
+# ============================================
+
+from kappa_auth import kappa_login, get_session, delete_session
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class KappaLoginRequest(PydanticBaseModel):
+    login_id: str
+    passwd: str
+
+
+@app.post("/api/kappa/login")
+async def kappa_login_endpoint(request: KappaLoginRequest):
+    """Авторизация в Kappa"""
+    result = await kappa_login(request.login_id, request.passwd)
+    if not result:
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль Kappa")
+    return result
+
+
+@app.get("/api/kappa/me")
+async def kappa_me(session_id: str):
+    """Проверка текущей сессии Kappa"""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия не найдена или истекла")
+    return {
+        "user_name": session["user_name"],
+        "first_name": session["first_name"],
+        "last_name": session["last_name"],
+        "token_expiry": session["token_expiry"],
+    }
+
+
+@app.post("/api/kappa/logout")
+async def kappa_logout(session_id: str):
+    """Выход из Kappa"""
+    deleted = delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    return {"status": "ok"}
+
+# ============================================
 # СТАТИКА ФРОНТЕНДА (React production build)
 # ============================================
 
