@@ -2,8 +2,9 @@
  * Главный компонент приложения
  */
 import { useState } from 'react';
-import { Layout, Typography, Space, Divider, Tabs, Card } from 'antd';
-import { RocketOutlined, HistoryOutlined } from '@ant-design/icons';
+import { Layout, Typography, Space, Divider, Tabs, Card, Button } from 'antd';
+import { RocketOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
+import KappaLogin from './components/KappaLogin';
 import PipelineForm from './components/PipelineForm';
 import ProgressMonitor from './components/ProgressMonitor';
 import PipelineHistory from './components/PipelineHistory';
@@ -25,7 +26,26 @@ function App() {
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
   const [historyVolumeReportRunId, setHistoryVolumeReportRunId] = useState(null);
   const [showHistoryVolumeReport, setShowHistoryVolumeReport] = useState(false);
+  const [kappaSession, setKappaSession] = useState(null);
 
+  const handleLoginSuccess = (data) => {
+    setKappaSession(data);
+    localStorage.setItem('kappa_session_id', data.session_id);
+  };
+
+  const handleLogout = async () => {
+    if (kappaSession?.session_id) {
+      try {
+        await fetch(`/api/kappa/logout?session_id=${kappaSession.session_id}`, {
+          method: 'POST',
+        });
+      } catch (e) {
+        console.error('Logout error:', e);
+      }
+    }
+    setKappaSession(null);
+    localStorage.removeItem('kappa_session_id');
+  };
 
   /**
    * Показать отчёт из истории
@@ -80,91 +100,114 @@ function App() {
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
-      <Layout.Header style={{ background: '#1890ff', padding: '0 24px' }}>
-        <Typography.Title level={3} style={{ color: 'white', margin: '16px 0' }}>
+      <Layout.Header style={{
+        background: '#1890ff',
+        padding: '0 24px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      }}>
+        <Typography.Title level={3} style={{ color: 'white', margin: 0 }}>
           🧠 Система распознавания поражений головного мозга
         </Typography.Title>
+        {kappaSession && (
+          <Space>
+            <Text style={{ color: 'white' }}>
+              {kappaSession.first_name} {kappaSession.last_name}
+            </Text>
+            <Button
+              icon={<LogoutOutlined />}
+              onClick={handleLogout}
+              size="small"
+              ghost
+            >
+              Выход
+            </Button>
+          </Space>
+        )}
       </Layout.Header>
-      
+
       <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
-        <Tabs
-          defaultActiveKey="pipeline"
-          size="large"
-          items={[
-            {
-              key: 'pipeline',
-              label: (
-                <span>
-                  <RocketOutlined />
-                  Запуск обработки
-                </span>
-              ),
-              children: (
-                <>
-                  {!activeRun ? (
-                    <Card>
-                      <PipelineForm onPipelineStarted={handlePipelineStarted} />
-                    </Card>
-                  ) : (
-                    <ProgressMonitor
-                      runId={activeRun.runId}
-                      onComplete={handlePipelineComplete}
-                    />
-                  )}
-
-                  {completedRuns.length > 0 && (
+        {!kappaSession ? (
+          <KappaLogin onLoginSuccess={handleLoginSuccess} />
+        ) : (
+          <>
+            <Tabs
+              defaultActiveKey="pipeline"
+              size="large"
+              items={[
+                {
+                  key: 'pipeline',
+                  label: (
+                    <span>
+                      <RocketOutlined />
+                      Запуск обработки
+                    </span>
+                  ),
+                  children: (
                     <>
-                      <Divider>Новая обработка</Divider>
-                      <Card>
-                        <PipelineForm onPipelineStarted={handlePipelineStarted} />
-                      </Card>
+                      {!activeRun ? (
+                        <Card>
+                          <PipelineForm onPipelineStarted={handlePipelineStarted} />
+                        </Card>
+                      ) : (
+                        <ProgressMonitor
+                          runId={activeRun.runId}
+                          onComplete={handlePipelineComplete}
+                        />
+                      )}
+                      {completedRuns.length > 0 && (
+                        <>
+                          <Divider>Новая обработка</Divider>
+                          <Card>
+                            <PipelineForm onPipelineStarted={handlePipelineStarted} />
+                          </Card>
+                        </>
+                      )}
                     </>
-                  )}
-                </>
-              ),
-            },
-            {
-              key: 'history',
-              label: (
-                <span>
-                  <HistoryOutlined />
-                  История запусков
-                </span>
-              ),
-              children: (
-                <PipelineHistory
-                  onShowQualityReport={handleShowHistoryQualityReport}
-                  onShowVisualization={handleShowHistoryVisualization}
-                  onShowVolumeReport={handleShowHistoryVolumeReport}
-                />
-              ),
-            },
-          ]}
-        />
+                  ),
+                },
+                {
+                  key: 'history',
+                  label: (
+                    <span>
+                      <HistoryOutlined />
+                      История запусков
+                    </span>
+                  ),
+                  children: (
+                    <PipelineHistory
+                      onShowQualityReport={handleShowHistoryQualityReport}
+                      onShowVisualization={handleShowHistoryVisualization}
+                      onShowVolumeReport={handleShowHistoryVolumeReport}
+                    />
+                  ),
+                },
+              ]}
+            />
 
-        {/* Модальные окна для истории */}
-        {showHistoryQualityReport && (
-          <QualityReport
-            runId={historyQualityReportRunId}
-            visible={showHistoryQualityReport}
-            onClose={() => setShowHistoryQualityReport(false)}
-          />
-        )}
-
-        {showHistoryVisualization && (
-          <NIfTIViewer
-            runId={historyVisualizationRunId}
-            visible={showHistoryVisualization}
-            onClose={() => setShowHistoryVisualization(false)}
-          />
-        )}
-
-        {showHistoryVolumeReport && (
-          <VolumeReport
-            runId={historyVolumeReportRunId}
-            visible={showHistoryVolumeReport}
-            onClose={() => setShowHistoryVolumeReport(false)}
-          />
+            {showHistoryQualityReport && (
+              <QualityReport
+                runId={historyQualityReportRunId}
+                visible={showHistoryQualityReport}
+                onClose={() => setShowHistoryQualityReport(false)}
+              />
+            )}
+            {showHistoryVisualization && (
+              <NIfTIViewer
+                runId={historyVisualizationRunId}
+                visible={showHistoryVisualization}
+                onClose={() => setShowHistoryVisualization(false)}
+              />
+            )}
+            {showHistoryVolumeReport && (
+              <VolumeReport
+                runId={historyVolumeReportRunId}
+                visible={showHistoryVolumeReport}
+                onClose={() => setShowHistoryVolumeReport(false)}
+              />
+            )}
+          </>
         )}
       </Layout.Content>
     </Layout>
