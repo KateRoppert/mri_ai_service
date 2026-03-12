@@ -1,1096 +1,1408 @@
 #!/usr/bin/env python3
 """
-Reorganize UPENN-GBM dataset to BIDS format.
+Stage 1: Reorganize DICOM dataset to BIDS format.
 
-This is an updated version that handles nested folder structures where:
-- patient/<date-folder>/<series-folder>/*.dcm
-- or deeper nesting where DICOMs may be inside the series folder or its subfolders.
+Enhanced version combining advanced multi-level modality detection with
+robust pipeline infrastructure: incremental processing, validation,
+batch processing, and comprehensive completeness reporting.
 
-Changes:
-- scan_patient_series now finds directories that actually contain DICOM files (using rglob)
-  and returns series directories together with the nearest ancestor folder that contains a date.
-- detect_modality now first attempts to detect modality from folder names (series folder,
-  parent, grandparent) and only then reads a DICOM (using rglob to find DICOM files).
-- All places that counted or copied DICOM files use rglob to correctly include files in nested dirs.
-- Minimal API changes kept local to caller sites.
+Supports:
+  - UPENN-GBM dataset (folder-based date extraction)
+  - Generic DICOM datasets (header-based date extraction)
+  - Multi-level modality detection: protocol → description → technical params
+  - Year-specific detection strategies for heterogeneous multi-center data
+  - Scoring-based series deduplication
+  - Incremental processing with resume capability
+  - Parallel and sequential processing modes
+
+Output:
+  - BIDS directory structure: sub-XXX/ses-XXX/anat/MODALITY/*.dcm
+  - dataset_mapping.json    — full ID and session mapping
+  - incomplete_data.txt     — human-readable completeness report
+  - modality_selection.json — (optional) detailed detection decisions
 """
 
 import argparse
 import json
 import logging
+import mmap
 import re
 import shutil
 import sys
+from abc import ABC, abstractmethod
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache, partial
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+import multiprocessing as mp
 
 import pydicom
-from scripts.performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
-import multiprocessing as mp
-from functools import partial
+import pydicom.dataelem
 
+from scripts.performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+
+
+# ════════════════════════════════════════════════════════════════
+# Data Classes
+# ════════════════════════════════════════════════════════════════
 
 @dataclass
 class SeriesInfo:
-    """Information about a DICOM series."""
+    """Information about a single DICOM series."""
     original_path: Path
     patient_id: str
-    date: str  # YYYYMMDD format
+    date: str                                   # YYYYMMDD
     modality: Optional[str] = None
     slice_count: int = 0
     series_description: str = ""
+    protocol_name: str = ""
+    detection_score: float = 0.0
+    detection_strategy: str = ""
 
 
 @dataclass
 class SessionInfo:
-    """Information about a session (grouped by date)."""
-    date: str  # YYYYMMDD format
-    series: Dict[str, SeriesInfo] = field(default_factory=dict)  # modality -> SeriesInfo
+    """A session groups series acquired on the same date."""
+    date: str                                   # YYYYMMDD
+    series: Dict[str, 'SeriesInfo'] = field(default_factory=dict)
+
+
+# ════════════════════════════════════════════════════════════════
+# DICOM Utility Functions
+# ════════════════════════════════════════════════════════════════
+
+# Tags we always need when reading headers
+_HEADER_TAGS = [
+    (0x0008, 0x0060),  # Modality
+    (0x0008, 0x103E),  # SeriesDescription
+    (0x0018, 0x1030),  # ProtocolName
+    (0x0018, 0x0010),  # ContrastBolusAgent
+    (0x0018, 0x1078),  # ContrastBolusStartTime
+    (0x0008, 0x0020),  # StudyDate
+    (0x0008, 0x0030),  # StudyTime
+    (0x0020, 0x000D),  # StudyInstanceUID
+    (0x0020, 0x000E),  # SeriesInstanceUID
+    (0x0020, 0x0011),  # SeriesNumber
+    (0x0020, 0x0013),  # InstanceNumber
+    (0x0018, 0x0080),  # RepetitionTime
+    (0x0018, 0x0081),  # EchoTime
+    (0x0018, 0x0082),  # InversionTime
+    (0x0010, 0x0020),  # PatientID
+    (0x0008, 0x0008),  # ImageType
+]
+
+
+def normalize_dicom_text(value: Any) -> str:
+    """Convert any DICOM value to a normalised lowercase string."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, pydicom.multival.MultiValue)):
+        return " ".join(str(v).strip().lower() for v in value if v is not None)
+    return str(value).strip().lower()
+
+
+def safe_float(value: Any) -> Optional[float]:
+    """Safely convert to float, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def get_dicom_value(ds: pydicom.Dataset, tag: Union[tuple, str],
+                    default: Any = None) -> Any:
+    """Safely extract a value from a DICOM dataset."""
+    try:
+        val = ds.get(tag, default)
+        if val is default:
+            return default
+        if isinstance(val, pydicom.dataelem.DataElement):
+            val = val.value
+        if isinstance(val, bytes):
+            val = val.decode('utf-8', errors='replace').strip()
+        if isinstance(val, pydicom.uid.UID):
+            val = str(val)
+        return val
+    except Exception:
+        return default
+
+
+@lru_cache(maxsize=4096)
+def read_dicom_header(file_path: str) -> Optional[pydicom.Dataset]:
+    """Read DICOM header with mmap + caching for speed."""
+    try:
+        with open(file_path, 'rb') as fh:
+            mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+            try:
+                return pydicom.filereader.dcmread(
+                    mm, stop_before_pixels=True, specific_tags=_HEADER_TAGS)
+            finally:
+                mm.close()
+    except (ValueError, OSError):
+        # Fallback for empty files or unsupported filesystems
+        try:
+            return pydicom.dcmread(
+                file_path, stop_before_pixels=True,
+                specific_tags=_HEADER_TAGS, force=True)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+# ════════════════════════════════════════════════════════════════
+# Modality Detection — Strategy Pattern
+# ════════════════════════════════════════════════════════════════
+
+class ModalityDetectionStrategy(ABC):
+    """Base class for pluggable modality detection strategies."""
+
+    @abstractmethod
+    def get_name(self) -> str: ...
+
+    @abstractmethod
+    def detect(self, text: str, has_contrast: bool,
+               ds: Optional[pydicom.Dataset] = None) -> Optional[str]: ...
+
+    def get_scoring_weights(self, modality: str) -> Dict[str, float]:
+        return {}
+
+    def get_priority(self) -> int:
+        """Lower number = tried first."""
+        return 100
+
+    def is_applicable(self, study_year: Optional[int]) -> bool:
+        return True
+
+    def is_exclusive(self) -> bool:
+        """If True and applicable, skip remaining strategies on miss."""
+        return False
+
+
+class StandardDetectionStrategy(ModalityDetectionStrategy):
+    """
+    Multi-level text-based detection (protocol + series description).
+
+    Checks modalities from most specific (FLAIR) to least specific (T1).
+    Uses forbidden-word filtering and separate contrast logic for T1/T1C.
+    """
+
+    CONFIGS: Dict[str, dict] = {
+        't2fl': {
+            'keywords':  ['flair', 'dark fluid', 't2-flair', 't2 flair'],
+            'forbidden': ['mpr'],
+            'scoring':   {'3d': 2.0, 'sense': 1.3, 'long': 1.2,
+                          'brain': 1.1, 'view': 0.1, 'mpr': 0.1},
+        },
+        't1c': {
+            'keywords':  ['t1'],
+            'contrast_required': True,
+            'contrast_keywords': [
+                'post', 'gad', 'gadolinium', 'contrast', 'c+', '+c',
+                'ce', 'enhanced', 'postcontrast', '_c', 'gd', 'c+t1',
+                't1+c', 't1c+',
+            ],
+            'forbidden': ['mpr', 'dyn', 'pit', 'spir'],
+            'scoring':   {'tfe': 3.0, 'tse': 2.0, '3d': 1.5, 'se': 1.0,
+                          'brain': 1.1, 'axi': 1.3, 'sag': 1.2, 'cor': 1.1,
+                          'mpr': 0.1},
+        },
+        't2': {
+            'keywords':  ['t2', 't2w', 't2-tse', 't2_tse'],
+            'forbidden': ['flair', 'dark fluid', 'mpr', 'pit'],
+            'scoring':   {'tse': 2.0, 'sense': 1.3, 'axi': 1.3,
+                          'brain': 1.1, 'sag': 1.2, 'cor': 1.1, 'mpr': 0.1},
+        },
+        't1': {
+            'keywords':  ['t1', 't1w', 'mprage', 'spgr', 'tfe',
+                          't1-tfe', 't1-tse'],
+            'forbidden': ['post', 'gad', 'contrast', 'c+', '+c', 'ce',
+                          'enhanced', 'mpr', 'thr', 'pit'],
+            'scoring':   {'tfe': 3.0, 'tse': 2.0, '3d': 1.5, 'clear': 1.2,
+                          'brain': 1.1, 'axi': 1.3, 'sag': 1.2, 'cor': 1.1,
+                          'mpr': 0.1},
+        },
+    }
+
+    # Checked in this order (most specific → least specific)
+    _ORDER = ['t2fl', 't1c', 't2', 't1']
+
+    def get_name(self) -> str:
+        return "Standard"
+
+    def get_priority(self) -> int:
+        return 1000
+
+    def get_scoring_weights(self, modality: str) -> Dict[str, float]:
+        cfg = self.CONFIGS.get(modality, {})
+        return cfg.get('scoring', {})
+
+    def detect(self, text: str, has_contrast: bool,
+               ds: Optional[pydicom.Dataset] = None) -> Optional[str]:
+        if not text:
+            return None
+        text_lower = text.lower()
+
+        for modality in self._ORDER:
+            cfg = self.CONFIGS[modality]
+
+            # Check forbidden words
+            if any(fw in text_lower for fw in cfg.get('forbidden', [])):
+                continue
+
+            # Check required keywords
+            has_kw = any(kw in text_lower for kw in cfg['keywords'])
+            if not has_kw:
+                continue
+
+            # Contrast logic for T1C
+            if cfg.get('contrast_required'):
+                contrast_kws = cfg.get('contrast_keywords', [])
+                text_has_contrast = any(ck in text_lower for ck in contrast_kws)
+                if has_contrast or text_has_contrast:
+                    return 't1c'
+                continue  # keyword matched T1 but no contrast → skip t1c
+
+            return modality
+
+        return None
+
+
+class TechnicalParamStrategy(ModalityDetectionStrategy):
+    """
+    Detect modality from TR / TE / TI when text-based methods fail.
+
+    Thresholds are standard MRI physics ranges:
+      FLAIR  — TI > 1500 ms
+      T1     — TR < 1000, TE < 30 (no contrast)
+      T1C    — TR < 1200, TE < 30 (contrast present)
+      T2     — TR > 2000, TE > 70, TI absent or < 1500
+    """
+
+    def get_name(self) -> str:
+        return "TechnicalParams"
+
+    def get_priority(self) -> int:
+        return 2000
+
+    def detect(self, text: str, has_contrast: bool,
+               ds: Optional[pydicom.Dataset] = None) -> Optional[str]:
+        if ds is None:
+            return None
+
+        tr = safe_float(get_dicom_value(ds, (0x0018, 0x0080)))
+        te = safe_float(get_dicom_value(ds, (0x0018, 0x0081)))
+        ti = safe_float(get_dicom_value(ds, (0x0018, 0x0082)))
+
+        # FLAIR: very long TI
+        if ti and ti > 1500:
+            return 't2fl'
+
+        # T1C: contrast + short TR/TE
+        if has_contrast and tr and te and tr < 1200 and te < 30:
+            return 't1c'
+
+        # T1: short TR/TE, no contrast
+        if tr and te and tr < 1000 and te < 30 and not has_contrast:
+            return 't1'
+
+        # T2: long TR, long TE, not FLAIR
+        if tr and te and tr > 2000 and te > 70:
+            if not ti or ti < 1500:
+                return 't2'
+
+        return None
+
+
+class YearSpecificStrategy(ModalityDetectionStrategy):
+    """
+    Year-specific keyword configs for multi-center datasets
+    where naming conventions changed between acquisition years.
+    """
+
+    def __init__(self, years: Tuple[int, ...], name: str,
+                 configs: Dict[str, dict]):
+        self._years = years
+        self._name = name
+        self._configs = configs  # modality → {required, markers, alt_keywords, forbidden}
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_priority(self) -> int:
+        return 10
+
+    def is_exclusive(self) -> bool:
+        return True
+
+    def is_applicable(self, study_year: Optional[int]) -> bool:
+        return study_year is not None and study_year in self._years
+
+    def get_scoring_weights(self, modality: str) -> Dict[str, float]:
+        return self._configs.get(modality, {}).get('scoring_weights', {})
+
+    def detect(self, text: str, has_contrast: bool,
+               ds: Optional[pydicom.Dataset] = None) -> Optional[str]:
+        if not text:
+            return None
+        text_lower = text.lower()
+
+        # Check modalities in specificity order
+        for modality in ['t2fl', 't1c', 't2', 't1']:
+            rules = self._configs.get(modality)
+            if not rules:
+                continue
+            if self._matches(text_lower, rules, has_contrast):
+                return modality
+        return None
+
+    def _matches(self, text: str, rules: dict, has_contrast: bool) -> bool:
+        # Forbidden
+        if any(fw in text for fw in rules.get('forbidden', [])):
+            return False
+
+        # Required keywords (all must match)
+        required = rules.get('required', [])
+        if required:
+            if not all(rw in text for rw in required):
+                # Try alt_keywords
+                alt = rules.get('alt_keywords', [])
+                if alt:
+                    base_kw = required[0] if required else None
+                    if base_kw and base_kw not in text:
+                        return False
+                    contrast_alts = [k for k in alt if k != base_kw]
+                    if not any(k in text for k in contrast_alts):
+                        return False
+                else:
+                    return False
+
+        # Markers (any must match)
+        markers = rules.get('markers', [])
+        if markers and not any(mk in text for mk in markers):
+            return False
+
+        return True
+
+
+# ── Built-in year-specific configs (MS60 dataset) ──────────────
+
+_YEAR_STRATEGY_DEFS = [
+    {
+        'years': (2018,),
+        'name': 'Protocol-2018',
+        'configs': {
+            't1c': {'required': ['ce', 't1'], 'forbidden': [],
+                    'scoring_weights': {'se': 2.0}},
+            't1':  {'markers': ['t1w', 't1'], 'forbidden': ['thr', 'ce'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, 'se': 1.0}},
+            't2':  {'markers': ['t2w', 't2'], 'forbidden': ['flair'],
+                    'scoring_weights': {'tse': 2.0, 'tra': 1.5}},
+            't2fl': {'markers': ['flair'], 'forbidden': [],
+                     'scoring_weights': {'sense': 1.5, 'long': 1.2}},
+        },
+    },
+    {
+        'years': (2020,),
+        'name': 'Protocol-2020',
+        'configs': {
+            't1c': {'required': ['ce', 't1'],
+                    'alt_keywords': ['t1', 'contrast', 'gad', 'postcontrast',
+                                     '+c', 'post', 'c+', '_c', 'gd'],
+                    'forbidden': ['mpr'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5,
+                                        'se': 1.0, 'clear': 1.5}},
+            't1':  {'markers': ['t1w', 't1-tse', 't1'], 'forbidden': ['thr', 'mpr', 'ce'],
+                    'scoring_weights': {'tfe': 2.5, 'tse': 2.0, 'clear': 1.5,
+                                        '3d': 1.3}},
+            't2':  {'markers': ['t2w', 't2-tse', 't2'], 'forbidden': ['mpr', 'flair'],
+                    'scoring_weights': {'tse': 2.0, 'clear': 1.4, 'sense': 1.3}},
+            't2fl': {'markers': ['flair'], 'forbidden': ['mpr'],
+                     'scoring_weights': {'3d': 2.0, 'long': 1.2, 'sense': 1.1}},
+        },
+    },
+    {
+        'years': (2021, 2022),
+        'name': 'Protocol-2021-2022',
+        'configs': {
+            't1c': {'required': ['ce', 't1'],
+                    'alt_keywords': ['t1', 'contrast', 'gad', 'postcontrast',
+                                     '+c', 'post', 'c+', '_c', 'gd'],
+                    'forbidden': ['mpr'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}},
+            't1':  {'markers': ['t1-tfe', 't1-tse', 't1w', 't1'],
+                    'forbidden': ['mpr', 'ce', 'gd'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}},
+            't2':  {'markers': ['t2-tse', 't2_tse', 't2'], 'forbidden': ['mpr', 'flair'],
+                    'scoring_weights': {'tse': 2.0, 'axi': 1.2}},
+            't2fl': {'markers': ['flair'], 'forbidden': ['mpr'],
+                     'scoring_weights': {'3d': 2.0}},
+        },
+    },
+    {
+        'years': (2023, 2024, 2025, 2026),
+        'name': 'Protocol-2023+',
+        'configs': {
+            't1c': {'required': ['ce', 't1'],
+                    'alt_keywords': ['t1', 'contrast', 'gad', 'postcontrast',
+                                     '+c', 'post', 'c+', '_c', 'gd'],
+                    'forbidden': ['mpr', 'dyn', 'pit'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}},
+            't1':  {'markers': ['t1-tfe', 't1-tse', 't1'],
+                    'forbidden': ['mpr', 'ce'],
+                    'scoring_weights': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5}},
+            't2':  {'markers': ['t2-tse', 't2_tse', 't2'],
+                    'forbidden': ['pit', 'mpr', 'flair'],
+                    'scoring_weights': {'tse': 2.0, 'axi': 1.2}},
+            't2fl': {'markers': ['flair'], 'forbidden': ['mpr'],
+                     'scoring_weights': {'3d': 2.0}},
+        },
+    },
+]
+
+
+def _build_year_strategies() -> List[YearSpecificStrategy]:
+    return [
+        YearSpecificStrategy(
+            years=tuple(d['years']),
+            name=d['name'],
+            configs=d['configs'],
+        )
+        for d in _YEAR_STRATEGY_DEFS
+    ]
+
+
+# ════════════════════════════════════════════════════════════════
+# ModalityDetector — orchestrator
+# ════════════════════════════════════════════════════════════════
+
+# Anatomy penalties applied to scoring
+_ANATOMY_PENALTIES = {
+    'spine': 0.8, 'cervical': 0.8, 'pit': 0.7, 'pituitary': 0.7,
+}
 
 
 class ModalityDetector:
-    """Detect modality using DICOM tags: ProtocolName and SeriesDescription."""
+    """
+    Enhanced modality detector with multi-level detection and scoring.
 
-    # Patterns for each modality (order matters!)
-    MODALITY_PATTERNS = {
-        't2fl': {  # FLAIR (check first - most specific)
-            'keywords': ['flair', 'dark fluid', 't2-flair', 't2 flair'],
-            'exclude': []
-        },
-        't1c': {  # T1 with contrast (post)
-            'keywords': ['t1'],
-            'contrast_keywords': ['post', 'gad', 'contrast', 'c+', 'enhanced', '+c'],
-            'exclude': []
-        },
-        't2': {  # T2
-            'keywords': ['t2', 'tse', 'fse', 't2w'],
-            'exclude': ['flair', 'dark fluid']
-        },
-        't1': {  # Plain T1 (non-contrast)
-            'keywords': ['t1', 'mprage', 'spgr', 'tfe', 't1w'],
-            'exclude': ['post', 'gad', 'contrast', 'c+','enhanced', '+c']
-        }
-    }
+    Detection cascade:
+      1. Year-specific strategy (if study year matches)
+      2. Standard text-based detection (protocol + description keywords)
+      3. Technical parameter detection (TR / TE / TI)
 
-    def __init__(self, logger: logging.Logger):
+    Each detection also calculates a quality score used for deduplication.
+    """
+
+    def __init__(self, logger: logging.Logger, *,
+                 enable_year_strategies: bool = True):
         self.logger = logger
-        self._cache: Dict[Path, Tuple[Optional[str], str]] = {}  # series_path -> (modality, description)
+        self._cache: Dict[Path, Tuple[Optional[str], str, float, str]] = {}
 
-    def detect_modality(self, series_path: Path) -> Tuple[Optional[str], str]:
+        # Build strategy chain ordered by priority
+        self._strategies: List[ModalityDetectionStrategy] = []
+        if enable_year_strategies:
+            self._strategies.extend(_build_year_strategies())
+        self._strategies.append(StandardDetectionStrategy())
+        self._strategies.append(TechnicalParamStrategy())
+        self._strategies.sort(key=lambda s: s.get_priority())
+
+    @property
+    def strategies(self) -> List[ModalityDetectionStrategy]:
+        return list(self._strategies)
+
+    def detect_modality(self, series_path: Path
+                        ) -> Tuple[Optional[str], str, float, str]:
         """
-        Detect modality from DICOM tags: ProtocolName and SeriesDescription.
-        
-        Always reads the first DICOM file to get accurate information.
-        
-        Args:
-            series_path: Path to series directory
-            
+        Detect modality for a series directory.
+
         Returns:
-            (modality, combined_description) where:
-                - modality: 't1', 't1c', 't2', 't2fl', or None
-                - combined_description: "ProtocolName | SeriesDescription"
+            (modality, description, score, strategy_name)
         """
-        # Check cache
         if series_path in self._cache:
             return self._cache[series_path]
 
-        # Find first DICOM file (search nested directories)
-        dicom_files = sorted([f for f in series_path.rglob("*.dcm") if f.is_file()])
+        result = self._detect(series_path)
+        self._cache[series_path] = result
+        return result
+
+    # ── internals ──────────────────────────────────────────────
+
+    def _detect(self, series_path: Path
+                ) -> Tuple[Optional[str], str, float, str]:
+        # Find first DICOM
+        dicom_files = sorted(
+            f for f in series_path.rglob("*.dcm") if f.is_file())
         if not dicom_files:
-            self.logger.warning(f"No DICOM files found in {series_path}")
-            self._cache[series_path] = (None, "")
-            return None, ""
+            self.logger.warning(f"No DICOM files in {series_path}")
+            return None, "", 0.0, ""
 
-        try:
-            # Read DICOM tags (stop before pixels for speed)
-            dcm = pydicom.dcmread(str(dicom_files[0]), stop_before_pixels=True, force=True)
-            
-            # Get both ProtocolName and SeriesDescription
-            protocol_name = str(dcm.get('ProtocolName', '')).lower().strip()
-            series_desc = str(dcm.get('SeriesDescription', '')).lower().strip()
-            
-            # Create combined text for matching
-            combined_text = f"{protocol_name} {series_desc}".strip()
-            
-            if not combined_text:
-                self.logger.warning(f"No ProtocolName or SeriesDescription in {dicom_files[0]}")
-                self._cache[series_path] = (None, "")
-                return None, ""
-            
-            # Store readable description for logging
-            readable_desc = f"{dcm.get('ProtocolName', 'N/A')} | {dcm.get('SeriesDescription', 'N/A')}"
-            
-            # Match modality using combined text
-            modality = self._match_modality(combined_text)
-            
-            # Cache result
-            self._cache[series_path] = (modality, readable_desc)
-            
-            if modality:
-                self.logger.debug(f"Detected {modality} from: {readable_desc}")
-            else:
-                self.logger.debug(f"No modality matched for: {readable_desc}")
-            
-            return modality, readable_desc
+        ds = read_dicom_header(str(dicom_files[0]))
+        if ds is None:
+            # Fallback: read without mmap cache
+            try:
+                ds = pydicom.dcmread(
+                    str(dicom_files[0]), stop_before_pixels=True, force=True)
+            except Exception as exc:
+                self.logger.warning(f"Cannot read {dicom_files[0]}: {exc}")
+                return None, "", 0.0, ""
 
-        except Exception as e:
-            self.logger.warning(f"Failed to read {dicom_files[0]}: {e}")
-            self._cache[series_path] = (None, "")
-            return None, ""
+        # Extract text fields
+        protocol_name = normalize_dicom_text(
+            get_dicom_value(ds, (0x0018, 0x1030), ""))
+        series_desc = normalize_dicom_text(
+            get_dicom_value(ds, (0x0008, 0x103E), ""))
+        combined = f"{protocol_name} {series_desc}".strip()
 
-    def _match_modality(self, combined_text: str) -> Optional[str]:
-        """
-        Match combined text (ProtocolName + SeriesDescription) against patterns.
-        
-        Order matters: check from most specific to most generic.
-        
-        Args:
-            combined_text: Lowercase combined text from DICOM tags
-            
-        Returns:
-            Modality name or None
-        """
-        # 1) Check FLAIR first (most specific)
-        pattern = self.MODALITY_PATTERNS['t2fl']
-        has_keyword = any(kw in combined_text for kw in pattern['keywords'])
-        has_exclusion = any(ex in combined_text for ex in pattern['exclude'])
-        
-        if has_keyword and not has_exclusion:
-            return 't2fl'
+        readable_desc = (
+            f"{ds.get('ProtocolName', 'N/A')} | "
+            f"{ds.get('SeriesDescription', 'N/A')}")
 
-        # 2) Check T1 with contrast
-        pattern = self.MODALITY_PATTERNS['t1c']
-        has_t1 = any(kw in combined_text for kw in pattern['keywords'])
-        has_contrast = any(kw in combined_text for kw in pattern['contrast_keywords'])
-        
-        if has_t1 and has_contrast:
-            return 't1c'
+        if not combined:
+            self.logger.debug(f"Empty protocol/description in {dicom_files[0]}")
+            return None, readable_desc, 0.0, ""
 
-        # 3) Check T2
-        pattern = self.MODALITY_PATTERNS['t2']
-        has_keyword = any(kw in combined_text for kw in pattern['keywords'])
-        has_exclusion = any(ex in combined_text for ex in pattern['exclude'])
-        
-        if has_keyword and not has_exclusion:
-            return 't2'
+        # Determine contrast presence from multiple DICOM fields
+        has_contrast = self._check_contrast(ds, combined)
 
-        # 4) Check T1 (non-contrast)
-        pattern = self.MODALITY_PATTERNS['t1']
-        has_keyword = any(kw in combined_text for kw in pattern['keywords'])
-        has_exclusion = any(ex in combined_text for ex in pattern['exclude'])
-        
-        if has_keyword and not has_exclusion:
-            return 't1'
+        # Extract study year for year-specific strategies
+        study_year = self._extract_study_year(ds)
 
+        # Run strategy chain
+        modality: Optional[str] = None
+        strategy_name = ""
+
+        for strategy in self._strategies:
+            if not strategy.is_applicable(study_year):
+                continue
+
+            detected = strategy.detect(combined, has_contrast, ds)
+            if detected:
+                modality = detected
+                strategy_name = strategy.get_name()
+                self.logger.debug(
+                    f"  {strategy_name} → {modality} for: {readable_desc}")
+                break
+
+            if strategy.is_exclusive():
+                # Exclusive strategy was applicable but didn't match → stop
+                self.logger.debug(
+                    f"  Exclusive strategy {strategy.get_name()} "
+                    f"did not match — skipping remaining")
+                break
+
+        if modality is None:
+            self.logger.debug(f"  No modality matched for: {readable_desc}")
+            return None, readable_desc, 0.0, ""
+
+        # Calculate score
+        score = self._calculate_score(combined, modality, strategy_name)
+
+        return modality, readable_desc, score, strategy_name
+
+    def _check_contrast(self, ds: pydicom.Dataset, text: str) -> bool:
+        """Multi-field contrast detection."""
+        # Field: ContrastBolusAgent (0018,0010)
+        agent = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x0010), ""))
+        if agent and agent not in ("", "none", "no"):
+            return True
+
+        # Field: ContrastBolusStartTime (0018,1078)
+        bolus = normalize_dicom_text(get_dicom_value(ds, (0x0018, 0x1078), ""))
+        if bolus and bolus not in ("", "none", "no"):
+            return True
+
+        # Text keywords
+        contrast_kws = [
+            'ce', 'contrast', 'gad', 'gadolinium', 'post',
+            '+c', 'c+', 'enhanced', 'postcontrast',
+        ]
+        text_lower = text.lower()
+        return any(kw in text_lower for kw in contrast_kws)
+
+    @staticmethod
+    def _extract_study_year(ds: pydicom.Dataset) -> Optional[int]:
+        study_date = get_dicom_value(ds, (0x0008, 0x0020), "")
+        if isinstance(study_date, str) and len(study_date) >= 4:
+            try:
+                return int(study_date[:4])
+            except ValueError:
+                pass
         return None
 
+    def _calculate_score(self, text: str, modality: str,
+                         strategy_name: str) -> float:
+        """Multiplicative scoring from strategy weights + anatomy bonuses."""
+        score = 1.0
+        text_lower = text.lower()
+
+        # Collect weights from the matching strategy
+        for strategy in self._strategies:
+            if strategy.get_name() == strategy_name:
+                weights = strategy.get_scoring_weights(modality)
+                for keyword, weight in weights.items():
+                    if keyword in text_lower:
+                        score *= weight
+                break
+
+        # Brain bonus
+        if 'brain' in text_lower:
+            score *= 1.1
+
+        # Anatomy penalties
+        for anatomy, penalty in _ANATOMY_PENALTIES.items():
+            if anatomy in text_lower:
+                score *= penalty
+
+        return round(score, 4)
+
+
+# ════════════════════════════════════════════════════════════════
+# IDMapper
+# ════════════════════════════════════════════════════════════════
 
 class IDMapper:
-    """Maps original patient IDs to new numbered IDs."""
+    """Maps original patient IDs to sequential BIDS IDs."""
 
     def __init__(self):
-        self._patient_counter = 0
-        self._patient_map = {}  # original_id -> new_id
+        self._counter = 0
+        self._map: Dict[str, str] = {}
 
     def get_patient_id(self, original_id: str) -> str:
-        """
-        Get or create new patient ID.
-
-        Args:
-            original_id: Original patient ID (e.g., 'UPENN-GBM-00454')
-
-        Returns:
-            New patient ID (e.g., 'sub-001')
-        """
-        if original_id not in self._patient_map:
-            self._patient_counter += 1
-            self._patient_map[original_id] = f"sub-{self._patient_counter:03d}"
-
-        return self._patient_map[original_id]
+        if original_id not in self._map:
+            self._counter += 1
+            self._map[original_id] = f"sub-{self._counter:03d}"
+        return self._map[original_id]
 
     def get_mapping(self) -> Dict[str, str]:
-        """Get complete patient ID mapping."""
-        return self._patient_map.copy()
+        return self._map.copy()
 
+
+# ════════════════════════════════════════════════════════════════
+# DatasetScanner
+# ════════════════════════════════════════════════════════════════
 
 class DatasetScanner:
-    """Scan UPENN-GBM dataset structure."""
+    """Scan dataset for patient directories and series."""
+
+    _SKIP_DIRS = frozenset([
+        'logs', 'derivatives', 'sourcedata', 'code', '__pycache__',
+    ])
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
-    def scan_dataset(self, input_dir: Path) -> List[Path]:
+    def scan_dataset(self, input_dir: Path,
+                     patient_prefix: Optional[str] = None) -> List[Path]:
         """
-        Scan for patient directories.
+        Find patient directories.
 
-        Args:
-            input_dir: Root directory of UPENN-GBM dataset
-
-        Returns:
-            List of patient directory paths
+        If *patient_prefix* is given, only dirs starting with that prefix
+        are returned.  Otherwise the prefix is auto-detected from the
+        directory contents (e.g. ``UPENN-GBM-``).
         """
+        if patient_prefix is None:
+            patient_prefix = self._detect_prefix(input_dir)
+
         patient_dirs = []
+        for entry in sorted(input_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith('.'):
+                continue
+            if entry.name in self._SKIP_DIRS:
+                continue
+            if patient_prefix and not entry.name.startswith(patient_prefix):
+                continue
+            patient_dirs.append(entry)
 
-        for patient_dir in sorted(input_dir.iterdir()):
-            if patient_dir.is_dir() and patient_dir.name.startswith('UPENN-GBM-'):
-                patient_dirs.append(patient_dir)
-
-        self.logger.info(f"Found {len(patient_dirs)} patients")
+        self.logger.info(f"Found {len(patient_dirs)} patient directories"
+                         + (f" (prefix: {patient_prefix!r})"
+                            if patient_prefix else ""))
         return patient_dirs
 
-    def scan_patient_series(self, patient_dir: Path) -> List[Tuple[Path, Optional[str]]]:
+    def scan_patient_series(
+        self, patient_dir: Path
+    ) -> List[Tuple[Path, Optional[str]]]:
         """
-        Scan for series directories in patient folder, handling nested directories.
+        Find series directories inside a patient folder.
 
-        Returns:
-            List of tuples: (series_dir, date_folder_name_or_None)
-            - series_dir: directory that directly contains DICOM files (closest ancestor of those files)
-            - date_folder_name_or_None: the ancestor folder name that matches date regex (if any)
+        Returns list of ``(series_dir, date_string_or_None)`` where
+        *date_string* is in ``YYYYMMDD`` format (extracted from ancestor
+        folder names or, as fallback, from DICOM headers).
         """
-        # Find all directories that contain at least one DICOM file (search nested)
-        series_dirs_set: Set[Path] = set()
+        # Find every directory that directly contains ≥1 DICOM file
+        series_dirs: Set[Path] = set()
         for dcm in patient_dir.rglob("*.dcm"):
             if dcm.is_file():
-                series_dirs_set.add(dcm.parent)
-
-        # Convert to sorted list for stable processing
-        series_dirs = sorted(series_dirs_set)
+                series_dirs.add(dcm.parent)
 
         results: List[Tuple[Path, Optional[str]]] = []
-        for sdir in series_dirs:
-            # Search ancestors up to patient_dir for a folder name with a date
-            date_name = None
-            current = sdir
-            while current != patient_dir and current != current.parent:
-                if self.parse_date_from_series_name(current.name):
-                    date_name = current.name
-                    break
-                current = current.parent
-            # If not found, also check immediate child of patient_dir (some datasets)
-            if not date_name:
-                for child in patient_dir.iterdir():
-                    if child.is_dir() and child in sdir.parents:
-                        if self.parse_date_from_series_name(child.name):
-                            date_name = child.name
-                            break
-            results.append((sdir, date_name))
+        for sdir in sorted(series_dirs):
+            # Try folder-name date (UPENN-GBM style: MM-DD-YYYY-…)
+            date = self._find_date_in_ancestors(sdir, patient_dir)
+            # Fallback: read StudyDate from first DICOM header
+            if not date:
+                date = self._read_date_from_dicom(sdir)
+            results.append((sdir, date))
 
         return results
 
+    # ── helpers ─────────────────────────────────────────────────
+
+    def _find_date_in_ancestors(self, sdir: Path,
+                                patient_dir: Path) -> Optional[str]:
+        """Walk up from *sdir* to *patient_dir* looking for a date folder."""
+        current = sdir
+        while current != patient_dir and current != current.parent:
+            d = self.parse_date_from_folder_name(current.name)
+            if d:
+                return d
+            current = current.parent
+        # Also check immediate children of patient_dir
+        for child in patient_dir.iterdir():
+            if child.is_dir() and child in sdir.parents:
+                d = self.parse_date_from_folder_name(child.name)
+                if d:
+                    return d
+        return None
+
+    def _read_date_from_dicom(self, series_dir: Path) -> Optional[str]:
+        """Read StudyDate from the first DICOM file in *series_dir*."""
+        dcm_files = sorted(series_dir.rglob("*.dcm"))
+        if not dcm_files:
+            return None
+        ds = read_dicom_header(str(dcm_files[0]))
+        if ds is None:
+            return None
+        study_date = get_dicom_value(ds, (0x0008, 0x0020), "")
+        if isinstance(study_date, str) and len(study_date) >= 8:
+            return study_date[:8]
+        return None
+
     @staticmethod
-    def parse_date_from_series_name(series_name: str) -> Optional[str]:
+    def parse_date_from_folder_name(name: str) -> Optional[str]:
         """
-        Extract date from series folder name.
+        Extract date from a folder name.
 
-        Example: '03-08-2012-NA-BrainTumor-13096' -> '20120308'
-
-        Args:
-            series_name: Series folder name
-
-        Returns:
-            Date in YYYYMMDD format or None
+        Supported formats:
+          ``MM-DD-YYYY-…``  → ``YYYYMMDD``   (UPENN-GBM style)
+          ``YYYYMMDD…``     → ``YYYYMMDD``
         """
-        match = re.match(r'(\d{2})-(\d{2})-(\d{4})', series_name)
-        if match:
-            month, day, year = match.groups()
+        # MM-DD-YYYY (UPENN-GBM)
+        m = re.match(r'(\d{2})-(\d{2})-(\d{4})', name)
+        if m:
+            month, day, year = m.groups()
             return f"{year}{month}{day}"
+        # YYYYMMDD
+        m = re.match(r'(\d{8})', name)
+        if m:
+            candidate = m.group(1)
+            try:
+                datetime.strptime(candidate, "%Y%m%d")
+                return candidate
+            except ValueError:
+                pass
+        return None
+
+    @staticmethod
+    def _detect_prefix(input_dir: Path) -> Optional[str]:
+        dirs = sorted(
+            d for d in input_dir.iterdir()
+            if d.is_dir() and not d.name.startswith('.'))
+        if not dirs:
+            return None
+        known = ['UPENN-GBM-', 'sub-', 'patient-', 'PATIENT-', 'pat-']
+        for prefix in known:
+            if sum(d.name.startswith(prefix) for d in dirs) > len(dirs) * 0.5:
+                return prefix
         return None
 
 
+# ════════════════════════════════════════════════════════════════
+# SessionGrouper
+# ════════════════════════════════════════════════════════════════
+
 class SessionGrouper:
-    """Group series by date into sessions."""
+    """Group series by acquisition date into sessions."""
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
     def group_by_date(self, series_list: List[SeriesInfo]) -> List[SessionInfo]:
-        """
-        Group series by date.
+        groups: Dict[str, List[SeriesInfo]] = defaultdict(list)
+        for s in series_list:
+            groups[s.date].append(s)
 
-        Args:
-            series_list: List of series information
-
-        Returns:
-            List of sessions (one per unique date)
-        """
-        # Group by date
-        date_groups: Dict[str, List[SeriesInfo]] = {}
-
-        for series in series_list:
-            if series.date not in date_groups:
-                date_groups[series.date] = []
-            date_groups[series.date].append(series)
-
-        # Create session objects
         sessions = []
-        for date in sorted(date_groups.keys()):
+        for date in sorted(groups):
             session = SessionInfo(date=date)
-
-            # Group series by modality within session
-            for series in date_groups[date]:
+            for series in groups[date]:
                 if series.modality:
                     if series.modality not in session.series:
                         session.series[series.modality] = []
-
-                    if not isinstance(session.series[series.modality], list):
-                        session.series[series.modality] = [session.series[series.modality]]
-
+                    lst = session.series[series.modality]
+                    if not isinstance(lst, list):
+                        session.series[series.modality] = [lst]
                     session.series[series.modality].append(series)
-
             sessions.append(session)
 
         return sessions
 
 
+# ════════════════════════════════════════════════════════════════
+# SeriesDeduplicator (enhanced: score → slice_count → newest)
+# ════════════════════════════════════════════════════════════════
+
 class SeriesDeduplicator:
-    """Select best series when multiple exist for same modality."""
+    """Select best series when multiple exist for the same modality."""
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
         self.duplicates_removed = 0
 
     def deduplicate_session(self, session: SessionInfo) -> SessionInfo:
-        """
-        Keep only one series per modality (one with most slices).
-
-        Args:
-            session: Session with potentially duplicate modalities
-
-        Returns:
-            Session with single series per modality
-        """
-        deduplicated = SessionInfo(date=session.date)
+        deduped = SessionInfo(date=session.date)
 
         for modality, series_list in session.series.items():
-            if isinstance(series_list, list):
-                if len(series_list) > 1:
-                    # Multiple series for same modality
-                    best_series = self._select_best_series(series_list)
-                    deduplicated.series[modality] = best_series
-
-                    removed_count = len(series_list) - 1
-                    self.duplicates_removed += removed_count
-
-                    self.logger.info(
-                        f"Modality {modality}: {len(series_list)} series found, "
-                        f"selected one with {best_series.slice_count} slices"
-                    )
-                else:
-                    deduplicated.series[modality] = series_list[0]
+            if isinstance(series_list, list) and len(series_list) > 1:
+                best = self._select_best(series_list)
+                deduped.series[modality] = best
+                removed = len(series_list) - 1
+                self.duplicates_removed += removed
+                self.logger.info(
+                    f"  {modality}: {len(series_list)} candidates → "
+                    f"selected {best.original_path.name} "
+                    f"(score={best.detection_score:.2f}, "
+                    f"slices={best.slice_count})")
+            elif isinstance(series_list, list):
+                deduped.series[modality] = series_list[0]
             else:
-                deduplicated.series[modality] = series_list
+                deduped.series[modality] = series_list
 
-        return deduplicated
+        return deduped
 
-    def _select_best_series(self, series_list: List[SeriesInfo]) -> SeriesInfo:
-        """Select series with most slices."""
-        # Count slices for each series (use rglob to include nested files)
-        for series in series_list:
-            series.slice_count = len(list(series.original_path.rglob("*.dcm")))
+    @staticmethod
+    def _select_best(series_list: List[SeriesInfo]) -> SeriesInfo:
+        """Primary: highest detection score.  Secondary: most slices."""
+        for s in series_list:
+            if s.slice_count == 0:
+                s.slice_count = len(list(s.original_path.rglob("*.dcm")))
+        return max(series_list, key=lambda s: (s.detection_score, s.slice_count))
 
-        # Return series with maximum slice count
-        return max(series_list, key=lambda s: s.slice_count)
+
+# ════════════════════════════════════════════════════════════════
+# CompletenessChecker
+# ════════════════════════════════════════════════════════════════
+
+REQUIRED_MODALITIES = {'t1', 't1c', 't2', 't2fl'}
 
 
 class CompletenessChecker:
-    """Check if patients/sessions have all 4 modalities."""
-
-    REQUIRED_MODALITIES = {'t1', 't1c', 't2', 't2fl'}
+    """Check whether each session contains all four target modalities."""
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
     def check_session(self, session: SessionInfo) -> Tuple[bool, Set[str]]:
-        """
-        Check if session has all required modalities.
-
-        Returns:
-            (is_complete, missing_modalities)
-        """
         available = set(session.series.keys())
-        missing = self.REQUIRED_MODALITIES - available
-        is_complete = len(missing) == 0
-
-        return is_complete, missing
+        missing = REQUIRED_MODALITIES - available
+        return len(missing) == 0, missing
 
     def generate_completeness_report(self, mapping_data: Dict) -> Dict:
-        """Generate report of incomplete patients/sessions."""
-        incomplete_patients = []
-        complete_patient_count = 0
-        complete_session_count = 0
-        total_session_count = 0
+        incomplete_patients: List[dict] = []
+        complete_patients = complete_sessions = total_sessions = 0
 
-        for patient_id, patient_data in mapping_data['patients'].items():
-            patient_incomplete_sessions = []
-
-            for session_id, session_data in patient_data['sessions'].items():
-                total_session_count += 1
-                available = set(session_data['series'].keys())
-                missing = self.REQUIRED_MODALITIES - available
-
+        for patient_id, pdata in mapping_data['patients'].items():
+            patient_issues = []
+            for session_id, sdata in pdata['sessions'].items():
+                total_sessions += 1
+                available = set(sdata['series'].keys())
+                missing = REQUIRED_MODALITIES - available
                 if missing:
-                    patient_incomplete_sessions.append({
+                    patient_issues.append({
                         'session_id': session_id,
-                        'date': session_data['original_date'],
-                        'missing': sorted(list(missing)),
-                        'available': sorted(list(available))
+                        'date': sdata['original_date'],
+                        'missing': sorted(missing),
+                        'available': sorted(available),
                     })
                 else:
-                    complete_session_count += 1
-
-            if patient_incomplete_sessions:
+                    complete_sessions += 1
+            if patient_issues:
                 incomplete_patients.append({
                     'patient_id': patient_id,
-                    'original_id': patient_data['original_id'],
-                    'incomplete_sessions': patient_incomplete_sessions
+                    'original_id': pdata['original_id'],
+                    'incomplete_sessions': patient_issues,
                 })
             else:
-                complete_patient_count += 1
+                complete_patients += 1
 
         return {
             'incomplete_patients': incomplete_patients,
             'statistics': {
                 'total_patients': len(mapping_data['patients']),
-                'complete_patients': complete_patient_count,
+                'complete_patients': complete_patients,
                 'incomplete_patients': len(incomplete_patients),
-                'total_sessions': total_session_count,
-                'complete_sessions': complete_session_count,
-                'incomplete_sessions': total_session_count - complete_session_count
-            }
+                'total_sessions': total_sessions,
+                'complete_sessions': complete_sessions,
+                'incomplete_sessions': total_sessions - complete_sessions,
+            },
         }
 
 
-class FileOrganizer:
-    """Create BIDS structure and copy files."""
+# ════════════════════════════════════════════════════════════════
+# FileOrganizer
+# ════════════════════════════════════════════════════════════════
 
-    def __init__(self, output_dir: Path, logger: logging.Logger, dry_run: bool = False):
+_BIDS_SUFFIX = {'t1': 'T1w', 't1c': 'T1wCE', 't2': 'T2w', 't2fl': 'FLAIR'}
+
+
+class FileOrganizer:
+    """Create BIDS directories and copy/validate files."""
+
+    def __init__(self, output_dir: Path, logger: logging.Logger,
+                 dry_run: bool = False):
         self.output_dir = output_dir
         self.logger = logger
         self.dry_run = dry_run
         self.files_copied = 0
         self.files_would_copy = 0
-        self.validation_failed = []
+        self.validation_failed: List[str] = []
 
-    def create_bids_structure(
-        self,
-        patient_id: str,
-        session_id: str,
-        modality: str
-    ) -> Path:
-        """
-        Create BIDS directory structure.
-
-        Structure: output/sub-XXX/ses-XXX/anat/MODALITY/
-
-        Returns:
-            Path to modality directory
-        """
-        modality_dir = (
-            self.output_dir /
-            patient_id /
-            session_id /
-            'anat' /
-            modality
-        )
-
+    def create_bids_structure(self, patient_id: str, session_id: str,
+                              modality: str) -> Path:
+        target = self.output_dir / patient_id / session_id / 'anat' / modality
         if not self.dry_run:
-            modality_dir.mkdir(parents=True, exist_ok=True)
-        return modality_dir
+            target.mkdir(parents=True, exist_ok=True)
+        return target
 
-    def copy_series(
-        self,
-        source_dir: Path,
-        target_dir: Path,
-        patient_id: str,
-        session_id: str,
-        modality: str
-    ) -> int:
-        """
-        Copy DICOM series to target directory with BIDS naming.
-
-        Returns:
-            Number of files copied
-        """
-        # Use rglob to collect all DICOM files in nested structure
-        source_files = sorted([f for f in source_dir.rglob("*.dcm") if f.is_file()])
-
+    def copy_series(self, source_dir: Path, target_dir: Path,
+                    patient_id: str, session_id: str,
+                    modality: str) -> int:
+        source_files = sorted(
+            f for f in source_dir.rglob("*.dcm") if f.is_file())
         if not source_files:
             self.logger.warning(f"No DICOM files in {source_dir}")
             return 0
 
-        # BIDS naming: sub-XXX_ses-XXX_MODALITY_NNNN.dcm
-        # Map modality folder name to BIDS suffix
-        bids_suffix_map = {
-            't1': 'T1w',
-            't1c': 'T1wCE',
-            't2': 'T2w',
-            't2fl': 'FLAIR'
-        }
-        bids_suffix = bids_suffix_map.get(modality, modality.upper())
+        suffix = _BIDS_SUFFIX.get(modality, modality.upper())
 
         if self.dry_run:
-            # Dry run: just count files
             count = len(source_files)
             self.files_would_copy += count
-            self.logger.debug(f"    [DRY RUN] Would copy {count} files for {modality}")
             return count
 
         copied = 0
-        for idx, source_file in enumerate(source_files, 1):
-            target_name = f"{patient_id}_{session_id}_{bids_suffix}_{idx:04d}.dcm"
-            target_path = target_dir / target_name
-
+        for idx, src in enumerate(source_files, 1):
+            dst = target_dir / f"{patient_id}_{session_id}_{suffix}_{idx:04d}.dcm"
             try:
-                shutil.copy2(source_file, target_path)
+                shutil.copy2(src, dst)
                 copied += 1
-            except Exception as e:
-                self.logger.error(f"Failed to copy {source_file}: {e}")
+            except Exception as exc:
+                self.logger.error(f"Failed to copy {src}: {exc}")
 
         self.files_copied += copied
         return copied
 
-    def validate_copy(
-        self,
-        source_dir: Path,
-        target_dir: Path,
-        patient_id: str,
-        session_id: str,
-        modality: str
-    ) -> bool:
-        """
-        Validate that slice count matches between source and target.
-
-        Returns:
-            True if validation passed
-        """
-
+    def validate_copy(self, source_dir: Path, target_dir: Path,
+                      patient_id: str, session_id: str,
+                      modality: str) -> bool:
         if self.dry_run:
-            # Skip validation in dry run
             return True
-        
-        source_count = len(list(source_dir.rglob("*.dcm")))
-        target_count = len(list(target_dir.glob("*.dcm")))
-
-        if source_count != target_count:
-            error_msg = (
-                f"{patient_id}/{session_id}/{modality}: "
-                f"slice count mismatch (source: {source_count}, target: {target_count})"
-            )
-            self.logger.error(error_msg)
-            self.validation_failed.append(error_msg)
+        src_count = len(list(source_dir.rglob("*.dcm")))
+        tgt_count = len(list(target_dir.glob("*.dcm")))
+        if src_count != tgt_count:
+            msg = (f"{patient_id}/{session_id}/{modality}: "
+                   f"slice mismatch (src={src_count}, tgt={tgt_count})")
+            self.logger.error(msg)
+            self.validation_failed.append(msg)
             return False
-
         return True
 
 
+# ════════════════════════════════════════════════════════════════
+# Logging Setup
+# ════════════════════════════════════════════════════════════════
+
 def setup_logging(log_file: Optional[Path] = None) -> logging.Logger:
-    """Setup logging configuration."""
     logger = logging.getLogger('reorganize_folders')
     logger.setLevel(logging.DEBUG)
-
-    # Remove existing handlers if re-running in same interpreter
     if logger.handlers:
-        logger.handlers = []
+        logger.handlers.clear()
 
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter(
         '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
+        datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(ch)
 
-    # File handler
     if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(fh)
 
     return logger
 
 
+# ════════════════════════════════════════════════════════════════
+# Persistence Helpers
+# ════════════════════════════════════════════════════════════════
+
 def save_mapping_file(mapping_data: Dict, output_dir: Path):
-    """Save dataset mapping to JSON file."""
-    mapping_file = output_dir / 'dataset_mapping.json'
-    with open(mapping_file, 'w') as f:
+    with open(output_dir / 'dataset_mapping.json', 'w') as f:
         json.dump(mapping_data, f, indent=2)
 
 
-def save_completeness_report(completeness_data: Dict, output_dir: Path):
-    """Save completeness report to text file."""
-    report_file = output_dir / 'incomplete_data.txt'
+def save_completeness_report(data: Dict, output_dir: Path):
+    path = output_dir / 'incomplete_data.txt'
+    stats = data['statistics']
 
-    with open(report_file, 'w') as f:
+    with open(path, 'w') as f:
         f.write("=== Incomplete Data Report ===\n")
-        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        f.write(f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
 
-        stats = completeness_data['statistics']
-        total_patients = stats['total_patients'] or 1
-        total_sessions = stats['total_sessions'] or 1
+        tp = stats['total_patients'] or 1
+        ts = stats['total_sessions'] or 1
 
         f.write(f"Total patients: {stats['total_patients']}\n")
         f.write(f"Complete patients: {stats['complete_patients']} "
-                f"({stats['complete_patients']/total_patients*100:.1f}%)\n")
+                f"({stats['complete_patients']/tp*100:.1f}%)\n")
         f.write(f"Incomplete patients: {stats['incomplete_patients']} "
-                f"({stats['incomplete_patients']/total_patients*100:.1f}%)\n\n")
+                f"({stats['incomplete_patients']/tp*100:.1f}%)\n\n")
 
         f.write(f"Total sessions: {stats['total_sessions']}\n")
         f.write(f"Complete sessions: {stats['complete_sessions']} "
-                f"({stats['complete_sessions']/total_sessions*100:.1f}%)\n")
+                f"({stats['complete_sessions']/ts*100:.1f}%)\n")
         f.write(f"Incomplete sessions: {stats['incomplete_sessions']} "
-                f"({stats['incomplete_sessions']/total_sessions*100:.1f}%)\n\n")
+                f"({stats['incomplete_sessions']/ts*100:.1f}%)\n\n")
 
-        if completeness_data['incomplete_patients']:
+        if data['incomplete_patients']:
             f.write("=== Details ===\n\n")
-
-            for patient in completeness_data['incomplete_patients']:
-                f.write(f"Patient: {patient['patient_id']} ({patient['original_id']})\n")
-
-                for session in patient['incomplete_sessions']:
-                    f.write(f"  Session: {session['session_id']} ({session['date']})\n")
-                    f.write(f"    Missing: {', '.join(session['missing'])}\n")
-                    f.write(f"    Available: {', '.join(session['available'])}\n")
-
+            for patient in data['incomplete_patients']:
+                f.write(f"Patient: {patient['patient_id']} "
+                        f"({patient['original_id']})\n")
+                for sess in patient['incomplete_sessions']:
+                    f.write(f"  Session: {sess['session_id']} "
+                            f"({sess['date']})\n")
+                    f.write(f"    Missing:   {', '.join(sess['missing'])}\n")
+                    f.write(f"    Available: {', '.join(sess['available'])}\n")
                 f.write("\n")
 
 
-def print_summary(
-    mapping_data: Dict,
-    completeness_data: Dict,
-    deduplicator: SeriesDeduplicator,
-    file_organizer: FileOrganizer,
-    total_time: float,
-    performance_metrics: Optional[Dict] = None,
-    dry_run: bool = False
-):
-    """Print final summary report."""
+def save_selection_log(log_entries: List[dict], output_dir: Path):
+    """Save detailed modality-selection decisions to JSON."""
+    path = output_dir / 'modality_selection.json'
+    with open(path, 'w') as f:
+        json.dump(log_entries, f, indent=2)
+
+
+def load_existing_mapping(output_dir: Path,
+                          logger: logging.Logger) -> Dict:
+    mapping_file = output_dir / 'dataset_mapping.json'
+    if not mapping_file.exists():
+        logger.info("No existing mapping — starting fresh")
+        return {
+            'patients': {},
+            'output_dir': str(output_dir),
+            'created_at': datetime.now().isoformat(),
+        }
+    try:
+        with open(mapping_file) as f:
+            data = json.load(f)
+        logger.info(f"Loaded existing mapping with "
+                    f"{len(data.get('patients', {}))} patients")
+        data['updated_at'] = datetime.now().isoformat()
+        return data
+    except Exception as exc:
+        logger.warning(f"Failed to load mapping ({exc}), starting fresh")
+        return {
+            'patients': {},
+            'output_dir': str(output_dir),
+            'created_at': datetime.now().isoformat(),
+        }
+
+
+def restore_id_mapper(mapping_data: Dict,
+                      logger: logging.Logger) -> IDMapper:
+    mapper = IDMapper()
+    if not mapping_data.get('patients'):
+        logger.info("No existing patients, starting from sub-001")
+        return mapper
+
+    for new_id, pdata in mapping_data['patients'].items():
+        mapper._map[pdata['original_id']] = new_id
+        num = int(new_id.replace('sub-', ''))
+        if num > mapper._counter:
+            mapper._counter = num
+
+    logger.info(f"Restored IDMapper: {len(mapper._map)} patients, "
+                f"next → sub-{mapper._counter + 1:03d}")
+    return mapper
+
+
+def check_patient_exists(output_dir: Path, patient_id: str,
+                         force: bool, dry_run: bool,
+                         logger: logging.Logger) -> bool:
+    if dry_run:
+        return False
+    pdir = output_dir / patient_id
+    if not pdir.exists():
+        return False
+    if force:
+        logger.info(f"  --force: removing existing {patient_id}")
+        try:
+            shutil.rmtree(pdir)
+            return False
+        except Exception as exc:
+            logger.error(f"  Cannot delete {pdir}: {exc}")
+            return True
+    logger.info(f"  Skipping {patient_id}: already exists "
+                f"(use --force to reprocess)")
+    return True
+
+
+def create_batches(items: list, batch_size: Optional[int]) -> List[list]:
+    if not batch_size or batch_size <= 0:
+        return [items]
+    return [items[i:i + batch_size]
+            for i in range(0, len(items), batch_size)]
+
+
+# ════════════════════════════════════════════════════════════════
+# Summary Printer
+# ════════════════════════════════════════════════════════════════
+
+def print_summary(mapping_data, completeness_data, dedup_stats,
+                  file_organizer, total_time,
+                  performance_metrics=None, dry_run=False):
     stats = completeness_data['statistics']
 
     print("\n" + "=" * 60)
     print("=== Reorganization Summary ===")
     print("=" * 60)
 
-    print("\n📊 Processing Statistics:")
-    print(f"  • Patients processed: {stats['total_patients']}")
-    print(f"  • Sessions created: {stats['total_sessions']}")
+    print(f"\n  Patients processed: {stats['total_patients']}")
+    print(f"  Sessions created:   {stats['total_sessions']}")
 
-    # Count series by modality
-    modality_counts = {'t1': 0, 't1c': 0, 't2': 0, 't2fl': 0}
-    modality_slices = {'t1': 0, 't1c': 0, 't2': 0, 't2fl': 0}
+    mc = defaultdict(int)
+    ms = defaultdict(int)
+    for pdata in mapping_data['patients'].values():
+        for sdata in pdata['sessions'].values():
+            for mod, sinfo in sdata['series'].items():
+                mc[mod] += 1
+                ms[mod] += sinfo.get('slice_count', 0)
 
-    for patient_data in mapping_data['patients'].values():
-        for session_data in patient_data['sessions'].values():
-            for modality, series_data in session_data['series'].items():
-                modality_counts.setdefault(modality, 0)
-                modality_slices.setdefault(modality, 0)
-                modality_counts[modality] += 1
-                modality_slices[modality] += series_data.get('slice_count', 0)
+    print("  Series by modality:")
+    for mod in ['t1', 't1c', 't2', 't2fl']:
+        print(f"    {mod:4s}: {mc.get(mod,0):3d} series "
+              f"({ms.get(mod,0):,} slices)")
 
-    print(f"  • Series processed by modality:")
-    for modality in ['t1', 't1c', 't2', 't2fl']:
-        print(f"    - {modality:4s}: {modality_counts.get(modality,0):3d} series "
-              f"({modality_slices.get(modality,0):,} slices)")
-
-    print(f"  • Duplicate series removed: {deduplicator.duplicates_removed}")
+    print(f"  Duplicates removed: {dedup_stats.duplicates_removed}")
 
     if dry_run:
-        total_files = getattr(file_organizer, 'files_would_copy', 0)
-        print(f"  • Total files that would be copied: {total_files:,}")
+        total_f = getattr(file_organizer, 'files_would_copy', 0)
+        print(f"  Files (would copy): {total_f:,}")
     else:
-        print(f"  • Total files copied: {file_organizer.files_copied:,}")
+        print(f"  Files copied:       {file_organizer.files_copied:,}")
 
-    print("\n✅ Completeness Analysis:")
-    if stats['total_patients']:
-        complete_pct = stats['complete_patients'] / stats['total_patients'] * 100
-    else:
-        complete_pct = 0.0
-    print(f"  • Complete patients: {stats['complete_patients']}/{stats['total_patients']} "
-          f"({complete_pct:.1f}%)")
-
-    if stats['total_sessions']:
-        complete_sess_pct = stats['complete_sessions'] / stats['total_sessions'] * 100
-    else:
-        complete_sess_pct = 0.0
-    print(f"  • Complete sessions: {stats['complete_sessions']}/{stats['total_sessions']} "
-          f"({complete_sess_pct:.1f}%)")
+    tp = stats['total_patients'] or 1
+    ts = stats['total_sessions'] or 1
+    print(f"\n  Complete patients: "
+          f"{stats['complete_patients']}/{stats['total_patients']} "
+          f"({stats['complete_patients']/tp*100:.1f}%)")
+    print(f"  Complete sessions: "
+          f"{stats['complete_sessions']}/{stats['total_sessions']} "
+          f"({stats['complete_sessions']/ts*100:.1f}%)")
 
     if completeness_data['incomplete_patients']:
-        print(f"\n⚠️  Incomplete Data Found:")
-        print(f"  • {stats['incomplete_patients']} patients with missing modalities:")
+        print(f"\n  Incomplete: {stats['incomplete_patients']} patients")
+        for pat in completeness_data['incomplete_patients'][:5]:
+            print(f"    - {pat['patient_id']} ({pat['original_id']})")
+            for sess in pat['incomplete_sessions']:
+                print(f"        {sess['session_id']}: "
+                      f"missing {', '.join(sess['missing'])}")
+        rem = len(completeness_data['incomplete_patients']) - 5
+        if rem > 0:
+            print(f"    ... and {rem} more")
 
-        for patient in completeness_data['incomplete_patients'][:5]:  # Show first 5
-            print(f"    - {patient['patient_id']} (original: {patient['original_id']})")
-            for session in patient['incomplete_sessions']:
-                missing = ', '.join(session['missing'])
-                print(f"      └─ {session['session_id']}: missing {missing}")
-
-        if len(completeness_data['incomplete_patients']) > 5:
-            remaining = len(completeness_data['incomplete_patients']) - 5
-            print(f"    ... and {remaining} more")
-
-        print(f"\n  📄 Detailed report: incomplete_data.txt")
-
-    print("\n🔍 Validation:")
     if not file_organizer.validation_failed:
-        print("  ✓ All copied series passed slice count validation")
+        print("\n  Validation: all series passed")
     else:
-        print(f"  ✗ {len(file_organizer.validation_failed)} series failed validation")
-        print("    See log file for details")
+        print(f"\n  Validation: {len(file_organizer.validation_failed)} "
+              f"series FAILED — see log")
 
-    print("\n⚡ Performance:")
-    print(f"  • Total time: {total_time:.1f}s")
-    
-    patients_per_sec = stats['total_patients'] / total_time
-    sessions_per_sec = stats['total_sessions'] / total_time
-    print(f"  • Throughput: {patients_per_sec:.2f} patients/sec, "
-          f"{sessions_per_sec:.2f} sessions/sec")
-    
+    print(f"\n  Total time: {total_time:.1f}s")
+    if stats['total_patients'] and total_time > 0:
+        print(f"  Throughput: {stats['total_patients']/total_time:.2f} "
+              f"patients/sec")
     if performance_metrics:
         if performance_metrics.get('cpu_avg'):
-            print(f"  • CPU usage: avg {performance_metrics['cpu_avg']:.1f}%, "
+            print(f"  CPU:    avg {performance_metrics['cpu_avg']:.1f}%, "
                   f"peak {performance_metrics['cpu_max']:.1f}%")
         if performance_metrics.get('memory_avg_mb'):
-            print(f"  • Memory usage: avg {performance_metrics['memory_avg_mb']:.1f}MB, "
+            print(f"  Memory: avg {performance_metrics['memory_avg_mb']:.1f}MB, "
                   f"peak {performance_metrics['memory_peak_mb']:.1f}MB")
 
-    print("\n📁 Output:")
-    print(f"  • BIDS directory: {mapping_data.get('output_dir', 'N/A')}")
-    print(f"  • Mapping file: dataset_mapping.json")
-    print(f"  • Incomplete data report: incomplete_data.txt")
+    print(f"\n  Output:  {mapping_data.get('output_dir', 'N/A')}")
+    print(f"  Reports: dataset_mapping.json, incomplete_data.txt")
+    print("=" * 60)
 
-    print("\n" + "=" * 60)
+
+# ════════════════════════════════════════════════════════════════
+# Per-Patient Processing (for parallel mode)
+# ════════════════════════════════════════════════════════════════
 
 def process_single_patient(
     patient_dir: Path,
     input_dir: Path,
     output_dir: Path,
-    patient_mapping: Dict[str, str],  # original_id -> new_id
+    patient_mapping: Dict[str, str],
     log_level: int = logging.INFO,
     force: bool = False,
-    dry_run: bool = False
+    dry_run: bool = False,
+    enable_year_strategies: bool = True,
 ) -> Optional[Dict]:
-    """
-    Process a single patient (designed to run in parallel).
-    
-    Args:
-        patient_dir: Patient directory path
-        input_dir: Root input directory
-        output_dir: Root output directory
-        patient_mapping: Mapping of original to new patient IDs
-        log_level: Logging level
-        
-    Returns:
-        Dictionary with patient data or None if failed
-    """
-    # Setup logging for this process
+    """Process one patient — designed to run in a worker process."""
     logger = logging.getLogger(f'patient_{patient_dir.name}')
     logger.setLevel(log_level)
     if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
-        logger.addHandler(handler)
-    
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(h)
+
     try:
-        # Check if patient already processed
-        original_patient_id = patient_dir.name
-        new_patient_id = patient_mapping[original_patient_id]
-        if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
-            return None  # Skip this patient
-        
-        # Initialize components for this process
-        modality_detector = ModalityDetector(logger)
+        original_id = patient_dir.name
+        new_id = patient_mapping[original_id]
+        if check_patient_exists(output_dir, new_id, force, dry_run, logger):
+            return None
+
+        detector = ModalityDetector(logger,
+                                    enable_year_strategies=enable_year_strategies)
         scanner = DatasetScanner(logger)
         grouper = SessionGrouper(logger)
         deduplicator = SeriesDeduplicator(logger)
-        file_organizer = FileOrganizer(output_dir, logger, dry_run=dry_run)
-        
-        original_patient_id = patient_dir.name
-        new_patient_id = patient_mapping[original_patient_id]
-        
-        logger.info(f"Processing {original_patient_id} -> {new_patient_id}")
-        
-        # Scan series
-        series_entries = scanner.scan_patient_series(patient_dir)
-        logger.debug(f"  Found {len(series_entries)} series entries")
-        
-        # Process series
-        series_list: List[SeriesInfo] = []
-        for series_dir, date_folder_name in series_entries:
-            # Parse date
-            date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
-            if not date:
-                date = scanner.parse_date_from_series_name(series_dir.name)
-            
-            if not date:
-                logger.warning(f"  Could not parse date from {series_dir}, skipping")
-                continue
-            
-            # Detect modality
-            modality, series_description = modality_detector.detect_modality(series_dir)
-            
-            # Filter: only keep 4 target modalities
-            if modality in {'t1', 't1c', 't2', 't2fl'}:
-                series_info = SeriesInfo(
-                    original_path=series_dir,
-                    patient_id=original_patient_id,
-                    date=date,
-                    modality=modality,
-                    series_description=series_description
-                )
-                series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
-                series_list.append(series_info)
-                logger.debug(f"  Series {series_dir.name}: {modality} ({series_info.slice_count} slices)")
-            elif modality:
-                logger.debug(f"  Series {series_dir.name}: {modality} (filtered out)")
-            else:
-                logger.debug(f"  Series {series_dir.name}: unknown modality (filtered out)")
-        
-        if not series_list:
-            logger.warning(f"  No valid series found for {original_patient_id}")
-            return None
-        
-        # Group by date into sessions
-        sessions = grouper.group_by_date(series_list)
-        logger.debug(f"  Grouped into {len(sessions)} sessions")
-        
-        # Deduplicate
-        sessions = [deduplicator.deduplicate_session(s) for s in sessions]
-        
-        # Process each session
-        patient_data = {
-            'original_id': original_patient_id,
-            'sessions': {},
-            'duplicates_removed': deduplicator.duplicates_removed,
-            'files_copied': 0,
-            'validation_failed': []
-        }
-        
-        for session_idx, session in enumerate(sessions, 1):
-            new_session_id = f"ses-{session_idx:03d}"
-            
-            logger.debug(f"  Session {new_session_id} (date: {session.date})")
-            
-            session_data = {
-                'original_date': session.date,
-                'series': {}
-            }
-            
-            # Process each modality in session
-            for modality, series in session.series.items():
-                # Create BIDS structure
-                target_dir = file_organizer.create_bids_structure(
-                    new_patient_id, new_session_id, modality
-                )
-                
-                # Copy files
-                copied = file_organizer.copy_series(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-                
-                # Validate
-                file_organizer.validate_copy(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-                
-                # Update mapping
-                session_data['series'][modality] = {
-                    'original_path': str(series.original_path),
-                    'slice_count': copied,
-                    'series_description': series.series_description
-                }
-                
-                logger.debug(f"    {modality}: {copied} files copied")
-            
-            patient_data['sessions'][new_session_id] = session_data
-        
-        # Store stats from this patient's processing
-        patient_data['files_copied'] = file_organizer.files_copied
-        patient_data['validation_failed'] = file_organizer.validation_failed
-        
-        logger.info(f"Completed {original_patient_id}")
-        
-        return {new_patient_id: patient_data}
-        
-    except Exception as e:
-        logger.error(f"Failed to process {patient_dir.name}: {e}", exc_info=True)
+        organizer = FileOrganizer(output_dir, logger, dry_run=dry_run)
+
+        return _process_patient_core(
+            patient_dir, original_id, new_id,
+            detector, scanner, grouper, deduplicator, organizer, logger)
+
+    except Exception as exc:
+        logger.error(f"Failed to process {patient_dir.name}: {exc}",
+                     exc_info=True)
         return None
 
-def check_patient_exists(output_dir: Path, patient_id: str, force: bool, dry_run: bool, logger: logging.Logger) -> bool:
-    """
-    Check if patient already processed and handle force flag.
-    
-    Args:
-        output_dir: Output BIDS directory
-        patient_id: New patient ID (e.g., 'sub-001')
-        force: Force reprocessing flag
-        dry_run: Dry run mode flag
-        logger: Logger instance
-        
-    Returns:
-        True if should skip processing, False if should process
-    """
-    if dry_run:
-        # In dry run, always process to simulate
-        return False
-    
-    patient_dir = output_dir / patient_id
-    
-    if not patient_dir.exists():
-        # Patient not processed yet
-        return False
-    
-    if force:
-        # Force flag set - delete existing and reprocess
-        logger.info(f"  Force flag set: deleting existing {patient_id}")
-        try:
-            shutil.rmtree(patient_dir)
-            return False  # Process after deletion
-        except Exception as e:
-            logger.error(f"  Failed to delete {patient_dir}: {e}")
-            return True  # Skip if can't delete
-    else:
-        # Patient exists and no force flag - skip
-        logger.info(f"  Skipping {patient_id}: already processed (use --force to reprocess)")
-        return True
-    
-def load_existing_mapping(output_dir: Path, logger: logging.Logger) -> Dict:
-    """
-    Load existing mapping file if it exists.
-    
-    Args:
-        output_dir: Output directory
-        logger: Logger instance
-        
-    Returns:
-        Existing mapping data or empty structure
-    """
-    mapping_file = output_dir / 'dataset_mapping.json'
-    
-    if not mapping_file.exists():
-        logger.info("No existing mapping file found, starting fresh")
-        return {
-            'patients': {},
-            'output_dir': str(output_dir),
-            'created_at': datetime.now().isoformat()
-        }
-    
-    try:
-        with open(mapping_file, 'r') as f:
-            existing_mapping = json.load(f)
-        
-        logger.info(f"Loaded existing mapping with {len(existing_mapping.get('patients', {}))} patients")
-        
-        # Update timestamp
-        existing_mapping['updated_at'] = datetime.now().isoformat()
-        
-        return existing_mapping
-        
-    except Exception as e:
-        logger.warning(f"Failed to load existing mapping: {e}, starting fresh")
-        return {
-            'patients': {},
-            'output_dir': str(output_dir),
-            'created_at': datetime.now().isoformat()
-        }
-    
-def create_batches(items: List, batch_size: int) -> List[List]:
-    """
-    Split list into batches.
-    
-    Args:
-        items: List of items to split
-        batch_size: Size of each batch
-        
-    Returns:
-        List of batches
-    """
-    if batch_size is None or batch_size <= 0:
-        return [items]  # Single batch with all items
-    
-    batches = []
-    for i in range(0, len(items), batch_size):
-        batches.append(items[i:i + batch_size])
-    
-    return batches
 
-def restore_id_mapper(mapping_data: Dict, logger: logging.Logger) -> IDMapper:
-    """
-    Restore IDMapper from existing mapping data.
-    Continues numbering from last patient ID.
-    
-    Args:
-        mapping_data: Existing mapping data with patients
-        logger: Logger instance
-        
-    Returns:
-        IDMapper with restored state
-    """
-    id_mapper = IDMapper()
-    
-    if not mapping_data.get('patients'):
-        logger.info("No existing patients, starting from sub-001")
-        return id_mapper
-    
-    # Extract all existing patient mappings
-    for new_patient_id, patient_data in mapping_data['patients'].items():
-        original_id = patient_data['original_id']
-        
-        # Add to mapper's internal dict
-        id_mapper._patient_map[original_id] = new_patient_id
-        
-        # Extract counter from new_patient_id (e.g., 'sub-042' → 42)
-        patient_num = int(new_patient_id.replace('sub-', ''))
-        
-        # Update counter to max seen
-        if patient_num > id_mapper._patient_counter:
-            id_mapper._patient_counter = patient_num
-    
-    logger.info(f"Restored IDMapper: {len(id_mapper._patient_map)} existing patients, "
-               f"next will be sub-{id_mapper._patient_counter + 1:03d}")
-    
-    return id_mapper
+def _process_patient_core(
+    patient_dir, original_id, new_id,
+    detector, scanner, grouper, deduplicator, organizer, logger,
+) -> Optional[Dict]:
+    """Shared core logic used by both sequential and parallel paths."""
+    logger.info(f"Processing {original_id} -> {new_id}")
+
+    series_entries = scanner.scan_patient_series(patient_dir)
+    logger.debug(f"  Found {len(series_entries)} series entries")
+
+    series_list: List[SeriesInfo] = []
+    selection_log: List[dict] = []
+
+    for series_dir, date_str in series_entries:
+        if not date_str:
+            logger.warning(f"  No date for {series_dir} — skipping")
+            continue
+
+        modality, desc, score, strategy = detector.detect_modality(series_dir)
+
+        if modality in REQUIRED_MODALITIES:
+            info = SeriesInfo(
+                original_path=series_dir,
+                patient_id=original_id,
+                date=date_str,
+                modality=modality,
+                series_description=desc,
+                detection_score=score,
+                detection_strategy=strategy,
+            )
+            info.slice_count = len(list(series_dir.rglob("*.dcm")))
+            series_list.append(info)
+            logger.debug(f"  {series_dir.name}: {modality} "
+                         f"(score={score:.2f}, slices={info.slice_count})")
+
+            selection_log.append({
+                'patient': new_id,
+                'series_dir': str(series_dir.name),
+                'modality': modality,
+                'description': desc,
+                'score': score,
+                'strategy': strategy,
+            })
+        elif modality:
+            logger.debug(f"  {series_dir.name}: {modality} (filtered)")
+        else:
+            logger.debug(f"  {series_dir.name}: unknown modality")
+
+    if not series_list:
+        logger.warning(f"  No valid series for {original_id}")
+        return None
+
+    sessions = grouper.group_by_date(series_list)
+    sessions = [deduplicator.deduplicate_session(s) for s in sessions]
+
+    patient_data: Dict = {
+        'original_id': original_id,
+        'sessions': {},
+        'duplicates_removed': deduplicator.duplicates_removed,
+        'files_copied': 0,
+        'validation_failed': [],
+        'selection_log': selection_log,
+    }
+
+    for idx, session in enumerate(sessions, 1):
+        ses_id = f"ses-{idx:03d}"
+        ses_data: Dict = {'original_date': session.date, 'series': {}}
+
+        for modality, series in session.series.items():
+            target = organizer.create_bids_structure(new_id, ses_id, modality)
+            copied = organizer.copy_series(
+                series.original_path, target, new_id, ses_id, modality)
+            organizer.validate_copy(
+                series.original_path, target, new_id, ses_id, modality)
+
+            ses_data['series'][modality] = {
+                'original_path': str(series.original_path),
+                'slice_count': copied,
+                'series_description': series.series_description,
+                'detection_score': series.detection_score,
+                'detection_strategy': series.detection_strategy,
+            }
+
+        patient_data['sessions'][ses_id] = ses_data
+
+    patient_data['files_copied'] = organizer.files_copied
+    patient_data['validation_failed'] = organizer.validation_failed
+    logger.info(f"Completed {original_id}")
+    return {new_id: patient_data}
+
+
+# ════════════════════════════════════════════════════════════════
+# Sequential Processing
+# ════════════════════════════════════════════════════════════════
 
 def run_sequential(
-    input_dir: Path,
-    output_dir: Path,
-    logger: logging.Logger,
-    patient_dirs: Optional[List[Path]] = None,
-    max_subjects: Optional[int] = None,
-    benchmark: bool = False,
-    results_dir: Optional[Path] = None,
-    mode: str = 'sequential',
-    workers: int = 1,
-    force: bool = False,
-    dry_run: bool = False,
-    id_mapper: Optional[IDMapper] = None 
-) -> Tuple[Dict, Dict, SeriesDeduplicator, FileOrganizer]:
-    """
-    Run sequential processing (baseline).
-
-    Returns:
-        (mapping_data, completeness_data, deduplicator, file_organizer)
-    """
-    # Initialize components
-    modality_detector = ModalityDetector(logger)
-    # Use provided id_mapper or create new one
+    input_dir, output_dir, logger, *,
+    patient_dirs=None, max_subjects=None, benchmark=False,
+    results_dir=None, mode='sequential', workers=1,
+    force=False, dry_run=False, id_mapper=None,
+    enable_year_strategies=True,
+):
+    detector = ModalityDetector(logger,
+                                enable_year_strategies=enable_year_strategies)
     if id_mapper is None:
         id_mapper = IDMapper()
     scanner = DatasetScanner(logger)
@@ -1099,668 +1411,372 @@ def run_sequential(
     completeness_checker = CompletenessChecker(logger)
     file_organizer = FileOrganizer(output_dir, logger, dry_run=dry_run)
 
-    # Initialize mapping data - load existing or create new
     mapping_data = load_existing_mapping(output_dir, logger)
-    
-    # Track statistics for this run
-    patients_processed_this_run = 0
-    patients_skipped_this_run = 0
 
-    # Start performance monitoring
     monitor = None
     if benchmark:
         monitor = PerformanceMonitor(enabled=True)
         monitor.start()
-        logger.info("Performance monitoring started")
 
-    # Scan dataset
-    logger.info("Scanning input directory...")
-    scanner = DatasetScanner(logger)
-    
     if patient_dirs is None:
-        # Scan all patients if not provided
         patient_dirs = scanner.scan_dataset(input_dir)
-        
-        if max_subjects and len(patient_dirs) > max_subjects:
+        if max_subjects:
             patient_dirs = patient_dirs[:max_subjects]
-            logger.info(f"Limited to {max_subjects} patients")
-    
-    logger.info(f"Processing {len(patient_dirs)} patients")
 
-    # Process each patient
-    for patient_idx, patient_dir in enumerate(patient_dirs, 1):
-        original_patient_id = patient_dir.name
-        new_patient_id = id_mapper.get_patient_id(original_patient_id)
+    processed = skipped = 0
 
-        logger.info(f"Processing patient {patient_idx}/{len(patient_dirs)}: "
-                    f"{original_patient_id} -> {new_patient_id}")
-        
-        # Check if patient already processed
-        if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
-            patients_skipped_this_run += 1
+    for idx, patient_dir in enumerate(patient_dirs, 1):
+        original_id = patient_dir.name
+        new_id = id_mapper.get_patient_id(original_id)
+        logger.info(f"[{idx}/{len(patient_dirs)}] "
+                    f"{original_id} -> {new_id}")
+
+        if check_patient_exists(output_dir, new_id, force, dry_run, logger):
+            skipped += 1
             continue
 
-        # Scan series (now returns tuples: (series_dir, date_folder_name_or_None))
-        series_entries = scanner.scan_patient_series(patient_dir)
-        logger.debug(f"  Found {len(series_entries)} series entries (nested-aware)")
+        result = _process_patient_core(
+            patient_dir, original_id, new_id,
+            detector, scanner, grouper, deduplicator, file_organizer, logger)
 
-        # Process series
-        series_list: List[SeriesInfo] = []
-        for series_dir, date_folder_name in series_entries:
-            # Priority: date from ancestor folder (date_folder_name), else try parse from series_dir.name
-            date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
-            if not date:
-                date = scanner.parse_date_from_series_name(series_dir.name)
+        if result:
+            for pid, pdata in result.items():
+                # Remove transient keys before storing
+                pdata.pop('duplicates_removed', None)
+                pdata.pop('files_copied', None)
+                pdata.pop('validation_failed', None)
+                sel_log = pdata.pop('selection_log', [])
+                mapping_data['patients'][pid] = pdata
+            processed += 1
 
-            if not date:
-                logger.warning(f"  Could not parse date from {series_dir} or its parent folders, skipping")
-                continue
+    completeness_data = completeness_checker.generate_completeness_report(
+        mapping_data)
 
-            # Detect modality (returns modality and series_description)
-            modality, series_description = modality_detector.detect_modality(series_dir)
-
-            # Filter: only keep 4 target modalities
-            if modality in {'t1', 't1c', 't2', 't2fl'}:
-                series_info = SeriesInfo(
-                    original_path=series_dir,
-                    patient_id=original_patient_id,
-                    date=date,
-                    modality=modality,
-                    series_description=series_description
-                )
-                # slice_count can be computed later in deduplicator, but store current count for info
-                series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
-                series_list.append(series_info)
-                logger.debug(f"  Series {series_dir}: {modality} ({series_info.slice_count} slices)")
-            elif modality:
-                logger.debug(f"  Series {series_dir}: {modality} (filtered out)")
-            else:
-                logger.debug(f"  Series {series_dir}: unknown modality (filtered out)")
-
-        if not series_list:
-            logger.warning(f"  No valid series found for {original_patient_id}")
-            continue
-
-        # Group by date into sessions
-        sessions = grouper.group_by_date(series_list)
-        logger.debug(f"  Grouped into {len(sessions)} sessions")
-
-        # Deduplicate: keep best series per modality
-        sessions = [deduplicator.deduplicate_session(s) for s in sessions]
-
-        # Process each session
-        patient_data = {
-            'original_id': original_patient_id,
-            'sessions': {}
-        }
-
-        for session_idx, session in enumerate(sessions, 1):
-            new_session_id = f"ses-{session_idx:03d}"
-
-            logger.debug(f"  Session {new_session_id} (date: {session.date})")
-
-            session_data = {
-                'original_date': session.date,
-                'series': {}
-            }
-
-            # Process each modality in session
-            for modality, series in session.series.items():
-                # Create BIDS structure
-                target_dir = file_organizer.create_bids_structure(
-                    new_patient_id, new_session_id, modality
-                )
-
-                # Copy files (source_dir may have nested DICOMs)
-                copied = file_organizer.copy_series(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-
-                # Validate
-                file_organizer.validate_copy(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-
-                # Update mapping
-                session_data['series'][modality] = {
-                    'original_path': str(series.original_path),
-                    'slice_count': copied,
-                    'series_description': series.series_description
-                }
-
-                logger.debug(f"    {modality}: {copied} files copied")
-
-            patient_data['sessions'][new_session_id] = session_data
-
-        mapping_data['patients'][new_patient_id] = patient_data
-        patients_processed_this_run += 1
-
-    # Check completeness
-    logger.info("Checking data completeness...")
-    completeness_data = completeness_checker.generate_completeness_report(mapping_data)
-
-    # Stop monitoring and collect metrics
-    performance_metrics = None
+    perf = None
     if monitor:
-        performance_metrics = monitor.get_metrics()
-        logger.info("Performance monitoring stopped")
+        perf = monitor.get_metrics()
 
-    # Log statistics for this run
-    total_patients_in_mapping = len(mapping_data['patients'])
-    logger.info("="*60)
-    logger.info("Run statistics:")
-    logger.info(f"  Patients in this batch: {len(patient_dirs)}")
-    logger.info(f"  New patients processed: {patients_processed_this_run}")
-    logger.info(f"  Existing patients skipped: {patients_skipped_this_run}")
-    logger.info(f"  Total patients in mapping: {total_patients_in_mapping}")
-    logger.info("="*60)
-    
-    return mapping_data, completeness_data, deduplicator, file_organizer, performance_metrics
+    logger.info(f"Run stats: {processed} processed, {skipped} skipped, "
+                f"{len(mapping_data['patients'])} total in mapping")
+
+    return mapping_data, completeness_data, deduplicator, file_organizer, perf
+
+
+# ════════════════════════════════════════════════════════════════
+# Parallel Processing
+# ════════════════════════════════════════════════════════════════
 
 def run_parallel(
-    input_dir: Path,
-    output_dir: Path,
-    logger: logging.Logger,
-    workers: int = 4,
-    patient_dirs: Optional[List[Path]] = None,
-    max_subjects: Optional[int] = None,
-    benchmark: bool = False,
-    results_dir: Optional[Path] = None,
-    mode: str = 'parallel',
-    force: bool = False,
-    dry_run: bool = False,
-    id_mapper: Optional[IDMapper] = None 
-) -> Tuple[Dict, Dict, int, FileOrganizer, Optional[Dict]]:
-    """
-    Run parallel processing using multiprocessing.
-    
-    Returns:
-        (mapping_data, completeness_data, total_duplicates_removed, file_organizer_stats, performance_metrics)
-    """
-    # Start performance monitoring
+    input_dir, output_dir, logger, *,
+    workers=4, patient_dirs=None, max_subjects=None,
+    benchmark=False, results_dir=None, mode='parallel',
+    force=False, dry_run=False, id_mapper=None,
+    enable_year_strategies=True,
+):
     monitor = None
     if benchmark:
         monitor = PerformanceMonitor(enabled=True)
         monitor.start()
-        logger.info("Performance monitoring started")
-    
-    # Initialize components
+
     scanner = DatasetScanner(logger)
-    # Use provided id_mapper or create new one
     if id_mapper is None:
         id_mapper = IDMapper()
     completeness_checker = CompletenessChecker(logger)
-    
-    # Scan dataset
-    logger.info("Scanning input directory...")
-    scanner = DatasetScanner(logger)
-    
+
     if patient_dirs is None:
-        # Scan all patients if not provided
         patient_dirs = scanner.scan_dataset(input_dir)
-        
-        if max_subjects and len(patient_dirs) > max_subjects:
+        if max_subjects:
             patient_dirs = patient_dirs[:max_subjects]
-            logger.info(f"Limited to {max_subjects} patients")
-    
-    logger.info(f"Processing {len(patient_dirs)} patients")
-    
-    # Pre-create patient ID mapping (must be done before parallel processing)
-    logger.info("Creating patient ID mapping...")
-    patient_mapping = {}
-    for patient_dir in patient_dirs:
-        original_id = patient_dir.name
-        new_id = id_mapper.get_patient_id(original_id)
-        patient_mapping[original_id] = new_id
-    
-    logger.info(f"Processing {len(patient_dirs)} patients with {workers} workers...")
-    
-    # Create partial function with fixed arguments
-    process_func = partial(
+
+    # Pre-create mapping (must be before fork)
+    patient_mapping = {
+        pd.name: id_mapper.get_patient_id(pd.name) for pd in patient_dirs}
+
+    logger.info(f"Parallel: {len(patient_dirs)} patients, {workers} workers")
+
+    func = partial(
         process_single_patient,
         input_dir=input_dir,
         output_dir=output_dir,
         patient_mapping=patient_mapping,
         log_level=logging.WARNING,
         force=force,
-        dry_run=dry_run  # Reduce noise in parallel mode
+        dry_run=dry_run,
+        enable_year_strategies=enable_year_strategies,
     )
-    
-    # Process patients in parallel
+
     results = []
     with mp.Pool(processes=workers) as pool:
-        # Use imap_unordered for better performance
-        for result in pool.imap_unordered(process_func, patient_dirs):
+        for result in pool.imap_unordered(func, patient_dirs):
             if result:
                 results.append(result)
-                logger.info(f"Progress: {len(results)}/{len(patient_dirs)} patients completed")
-    
-    logger.info(f"Completed processing {len(results)} patients")
-    
-    # Aggregate results
-    logger.info("Aggregating results...")
-    # Initialize mapping data - load existing or create new
+                logger.info(f"  Progress: {len(results)}/{len(patient_dirs)}")
+
+    # Aggregate
     mapping_data = load_existing_mapping(output_dir, logger)
-    
-    total_duplicates_removed = 0
-    total_files_copied = 0
-    all_validation_failed = []
-    
+    total_dup = total_copied = 0
+    all_vfail: List[str] = []
+
     for result in results:
-        for patient_id, patient_data in result.items():
-            # Extract and remove processing stats
-            duplicates = patient_data.pop('duplicates_removed', 0)
-            files_copied = patient_data.pop('files_copied', 0)
-            validation_failed = patient_data.pop('validation_failed', [])
-            
-            total_duplicates_removed += duplicates
-            total_files_copied += files_copied
-            all_validation_failed.extend(validation_failed)
-            
-            # Store patient data
-            mapping_data['patients'][patient_id] = patient_data
-    
-    # Create a mock FileOrganizer for stats (parallel version doesn't use single organizer)
-    class FileOrganizerStats:
-        def __init__(self, files_copied, validation_failed):
-            self.files_copied = files_copied
-            self.validation_failed = validation_failed
-    
-    file_organizer = FileOrganizerStats(total_files_copied, all_validation_failed)
-    
-    # Check completeness
-    logger.info("Checking data completeness...")
-    completeness_data = completeness_checker.generate_completeness_report(mapping_data)
-    
-    # Stop monitoring and collect metrics
-    performance_metrics = None
+        for pid, pdata in result.items():
+            total_dup += pdata.pop('duplicates_removed', 0)
+            total_copied += pdata.pop('files_copied', 0)
+            all_vfail.extend(pdata.pop('validation_failed', []))
+            pdata.pop('selection_log', None)
+            mapping_data['patients'][pid] = pdata
+
+    class _Stats:
+        def __init__(self, dup, copied, vfail):
+            self.duplicates_removed = dup
+            self.files_copied = copied
+            self.validation_failed = vfail
+
+    file_stats = _Stats(total_dup, total_copied, all_vfail)
+    completeness_data = completeness_checker.generate_completeness_report(
+        mapping_data)
+
+    perf = None
     if monitor:
         monitor.stop()
-        performance_metrics = monitor.get_metrics()
-        logger.info("Performance monitoring stopped")
-    
-    return mapping_data, completeness_data, total_duplicates_removed, file_organizer, performance_metrics
+        perf = monitor.get_metrics()
 
+    return (mapping_data, completeness_data, total_dup,
+            file_stats, perf)
+
+
+# ════════════════════════════════════════════════════════════════
+# CLI
+# ════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Reorganize UPENN-GBM dataset to BIDS format (nested folders aware)'
-    )
-    parser.add_argument(
-        'input_dir',
-        type=Path,
-        help='Input UPENN-GBM directory'
-    )
-    parser.add_argument(
-        'output_dir',
-        type=Path,
-        help='Output BIDS directory'
-    )
-    parser.add_argument(
-        '--mode',
-        choices=['sequential', 'parallel'],
-        default='sequential',
-        help='Processing mode (default: sequential)'
-    )
-    parser.add_argument(
-        '--workers',
-        type=int,
-        default=1,
-        help='Number of parallel workers (default: 1)'
-    )
-    parser.add_argument(
-        '--log_file',
-        type=Path,
-        default=None,
-        help='Path to log file'
-    )
-    parser.add_argument(
-        '--dry_run',
-        action='store_true',
-        help='Simulate without copying files'
-    )
-    parser.add_argument(
-        "--max-subjects",
-        type=int,
-        default=None,
-        help="Maximum number of subjects to process (for testing)"
-    )
-    parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=None,
-        help='Process patients in batches of N (e.g., 10). Useful for incremental processing.'
-    )
-    parser.add_argument(
-        '--force',
-        action='store_true',
-        help='Force reprocessing: delete existing patient directories and reprocess'
-    )
-    parser.add_argument(
-        '--benchmark',
-        action='store_true',
-        help='Enable performance benchmarking'
-    )
-    parser.add_argument(
-        '--results_dir',
-        type=Path,
-        default=Path('results'),
-        help='Directory for benchmark results (default: results)'
-    )
-
+        description='Reorganize DICOM dataset to BIDS format '
+                    '(enhanced modality detection)')
+    parser.add_argument('input_dir', type=Path,
+                        help='Input DICOM directory')
+    parser.add_argument('output_dir', type=Path,
+                        help='Output BIDS directory')
+    parser.add_argument('--mode', choices=['sequential', 'parallel'],
+                        default='sequential',
+                        help='Processing mode (default: sequential)')
+    parser.add_argument('--workers', type=int, default=1,
+                        help='Parallel workers (default: 1)')
+    parser.add_argument('--log_file', type=Path, default=None,
+                        help='Log file path')
+    parser.add_argument('--dry_run', action='store_true',
+                        help='Simulate without copying files')
+    parser.add_argument('--max-subjects', type=int, default=None,
+                        help='Process at most N patients (for testing)')
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='Process in batches of N')
+    parser.add_argument('--force', action='store_true',
+                        help='Reprocess existing patients')
+    parser.add_argument('--benchmark', action='store_true',
+                        help='Enable performance benchmarking')
+    parser.add_argument('--results_dir', type=Path, default=Path('results'),
+                        help='Benchmark results directory')
+    parser.add_argument('--patient-prefix', type=str, default=None,
+                        help='Patient directory prefix filter '
+                             '(auto-detected if omitted)')
+    parser.add_argument('--no-year-strategies', action='store_true',
+                        help='Disable year-specific detection strategies')
+    parser.add_argument('--list-strategies', action='store_true',
+                        help='List detection strategies and exit')
 
     args = parser.parse_args()
 
-    # Validate inputs
-    if not args.input_dir.exists():
-        print(f"Error: Input directory does not exist: {args.input_dir}")
-        sys.exit(1)
+    # ── List strategies ────────────────────────────────────────
+    if args.list_strategies:
+        print("\nModality Detection Strategies:")
+        print("-" * 50)
+        strategies = _build_year_strategies()
+        strategies.append(StandardDetectionStrategy())
+        strategies.append(TechnicalParamStrategy())
+        strategies.sort(key=lambda s: s.get_priority())
+        for s in strategies:
+            extra = ""
+            if isinstance(s, YearSpecificStrategy):
+                extra = f"  years={s._years}, exclusive"
+            print(f"  [{s.get_priority():>5d}] {s.get_name()}{extra}")
+        print("\nStrategies are tried in priority order (lower = first).")
+        sys.exit(0)
 
-    # Create output directory
+    # ── Validate ───────────────────────────────────────────────
+    if not args.input_dir.exists():
+        print(f"Error: input directory does not exist: {args.input_dir}")
+        sys.exit(1)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Setup logging
     if args.log_file is None:
         args.log_file = args.output_dir / 'reorganize.log'
-
     logger = setup_logging(args.log_file)
 
     logger.info("=" * 60)
-    logger.info("Starting dataset reorganization")
+    logger.info("Stage 1: DICOM → BIDS Reorganization")
     logger.info("=" * 60)
-    logger.info(f"Input directory: {args.input_dir}")
-    logger.info(f"Output directory: {args.output_dir}")
-    logger.info(f"Mode: {args.mode}")
-    logger.info(f"Workers: {args.workers}")
-    logger.info(f"Log file: {args.log_file}")
+    logger.info(f"Input:   {args.input_dir}")
+    logger.info(f"Output:  {args.output_dir}")
+    logger.info(f"Mode:    {args.mode} (workers={args.workers})")
+    logger.info(f"Dry run: {args.dry_run}")
 
     if args.dry_run:
-        logger.warning("DRY RUN MODE - No files will be copied")
-        print("\n⚠️  DRY RUN MODE - Simulation only, no files will be copied\n")
-        # Don't return - continue with dry run processing
+        logger.warning("DRY RUN — no files will be copied")
 
-    # Start processing
+    enable_year = not args.no_year_strategies
+
+    # ── Scan ───────────────────────────────────────────────────
     start_time = datetime.now()
-    
-    # Scan dataset to get all patient directories
-    logger.info("Scanning dataset for patients...")
     scanner = DatasetScanner(logger)
-    all_patient_dirs = scanner.scan_dataset(args.input_dir)
-    
+    all_patient_dirs = scanner.scan_dataset(args.input_dir,
+                                            args.patient_prefix)
     if args.max_subjects:
         all_patient_dirs = all_patient_dirs[:args.max_subjects]
-        logger.info(f"Limited to {args.max_subjects} patients")
-    
-    total_patients = len(all_patient_dirs)
-    logger.info(f"Total patients to process: {total_patients}")
-    
-    # Create batches
-    batch_size = args.batch_size if args.batch_size else total_patients
-    batches = create_batches(all_patient_dirs, batch_size)
-    
-    logger.info(f"Processing in {len(batches)} batch(es) of up to {batch_size} patients each")
-    logger.info("="*60)
-    
-    # Initialize or restore IDMapper ONCE for all batches
+
+    batches = create_batches(all_patient_dirs,
+                             args.batch_size or len(all_patient_dirs))
+    logger.info(f"{len(all_patient_dirs)} patients in "
+                f"{len(batches)} batch(es)")
+
     existing_mapping = load_existing_mapping(args.output_dir, logger)
     id_mapper = restore_id_mapper(existing_mapping, logger)
-    
-    # Initialize aggregation lists
-    all_deduplicators = []
-    all_file_organizers = []
-    all_performance_metrics = []
-    
-    # Initialize result variables (updated in batch loop)
+
+    # ── Process batches ────────────────────────────────────────
+    all_dedup = []
+    all_fo = []
+    all_perf = []
     mapping_data = existing_mapping
-    completeness_data = {}
+    completeness_data: Dict = {}
     duplicates_removed = 0
-    
-    # Process each batch
-    all_deduplicators = []
-    all_file_organizers = []
-    all_performance_metrics = []
-    
-    for batch_idx, batch_patient_dirs in enumerate(batches, 1):
-        logger.info(f"\n{'='*60}")
-        logger.info(f"BATCH {batch_idx}/{len(batches)}: Processing {len(batch_patient_dirs)} patients")
-        logger.info(f"{'='*60}\n")
-        
-        batch_start_time = datetime.now()
-        
+
+    for bi, batch_dirs in enumerate(batches, 1):
+        logger.info(f"\nBatch {bi}/{len(batches)}: "
+                    f"{len(batch_dirs)} patients")
+        batch_t0 = datetime.now()
+
         if args.mode == 'sequential':
-            # Process batch sequentially
-            # Note: patient_dirs is already filtered in run_sequential
-            mapping_data, completeness_data, deduplicator, file_organizer, performance_metrics = run_sequential(
-                args.input_dir,
-                args.output_dir,
-                logger,
-                patient_dirs=batch_patient_dirs,
-                max_subjects=None,  # We already filtered
-                benchmark=args.benchmark,
-                results_dir=args.results_dir,
-                mode=args.mode,
-                workers=args.workers,
-                force=args.force,
-                dry_run=args.dry_run,
-                id_mapper=id_mapper
+            (mapping_data, completeness_data,
+             dedup, fo, perf) = run_sequential(
+                args.input_dir, args.output_dir, logger,
+                patient_dirs=batch_dirs, benchmark=args.benchmark,
+                results_dir=args.results_dir, mode=args.mode,
+                force=args.force, dry_run=args.dry_run,
+                id_mapper=id_mapper,
+                enable_year_strategies=enable_year,
             )
-            all_deduplicators.append(deduplicator)
-            all_file_organizers.append(file_organizer)
-            
+            all_dedup.append(dedup)
+            all_fo.append(fo)
         else:
-            # Process batch in parallel
-            mapping_data, completeness_data, duplicates_removed, file_organizer, performance_metrics = run_parallel(
-                args.input_dir,
-                args.output_dir,
-                logger,
-                workers=args.workers,
-                patient_dirs=batch_patient_dirs,
-                max_subjects=None,  # We already filtered
-                benchmark=args.benchmark,
-                results_dir=args.results_dir,
-                mode=args.mode,
-                force=args.force,
-                dry_run=args.dry_run,
-                id_mapper=id_mapper
+            (mapping_data, completeness_data,
+             dup_rem, fo, perf) = run_parallel(
+                args.input_dir, args.output_dir, logger,
+                workers=args.workers, patient_dirs=batch_dirs,
+                benchmark=args.benchmark, results_dir=args.results_dir,
+                mode=args.mode, force=args.force, dry_run=args.dry_run,
+                id_mapper=id_mapper,
+                enable_year_strategies=enable_year,
             )
-            # Create mock deduplicator for consistency
-            class DeduplicatorStats:
-                def __init__(self, duplicates_removed):
-                    self.duplicates_removed = duplicates_removed
-            all_deduplicators.append(DeduplicatorStats(duplicates_removed))
-            all_file_organizers.append(file_organizer)
-        
-        if performance_metrics:
-            all_performance_metrics.append(performance_metrics)
-        
-        batch_end_time = datetime.now()
-        batch_time = (batch_end_time - batch_start_time).total_seconds()
-        
-        logger.info(f"\nBatch {batch_idx} completed in {batch_time:.1f}s")
-        
-        # Save intermediate mapping after each batch
-        logger.info("Saving intermediate mapping...")
+
+            class _DedupStats:
+                def __init__(self, n):
+                    self.duplicates_removed = n
+            all_dedup.append(_DedupStats(dup_rem))
+            all_fo.append(fo)
+
+        if perf:
+            all_perf.append(perf)
+
+        batch_dt = (datetime.now() - batch_t0).total_seconds()
+        logger.info(f"Batch {bi} done in {batch_dt:.1f}s")
+
+        # Intermediate save
         save_mapping_file(mapping_data, args.output_dir)
-    
+
+    # ── Final reports ──────────────────────────────────────────
     end_time = datetime.now()
     total_time = (end_time - start_time).total_seconds()
-    
-    logger.info("\n" + "="*60)
-    logger.info("ALL BATCHES COMPLETED")
-    logger.info("="*60)
-    
-    # Aggregate statistics from all batches
-    total_duplicates_removed = sum(d.duplicates_removed for d in all_deduplicators)
-    total_files_copied = sum(fo.files_copied for fo in all_file_organizers)
-    all_validation_failed = []
-    for fo in all_file_organizers:
-        all_validation_failed.extend(fo.validation_failed)
-    
-    # Create aggregated objects for summary
-    class AggregatedDeduplicator:
-        def __init__(self, duplicates_removed):
-            self.duplicates_removed = duplicates_removed
-    
-    class AggregatedFileOrganizer:
-        def __init__(self, files_copied, validation_failed):
-            self.files_copied = files_copied
-            self.validation_failed = validation_failed
-    
-    dedup_stats = AggregatedDeduplicator(total_duplicates_removed)
-    file_organizer_stats = AggregatedFileOrganizer(total_files_copied, all_validation_failed)
-    
-    # Aggregate performance metrics (average)
+
+    total_dup = sum(d.duplicates_removed for d in all_dedup)
+    total_copied = sum(fo.files_copied for fo in all_fo)
+    all_vfail = [msg for fo in all_fo for msg in fo.validation_failed]
+
+    class _AggDedup:
+        def __init__(self, n):
+            self.duplicates_removed = n
+
+    class _AggFO:
+        def __init__(self, c, v):
+            self.files_copied = c
+            self.files_would_copy = c
+            self.validation_failed = v
+
+    dedup_stats = _AggDedup(total_dup)
+    fo_stats = _AggFO(total_copied, all_vfail)
+
+    # Regenerate completeness from final mapping
+    checker = CompletenessChecker(logger)
+    completeness_data = checker.generate_completeness_report(mapping_data)
+
+    # Aggregate performance
     performance_metrics = None
-    if all_performance_metrics:
-        # Filter valid metrics for averaging
-        cpu_avg_values = [m.get('cpu_avg', 0) for m in all_performance_metrics if m.get('cpu_avg')]
-        memory_avg_values = [m.get('memory_avg_mb', 0) for m in all_performance_metrics if m.get('memory_avg_mb')]
-        cpu_max_values = [m.get('cpu_max', 0) for m in all_performance_metrics if m.get('cpu_max')]
-        memory_peak_values = [m.get('memory_peak_mb', 0) for m in all_performance_metrics if m.get('memory_peak_mb')]
-        
+    if all_perf:
         performance_metrics = {
-            'cpu_avg': sum(cpu_avg_values) / len(cpu_avg_values) if cpu_avg_values else 0.0,
-            'cpu_max': max(cpu_max_values) if cpu_max_values else 0.0,
-            'memory_avg_mb': sum(memory_avg_values) / len(memory_avg_values) if memory_avg_values else 0.0,
-            'memory_peak_mb': max(memory_peak_values) if memory_peak_values else 0.0,
-            'duration': total_time
+            'cpu_avg': sum(p.get('cpu_avg', 0) for p in all_perf) / len(all_perf),
+            'cpu_max': max((p.get('cpu_max', 0) for p in all_perf), default=0),
+            'memory_avg_mb': sum(p.get('memory_avg_mb', 0) for p in all_perf) / len(all_perf),
+            'memory_peak_mb': max((p.get('memory_peak_mb', 0) for p in all_perf), default=0),
+            'duration': total_time,
         }
 
-    # Save outputs
-    logger.info("Saving mapping file...")
-    save_mapping_file(mapping_data, args.output_dir)
+    if not args.dry_run:
+        save_mapping_file(mapping_data, args.output_dir)
+        save_completeness_report(completeness_data, args.output_dir)
+    else:
+        logger.info("[DRY RUN] Reports not saved")
 
-    logger.info("Saving completeness report...")
-    save_completeness_report(completeness_data, args.output_dir)
-
-    # Save benchmark metrics
+    # ── Benchmark metrics ──────────────────────────────────────
     if args.benchmark and performance_metrics:
-        logger.info("Saving benchmark metrics...")
-        
-        # Create results directory
         args.results_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Calculate derived metrics
         stats = completeness_data['statistics']
-        total_patients = stats['total_patients']
-        total_sessions = stats['total_sessions']
-        
-        # Count total series
-        total_series = sum(
-            len(patient_data['sessions'][session_id]['series'])
-            for patient_data in mapping_data['patients'].values()
-            for session_id in patient_data['sessions']
-        )
-        
-        # Calculate basic timing metrics
-        time_per_patient = total_time / total_patients if total_patients > 0 else 0
-        throughput_patients = total_patients / total_time if total_time > 0 else 0
-        
-        # Get baseline time for speedup calculation
-        benchmark_logger = BenchmarkLogger(args.results_dir)
-        baseline_time = benchmark_logger.get_baseline_time()
-        
-        speedup = None
-        efficiency = None
+        tp = stats['total_patients'] or 1
+        ts = stats['total_sessions']
+        tpp = total_time / tp
+        throughput = tp / total_time if total_time > 0 else 0
+
+        bl = BenchmarkLogger(args.results_dir)
+        baseline = bl.get_baseline_time()
+        speedup = efficiency = None
         if args.mode == 'sequential' and args.workers == 1:
-            # This IS the baseline
-            speedup = 1.0
-            efficiency = 1.0
-        elif baseline_time:
-            # Compare to baseline
-            speedup = baseline_time / time_per_patient
-            efficiency = speedup / args.workers if args.workers > 0 else None
-        
-        # Create ExperimentMetrics object
-        experiment_id = f"{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Count successful/failed/skipped (we don't track these separately now, so use totals)
+            speedup = efficiency = 1.0
+        elif baseline:
+            speedup = baseline / tpp
+            efficiency = speedup / args.workers if args.workers else None
+
         metrics = ExperimentMetrics(
-            experiment_id=experiment_id,
+            experiment_id=(f"{args.mode}_w{args.workers}_"
+                           f"{datetime.now():%Y%m%d_%H%M%S}"),
             timestamp=datetime.now().isoformat(),
-            mode=args.mode if not args.dry_run else f"{args.mode}_dryrun",
+            mode=f"{args.mode}{'_dryrun' if args.dry_run else ''}",
             workers=args.workers,
-            total_series=total_patients,  # Using patients as "series" for this script
-            successful=total_patients,
-            failed=0,
-            skipped=0,
+            total_series=tp,
+            successful=tp, failed=0, skipped=0,
             total_time=total_time,
-            time_per_series=time_per_patient,
-            throughput=throughput_patients,
+            time_per_series=tpp,
+            throughput=throughput,
             cpu_avg=performance_metrics.get('cpu_avg'),
             cpu_max=performance_metrics.get('cpu_max'),
             memory_avg_mb=performance_metrics.get('memory_avg_mb'),
             memory_peak_mb=performance_metrics.get('memory_peak_mb'),
-            speedup=speedup,
-            efficiency=efficiency
+            speedup=speedup, efficiency=efficiency,
         )
-        
-        # Save metrics
-        benchmark_logger.log_metrics(metrics)
-        
-        logger.info(f"Benchmark metrics saved to {args.results_dir / 'metrics.csv'}")
-        logger.info(f"  Total time: {total_time:.2f}s")
-        logger.info(f"  Patients: {total_patients} ({time_per_patient:.2f}s each)")
-        logger.info(f"  Sessions: {total_sessions}")
-        logger.info(f"  Series: {total_series}")
-        logger.info(f"  Throughput: {throughput_patients:.2f} patients/sec")
-        if performance_metrics.get('cpu_avg'):
-            logger.info(f"  CPU: avg {performance_metrics['cpu_avg']:.1f}%, "
-                       f"peak {performance_metrics['cpu_max']:.1f}%")
-        if performance_metrics.get('memory_avg_mb'):
-            logger.info(f"  Memory: avg {performance_metrics['memory_avg_mb']:.1f}MB, "
-                       f"peak {performance_metrics['memory_peak_mb']:.1f}MB")
-        if speedup:
-            logger.info(f"  Speedup: {speedup:.2f}x")
-        if efficiency:
-            logger.info(f"  Efficiency: {efficiency:.1f}%")
+        bl.log_metrics(metrics)
+        logger.info(f"Benchmark saved to {args.results_dir / 'metrics.csv'}")
 
-
-    # Create mock deduplicator for print_summary
-    class DeduplicatorStats:
-        def __init__(self, duplicates_removed):
-            self.duplicates_removed = duplicates_removed
-    
-    dedup_stats = DeduplicatorStats(duplicates_removed)
-
-    # Generate final completeness report for ALL patients in mapping
-    logger.info("Generating final completeness report for all patients...")
-    completeness_checker = CompletenessChecker(logger)
-    completeness_data = completeness_checker.generate_completeness_report(mapping_data)
-    
-    # Save final reports
-    if args.dry_run:
-        logger.info("[DRY RUN] Would save mapping file...")
-        logger.info("[DRY RUN] Would save completeness report...")
-        print("\n📄 [DRY RUN] Reports not saved (use without --dry_run to save)")
-    else:
-        logger.info("Saving final mapping file...")
-        save_mapping_file(mapping_data, args.output_dir)
-        
-        logger.info("Saving final completeness report...")
-        save_completeness_report(completeness_data, args.output_dir)
-
-    # Print summary
-    print_summary(
-        mapping_data,
-        completeness_data,
-        dedup_stats,
-        file_organizer,
-        total_time,
-        performance_metrics,
-        dry_run=args.dry_run
-    )
+    print_summary(mapping_data, completeness_data, dedup_stats,
+                  fo_stats, total_time, performance_metrics,
+                  dry_run=args.dry_run)
 
     logger.info("=" * 60)
-    logger.info("Dataset reorganization completed")
+    logger.info("Stage 1 completed")
     logger.info("=" * 60)
 
 
