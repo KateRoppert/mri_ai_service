@@ -666,8 +666,13 @@ class FileOrganizer:
                 if self.metadata_extractor:
                     # Read → anonymize → save
                     dcm = pydicom.dcmread(str(source_file), force=True)
-                    self.metadata_extractor.anonymize_dicom(dcm)
+                    removed = self.metadata_extractor.anonymize_dicom(dcm)
                     dcm.save_as(str(target_path))
+                    if idx == 1:  # Log only for first file in series
+                        self.logger.info(
+                            f"    Anonymized: removed {len(removed)} tags: "
+                            f"{', '.join(removed)}"
+                        )
                 else:
                     # Fallback: plain copy (no config provided)
                     shutil.copy2(source_file, target_path)
