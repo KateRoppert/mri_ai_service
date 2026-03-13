@@ -30,6 +30,9 @@ import pydicom
 from scripts.performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 import multiprocessing as mp
 from functools import partial
+import time
+import yaml
+from scripts.metadata_extractor import MetadataExtractor
 
 
 @dataclass
@@ -576,13 +579,18 @@ class CompletenessChecker:
 class FileOrganizer:
     """Create BIDS structure and copy files."""
 
-    def __init__(self, output_dir: Path, logger: logging.Logger, dry_run: bool = False):
+    def __init__(self, output_dir: Path, logger: logging.Logger, dry_run: bool = False,
+             metadata_extractor: Optional['MetadataExtractor'] = None,
+             metadata_dir: Optional[Path] = None):
         self.output_dir = output_dir
         self.logger = logger
         self.dry_run = dry_run
         self.files_copied = 0
         self.files_would_copy = 0
         self.validation_failed = []
+        self.metadata_extractor = metadata_extractor
+        self.metadata_dir = metadata_dir
+        self.metadata_saved = 0
 
     def create_bids_structure(
         self,
@@ -620,33 +628,34 @@ class FileOrganizer:
     ) -> int:
         """
         Copy DICOM series to target directory with BIDS naming.
+        If metadata_extractor is provided, extracts metadata from the first
+        file and anonymizes all files by removing configured tags before saving.
 
         Returns:
             Number of files copied
         """
-        # Use rglob to collect all DICOM files in nested structure
         source_files = sorted([f for f in source_dir.rglob("*.dcm") if f.is_file()])
 
         if not source_files:
             self.logger.warning(f"No DICOM files in {source_dir}")
             return 0
 
-        # BIDS naming: sub-XXX_ses-XXX_MODALITY_NNNN.dcm
-        # Map modality folder name to BIDS suffix
         bids_suffix_map = {
-            't1': 'T1w',
-            't1c': 'T1wCE',
-            't2': 'T2w',
-            't2fl': 'FLAIR'
+            't1': 'T1w', 't1c': 'T1wCE', 't2': 'T2w', 't2fl': 'FLAIR'
         }
         bids_suffix = bids_suffix_map.get(modality, modality.upper())
 
         if self.dry_run:
-            # Dry run: just count files
             count = len(source_files)
             self.files_would_copy += count
             self.logger.debug(f"    [DRY RUN] Would copy {count} files for {modality}")
             return count
+
+        # Extract and save metadata from first file before anonymization
+        if self.metadata_extractor and self.metadata_dir:
+            self._extract_and_save_metadata(
+                source_files[0], patient_id, session_id, modality
+            )
 
         copied = 0
         for idx, source_file in enumerate(source_files, 1):
@@ -654,13 +663,46 @@ class FileOrganizer:
             target_path = target_dir / target_name
 
             try:
-                shutil.copy2(source_file, target_path)
+                if self.metadata_extractor:
+                    # Read → anonymize → save
+                    dcm = pydicom.dcmread(str(source_file), force=True)
+                    self.metadata_extractor.anonymize_dicom(dcm)
+                    dcm.save_as(str(target_path))
+                else:
+                    # Fallback: plain copy (no config provided)
+                    shutil.copy2(source_file, target_path)
                 copied += 1
             except Exception as e:
-                self.logger.error(f"Failed to copy {source_file}: {e}")
+                self.logger.error(f"Failed to process {source_file}: {e}")
 
         self.files_copied += copied
         return copied
+
+    def _extract_and_save_metadata(
+        self,
+        dicom_path: Path,
+        patient_id: str,
+        session_id: str,
+        modality: str
+    ) -> bool:
+        """Extract metadata from first DICOM file and save as JSON."""
+        metadata = self.metadata_extractor.extract_metadata(dicom_path)
+        if metadata is None:
+            self.logger.warning(f"Failed to extract metadata from {dicom_path}")
+            return False
+
+        # Reuse save_metadata from MetadataExtractor
+        # It expects patient_id without "sub-" prefix and session without "ses-" prefix
+        pid = patient_id.replace("sub-", "")
+        sid = session_id.replace("ses-", "")
+        success = self.metadata_extractor.save_metadata(
+            metadata, self.metadata_dir, pid, sid, modality
+        )
+
+        if success:
+            self.metadata_saved += 1
+            self.logger.debug(f"    Metadata saved for {patient_id}/{session_id}/{modality}")
+        return success
 
     def validate_copy(
         self,
@@ -886,7 +928,9 @@ def process_single_patient(
     patient_mapping: Dict[str, str],  # original_id -> new_id
     log_level: int = logging.INFO,
     force: bool = False,
-    dry_run: bool = False
+    dry_run: bool = False,
+    tags_config: Optional[Dict] = None,
+    metadata_dir: Optional[Path] = None
 ) -> Optional[Dict]:
     """
     Process a single patient (designed to run in parallel).
@@ -923,7 +967,15 @@ def process_single_patient(
         scanner = DatasetScanner(logger)
         grouper = SessionGrouper(logger)
         deduplicator = SeriesDeduplicator(logger)
-        file_organizer = FileOrganizer(output_dir, logger, dry_run=dry_run)
+        # Create metadata extractor if config provided
+        _metadata_extractor = None
+        if tags_config:
+            _metadata_extractor = MetadataExtractor(tags_config, logger)
+        
+        file_organizer = FileOrganizer(
+            output_dir, logger, dry_run=dry_run,
+            metadata_extractor=_metadata_extractor, metadata_dir=metadata_dir
+        )
         
         original_patient_id = patient_dir.name
         new_patient_id = patient_mapping[original_patient_id]
@@ -1191,7 +1243,9 @@ def run_sequential(
     workers: int = 1,
     force: bool = False,
     dry_run: bool = False,
-    id_mapper: Optional[IDMapper] = None 
+    id_mapper: Optional[IDMapper] = None,
+    tags_config: Optional[Dict] = None,
+    metadata_dir: Optional[Path] = None 
 ) -> Tuple[Dict, Dict, SeriesDeduplicator, FileOrganizer]:
     """
     Run sequential processing (baseline).
@@ -1208,7 +1262,15 @@ def run_sequential(
     grouper = SessionGrouper(logger)
     deduplicator = SeriesDeduplicator(logger)
     completeness_checker = CompletenessChecker(logger)
-    file_organizer = FileOrganizer(output_dir, logger, dry_run=dry_run)
+    # Create metadata extractor if config provided
+    _metadata_extractor = None
+    if tags_config:
+        _metadata_extractor = MetadataExtractor(tags_config, logger)
+    
+    file_organizer = FileOrganizer(
+        output_dir, logger, dry_run=dry_run,
+        metadata_extractor=_metadata_extractor, metadata_dir=metadata_dir
+    )
 
     # Initialize mapping data - load existing or create new
     mapping_data = load_existing_mapping(output_dir, logger)
@@ -1388,7 +1450,9 @@ def run_parallel(
     mode: str = 'parallel',
     force: bool = False,
     dry_run: bool = False,
-    id_mapper: Optional[IDMapper] = None 
+    id_mapper: Optional[IDMapper] = None,
+    tags_config: Optional[Dict] = None,        
+    metadata_dir: Optional[Path] = None 
 ) -> Tuple[Dict, Dict, int, FileOrganizer, Optional[Dict]]:
     """
     Run parallel processing using multiprocessing.
@@ -1442,7 +1506,9 @@ def run_parallel(
         patient_mapping=patient_mapping,
         log_level=logging.WARNING,
         force=force,
-        dry_run=dry_run  # Reduce noise in parallel mode
+        dry_run=dry_run,
+        tags_config=tags_config,
+        metadata_dir=metadata_dir
     )
     
     # Process patients in parallel
@@ -1566,6 +1632,18 @@ def main():
         default=Path('results'),
         help='Directory for benchmark results (default: results)'
     )
+    parser.add_argument(
+        '--config',
+        type=Path,
+        default=None,
+        help='Path to DICOM tags YAML config for metadata extraction and anonymization'
+    )
+    parser.add_argument(
+        '--metadata-dir',
+        type=Path,
+        default=None,
+        help='Output directory for extracted metadata JSON files'
+    )
 
 
     args = parser.parse_args()
@@ -1592,6 +1670,24 @@ def main():
     logger.info(f"Mode: {args.mode}")
     logger.info(f"Workers: {args.workers}")
     logger.info(f"Log file: {args.log_file}")
+
+    # Load tags config for anonymization
+    tags_config = None
+    metadata_dir = None
+    if args.config:
+        if not args.config.exists():
+            logger.error(f"Tags config not found: {args.config}")
+            sys.exit(1)
+        with open(args.config, 'r') as f:
+            tags_config = yaml.safe_load(f)
+        logger.info(f"Tags config loaded: {args.config}")
+
+        metadata_dir = args.metadata_dir if args.metadata_dir else (args.output_dir.parent / 'metadata')
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Metadata output: {metadata_dir}")
+        logger.info("Anonymization ENABLED")
+    else:
+        logger.info("Anonymization DISABLED (no --config provided)")
 
     if args.dry_run:
         logger.warning("DRY RUN MODE - No files will be copied")
@@ -1661,7 +1757,9 @@ def main():
                 workers=args.workers,
                 force=args.force,
                 dry_run=args.dry_run,
-                id_mapper=id_mapper
+                id_mapper=id_mapper,
+                tags_config=tags_config,
+                metadata_dir=metadata_dir
             )
             all_deduplicators.append(deduplicator)
             all_file_organizers.append(file_organizer)
@@ -1680,7 +1778,9 @@ def main():
                 mode=args.mode,
                 force=args.force,
                 dry_run=args.dry_run,
-                id_mapper=id_mapper
+                id_mapper=id_mapper,
+                tags_config=tags_config,
+                metadata_dir=metadata_dir
             )
             # Create mock deduplicator for consistency
             class DeduplicatorStats:
