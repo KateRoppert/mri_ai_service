@@ -78,6 +78,11 @@ def build_command(
                     else:
                         continue
                 cmd.extend([f'--{arg_name}', str(results_path)])
+            elif arg_name == 'metadata-dir':
+                # metadata-dir относительно root_output_dir
+                if arg_value:
+                    metadata_path = config['general']['root_output_dir'] / arg_value
+                    cmd.extend([f'--{arg_name}', str(metadata_path)])
             else:
                 # Обычные аргументы - имя как есть, БЕЗ replace
                 cmd.extend([f'--{arg_name}', str(arg_value)])
