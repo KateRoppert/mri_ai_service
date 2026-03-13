@@ -107,7 +107,7 @@ class PipelineStartResponse(BaseModel):
 
 class StageProgress(BaseModel):
     """Прогресс выполнения одного этапа"""
-    stage_number: int = Field(..., ge=1, le=6, description="Номер этапа (1-6)")
+    stage_number: int = Field(..., ge=1, le=5, description="Номер этапа (1-5)")
     stage_name: str = Field(..., description="Название этапа на русском")
     status: str = Field(..., description="Статус: pending/running/completed/failed")
     progress: float = Field(0.0, ge=0.0, le=100.0, description="Прогресс в процентах")
