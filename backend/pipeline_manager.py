@@ -201,18 +201,18 @@ class PipelineManager:
     
     def parse_log_for_progress(self, log_path: Path) -> Dict[str, Any]:
         """
-        Парсит лог-файл для определения прогресса (базовый вариант)
+        Парсит лог-файл для определения прогресса.
         
-        Args:
-            log_path: Путь к лог-файлу
-            
-        Returns:
-            Словарь с информацией о прогрессе
+        Маппинг: оркестратор пишет stage_01/03/04/05/06 (02 отключён),
+        фронтенд показывает этапы 1-5.
         """
-        # Инициализируем статусы всех этапов
+        # Маппинг: номер в логе -> номер на фронте
+        LOG_TO_DISPLAY = {1: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+        TOTAL_STAGES = 5
+        
         stages_status = {
             i: {"status": "pending", "progress": 0.0}
-            for i in range(1, 7)
+            for i in range(1, TOTAL_STAGES + 1)
         }
         
         if not log_path.exists():
@@ -226,60 +226,55 @@ class PipelineManager:
             with open(log_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            # Парсим лог построчно
             for line in lines:
-                # Ищем маркеры начала/завершения этапов
-                
-                # [stage_01_reorganize] STARTED
                 if "[stage_" in line and "STARTED" in line:
                     try:
-                        # Извлекаем номер этапа: [stage_01_reorganize] -> 1
                         stage_part = line.split("[stage_")[1].split("]")[0]
-                        # Берём первые 2 символа после "stage_" как номер (01, 02, и т.д.)
-                        stage_num_str = stage_part.split("_")[0]  # "01_reorganize" -> "01"
-                        stage_num = int(stage_num_str)  # "01" -> 1
-                        stages_status[stage_num] = {"status": "running", "progress": 50.0}
-                    except (ValueError, IndexError) as e:
-                        logger.warning(f"Не удалось распарсить номер этапа из строки: {line.strip()}")
+                        stage_num_str = stage_part.split("_")[0]
+                        log_num = int(stage_num_str)
+                        display_num = LOG_TO_DISPLAY.get(log_num)
+                        if display_num:
+                            stages_status[display_num] = {"status": "running", "progress": 50.0}
+                    except (ValueError, IndexError):
+                        logger.warning(f"Не удалось распарсить номер этапа: {line.strip()}")
                 
-                # [stage_01_reorganize] SUCCESS
                 elif "[stage_" in line and "SUCCESS" in line:
                     try:
                         stage_part = line.split("[stage_")[1].split("]")[0]
-                        stage_num_str = stage_part.split("_")[0]  # "01_reorganize" -> "01"
-                        stage_num = int(stage_num_str)
-                        stages_status[stage_num] = {"status": "completed", "progress": 100.0}
-                    except (ValueError, IndexError) as e:
-                        logger.warning(f"Не удалось распарсить номер этапа из строки: {line.strip()}")
+                        stage_num_str = stage_part.split("_")[0]
+                        log_num = int(stage_num_str)
+                        display_num = LOG_TO_DISPLAY.get(log_num)
+                        if display_num:
+                            stages_status[display_num] = {"status": "completed", "progress": 100.0}
+                    except (ValueError, IndexError):
+                        logger.warning(f"Не удалось распарсить номер этапа: {line.strip()}")
                 
-                # [stage_01_reorganize] FAILED
                 elif "[stage_" in line and "FAILED" in line:
                     try:
                         stage_part = line.split("[stage_")[1].split("]")[0]
-                        stage_num_str = stage_part.split("_")[0]  # "01_reorganize" -> "01"
-                        stage_num = int(stage_num_str)
-                        stages_status[stage_num] = {"status": "failed", "progress": 0.0}
-                    except (ValueError, IndexError) as e:
-                        logger.warning(f"Не удалось распарсить номер этапа из строки: {line.strip()}")
+                        stage_num_str = stage_part.split("_")[0]
+                        log_num = int(stage_num_str)
+                        display_num = LOG_TO_DISPLAY.get(log_num)
+                        if display_num:
+                            stages_status[display_num] = {"status": "failed", "progress": 0.0}
+                    except (ValueError, IndexError):
+                        logger.warning(f"Не удалось распарсить номер этапа: {line.strip()}")
             
-            # Вычисляем общий прогресс
             total_progress = sum(stage["progress"] for stage in stages_status.values())
-            overall_progress = round(total_progress / 6, 2)
+            overall_progress = round(total_progress / TOTAL_STAGES, 2)
             
-            # Определяем текущий этап
             current_stage = 0
-            for stage_num in range(1, 7):
+            for stage_num in range(1, TOTAL_STAGES + 1):
                 if stages_status[stage_num]["status"] == "running":
                     current_stage = stage_num
                     break
             
-            # Если нет running этапов, но есть completed - ищем последний completed
             if current_stage == 0:
-                for stage_num in range(6, 0, -1):
+                for stage_num in range(TOTAL_STAGES, 0, -1):
                     if stages_status[stage_num]["status"] == "completed":
                         current_stage = stage_num
                         break
-            
+        
         except Exception as e:
             logger.error(f"Ошибка парсинга лог-файла: {e}")
         
