@@ -425,9 +425,9 @@ async def get_quality_report_endpoint(
     
     logger.info(f"Output path: {run.output_path}, Current stage: {run.current_stage}")
     
-    # Проверяем что 4-й этап завершён
-    if run.current_stage < 4:
-        logger.warning(f"Этап 4 ещё не завершён для run_id: {run_id}")
+    # Проверяем что 3-й этап завершён
+    if run.current_stage < 3:
+        logger.warning(f"Этап 3 ещё не завершён для run_id: {run_id}")
         raise HTTPException(
             status_code=400, 
             detail="Quality assessment stage not yet completed"
@@ -506,8 +506,8 @@ async def get_nifti_file(
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     
-    # Проверяем что 6-й этап завершён
-    if run.current_stage < 6:
+    # Проверяем что 5-й этап завершён
+    if run.current_stage < 5:
         raise HTTPException(
             status_code=400,
             detail="Segmentation stage not yet completed"
@@ -558,8 +558,8 @@ async def get_nifti_files_list(
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     
-    # Проверяем что 6-й этап завершён
-    if run.current_stage < 6:
+    # Проверяем что 5-й этап завершён
+    if run.current_stage < 5:
         raise HTTPException(
             status_code=400,
             detail="Segmentation stage not yet completed"
@@ -648,7 +648,7 @@ async def get_volume_reports(
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     
-    if run.current_stage < 6:
+    if run.current_stage < 5:
         raise HTTPException(
             status_code=400,
             detail="Segmentation stage not yet completed"
