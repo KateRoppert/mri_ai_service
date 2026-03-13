@@ -126,12 +126,13 @@ def _validate_stages_section(stages: Dict[str, Any], config_dir: Path) -> None:
         if 'script' not in stage:
             raise ConfigValidationError(f"Missing 'script' in {stage_name}")
         
-        # Проверка существования скрипта (относительно директории конфига)
-        script_path = config_dir / stage['script']
-        if not script_path.exists():
-            raise ConfigValidationError(
-                f"Script not found for {stage_name}: {script_path}"
-            )
+        # Проверка существования скрипта (только для включённых этапов)
+        if stage['enabled']:
+            script_path = config_dir / stage['script']
+            if not script_path.exists():
+                raise ConfigValidationError(
+                    f"Script not found for {stage_name}: {script_path}"
+                )
         
         if 'args' not in stage:
             raise ConfigValidationError(f"Missing 'args' in {stage_name}")
