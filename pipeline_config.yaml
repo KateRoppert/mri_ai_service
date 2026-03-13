@@ -36,6 +36,8 @@ stages:
     enabled: true
     script: scripts/01_reorganize_folders.py
     args:
+      config: configs/dicom_tags.yaml
+      metadata-dir: metadata
       mode: parallel
       workers: 18
       dry_run: false
@@ -48,7 +50,7 @@ stages:
 
   stage_02_metadata:
     enabled: true
-    script: scripts/02_extract_metadata.py
+    script: scripts/metadata_extractor.py
     args:
       config: configs/dicom_tags.yaml
       mode: parallel 
