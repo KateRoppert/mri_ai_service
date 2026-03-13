@@ -52,12 +52,12 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
 
   const statusConfig = getStatusConfig();
   
-  // Показываем кнопку отчёта только для 4-го этапа после завершения
-  const showQualityButton = stageNumber === 4 && status === 'completed' && onShowQualityReport;
+  // Показываем кнопку отчёта только для 3-го этапа после завершения
+  const showQualityButton = stageNumber === 3 && status === 'completed' && onShowQualityReport;
   
-  // Показываем кнопку визуализации только для 6-го этапа после завершения
-  const showVisualizationButton = stageNumber === 6 && status === 'completed' && onShowVisualization;
-  const showVolumeButton = stageNumber === 6 && status === 'completed' && onShowVolumeReport;
+  // Показываем кнопку визуализации только для 5-го этапа после завершения
+  const showVisualizationButton = stageNumber === 5 && status === 'completed' && onShowVisualization;
+  const showVolumeButton = stageNumber === 5 && status === 'completed' && onShowVolumeReport;
 
   return (
     <div style={{ marginBottom: 16 }}>
