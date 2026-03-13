@@ -163,7 +163,7 @@ class MetadataExtractor:
                 metadata[group_name] = {}
                 
                 for tag_name, tag_info in tags.items():
-                    group, element, required = tag_info
+                    group, element, required = tag_info[0], tag_info[1], tag_info[2]
                     tag_address = (int(group, 16), int(element, 16))
                     
                     try:
@@ -215,7 +215,10 @@ class MetadataExtractor:
         removed = []
         for group_name, tags in self.tags_config.items():
             for tag_name, tag_info in tags.items():
-                group, element, _ = tag_info
+                anonymize = tag_info[3] if len(tag_info) > 3 else False
+                if not anonymize:
+                    continue
+                group, element = tag_info[0], tag_info[1]
                 tag_address = (int(group, 16), int(element, 16))
                 if tag_address in dcm:
                     del dcm[tag_address]
