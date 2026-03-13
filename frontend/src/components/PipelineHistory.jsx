@@ -196,7 +196,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolum
       width: 120,
       render: (_, record) => (
         <Space direction="vertical" size={2}>
-          {record.status === 'completed' && record.current_stage >= 4 && (
+          {record.status === 'completed' && record.current_stage >= 3 && (
             <Button
               type="link"
               size="small"
@@ -206,7 +206,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolum
               Отчёт
             </Button>
           )}
-          {record.status === 'completed' && record.current_stage >= 6 && (
+          {record.status === 'completed' && record.current_stage >= 5 && (
             <Button
               type="link"
               size="small"
@@ -216,7 +216,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolum
               Объёмы
             </Button>
           )}
-          {record.status === 'completed' && record.current_stage >= 6 && (
+          {record.status === 'completed' && record.current_stage >= 5 && (
             <Button
               type="primary"
               size="small"
