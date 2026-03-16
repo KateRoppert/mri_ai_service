@@ -2,7 +2,7 @@
  * Компонент для 3D визуализации NIfTI файлов с niivue
  */
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col, Popover } from 'antd';
+import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col, Popover, Radio } from 'antd';
 import { 
   EyeOutlined, 
   EyeInvisibleOutlined,
@@ -43,6 +43,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [maskOpacity, setMaskOpacity] = useState(0.5);
   const [showMask, setShowMask] = useState(true);
+  const [viewMode, setViewMode] = useState('atlas'); // 'atlas' or 'native'
 
 
   /**
@@ -127,16 +128,21 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
   /**
    * Загружаем NIfTI файлы в niivue
    */
-  const loadNIfTI = async (file) => {
-    console.log('=== loadNIfTI вызвана ===');
-    console.log('nvRef.current:', nvRef.current);
-    console.log('file:', file);
-    
+  const loadNIfTI = async (file, mode = viewMode) => {
     if (!nvRef.current) {
-      const errorMsg = 'Niivue не инициализирован';
-      console.error(errorMsg);
-      setError(errorMsg);
+      setError('Niivue не инициализирован');
       return;
+    }
+
+    // Определяем URL в зависимости от режима
+    let imageUrlPath, maskUrlPath;
+
+    if (mode === 'native' && file.native_image_url && file.native_mask_url) {
+      imageUrlPath = file.native_image_url;
+      maskUrlPath = file.native_mask_url;
+    } else {
+      imageUrlPath = file.image_url;
+      maskUrlPath = file.mask_url;
     }
 
     setLoading(true);
@@ -145,14 +151,10 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
     try {
       const nv = nvRef.current;
       
-      // Формируем полные URL
-      const imageUrl = getNIfTIFileUrl(file.image_url);
-      const maskUrl = getNIfTIFileUrl(file.mask_url);
+      const imageUrl = getNIfTIFileUrl(imageUrlPath);
+      const maskUrl = getNIfTIFileUrl(maskUrlPath);
       
-      console.log('Загрузка изображения:', imageUrl);
-      console.log('Загрузка маски:', maskUrl);
-      
-      // Сначала проверим что файлы доступны
+      // Проверяем доступность файлов
       const imageResponse = await fetch(imageUrl);
       if (!imageResponse.ok) {
         throw new Error(`Не удалось загрузить изображение: ${imageResponse.status}`);
@@ -163,12 +165,8 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
         throw new Error(`Не удалось загрузить маску: ${maskResponse.status}`);
       }
       
-      console.log('Файлы доступны, загружаем в niivue...');
-      
-      // Создаём кастомную colormap для multi-class сегментации
+      // Colormap
       const segColormap = createSegmentationColormap();
-
-      // Регистрируем colormap в niivue
       nv.addColormap('seg_custom', segColormap);
 
       // Загружаем в niivue
@@ -180,34 +178,23 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
         },
         {
           url: maskUrl,
-          colormap: 'seg_custom',  // ← Используем имя зарегистрированной colormap
+          colormap: 'seg_custom',
           opacity: maskOpacity,
-          cal_min: 0,    // Минимальный label
-          cal_max: 4,    // Максимальный label
+          cal_min: 0,
+          cal_max: 4,
         }
       ]);
-
-      console.log('Файлы доступны, загружаем в niivue...');
       
-      // Устанавливаем grid layout
+      // Настройки отображения
       nv.setSliceType(nv.sliceTypeMultiplanar);
       nv.opts.multiplanarLayout = 2;
-
-      // Настройки для лучшего отображения
-      nv.opts.multiplanarPadPixels = 2;  // Отступ между срезами
-      nv.opts.crosshairGap = 2;          // Зазор в кроссхейре
-
-      // Устанавливаем размеры для каждой панели в grid
+      nv.opts.multiplanarPadPixels = 2;
+      nv.opts.crosshairGap = 2;
       nv.opts.multiplanarForceRender = true;
       nv.opts.isRadiologicalConvention = false;
-
-      // Увеличиваем масштаб до максимума
-      // volScaleMultiplier увеличивает размер всех volume
-      nv.setScale(2.0);  // 2.0 = увеличение в 2 раза
-
+      nv.setScale(2.0);
       nv.drawScene();
       
-      console.log('Файлы успешно загружены и отображены');
     } catch (err) {
       console.error('Ошибка загрузки NIfTI:', err);
       setError(`Не удалось загрузить изображение: ${err.message}`);
@@ -232,6 +219,17 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
     if (file) {
       setSelectedFile(file);
       loadNIfTI(file);
+    }
+  };
+
+  /**
+   * Переключение между atlas и native пространством
+   */
+  const handleViewModeChange = (e) => {
+    const mode = e.target.value;
+    setViewMode(mode);
+    if (selectedFile) {
+      loadNIfTI(selectedFile, mode);
     }
   };
 
@@ -305,7 +303,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
           <div style={{ marginBottom: 8 }}>
             <Row gutter={16} align="middle">
               {/* Выбор файла */}
-              <Col span={10}>
+              <Col span={7}>
                 <Space direction="vertical" style={{ width: '100%' }} size="small">
                   <span style={{ fontSize: 12, color: '#999' }}>Выберите файл:</span>
                   <Select
@@ -320,8 +318,30 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
                 </Space>
               </Col>
 
+              {/* Переключатель пространства */}
+              <Col span={6}>
+                <Space direction="vertical" style={{ width: '100%' }} size="small">
+                  <span style={{ fontSize: 12, color: '#999' }}>Пространство:</span>
+                  <Radio.Group
+                    value={viewMode}
+                    onChange={handleViewModeChange}
+                    size="small"
+                    optionType="button"
+                    buttonStyle="solid"
+                  >
+                    <Radio.Button value="atlas">Атлас</Radio.Button>
+                    <Radio.Button
+                      value="native"
+                      disabled={!selectedFile?.native_mask_url}
+                    >
+                      Нативное
+                    </Radio.Button>
+                  </Radio.Group>
+                </Space>
+              </Col>
+
               {/* Управление маской */}
-              <Col span={8}>
+              <Col span={5}>
                 <Space direction="vertical" style={{ width: '100%' }} size="small">
                   <span style={{ fontSize: 12, color: '#999' }}>Прозрачность маски:</span>
                   <Slider
