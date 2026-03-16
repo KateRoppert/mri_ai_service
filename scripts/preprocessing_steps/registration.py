@@ -531,6 +531,171 @@ def process_subject_registration(
     
     return results
 
+def inverse_transform_mask(
+    mask_path: Path,
+    reference_path: Path,
+    transform_paths: list,
+    output_path: Path
+) -> dict:
+    """
+    Apply inverse transformations to bring segmentation mask back to native space.
+    
+    Uses NearestNeighbor interpolation to preserve integer class labels.
+    
+    Args:
+        mask_path: Path to segmentation mask in atlas space
+        reference_path: Path to native-space image (defines output geometry)
+        transform_paths: List of transform .mat files in FORWARD order
+                         (e.g., [t1_to_atlas.mat] for T1,
+                          [t1_to_atlas.mat, t1c_to_t1.mat] for T1c)
+        output_path: Path to save native-space mask
+    
+    Returns:
+        dict with success status and output path
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        logger.info(f"Inverse transform: {mask_path.name} -> {output_path.name}")
+        logger.info(f"  Reference (native): {reference_path.name}")
+        logger.info(f"  Transforms to invert: {[p.name for p in transform_paths]}")
+        
+        # Load images
+        mask_img = load_ants_image(mask_path)
+        reference_img = load_ants_image(reference_path)
+        
+        # ANTs applies transforms in REVERSE list order.
+        # We receive forward transforms [t1_to_atlas, t1c_to_t1].
+        # To go backwards (atlas → T1 → T1c), ANTs needs:
+        #   transformlist = [t1c_to_t1, t1_to_atlas]  (reversed)
+        #   whichtoinvert = [True, True]               (invert all)
+        reversed_transforms = [str(p) for p in reversed(transform_paths)]
+        invert_flags = [True] * len(reversed_transforms)
+        
+        # Apply inverse transforms
+        native_mask = ants.apply_transforms(
+            fixed=reference_img,
+            moving=mask_img,
+            transformlist=reversed_transforms,
+            interpolator="nearestNeighbor",
+            whichtoinvert=invert_flags
+        )
+        
+        # Save result
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        save_ants_image(native_mask, str(output_path))
+        
+        processing_time = time.time() - start_time
+        logger.info(f"  Saved native mask to {output_path} ({processing_time:.2f}s)")
+        
+        return {
+            "success": True,
+            "output_path": str(output_path),
+            "processing_time": processing_time
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in inverse transform for {mask_path.name}: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def inverse_transform_subject_masks(
+    mask_path: Path,
+    nifti_dir: Path,
+    transform_dir: Path,
+    output_dir: Path,
+    subject_id: str,
+    session_id: str,
+    reference_modality: str = "t1",
+    modalities: list = None
+) -> dict:
+    """
+    Inverse-transform segmentation mask to native space of each modality.
+    
+    For each modality, applies the appropriate inverse chain:
+      - T1:   invert [t1_to_atlas]
+      - T1c:  invert [t1_to_atlas, t1c_to_t1]
+      - T2:   invert [t1_to_atlas, t2_to_t1]
+      - T2fl: invert [t1_to_atlas, t2fl_to_t1]
+    
+    Args:
+        mask_path: Path to *_segmask.nii.gz in atlas space
+        nifti_dir: Root nifti/ directory (contains native-space images)
+        transform_dir: Root transformations/ directory
+        output_dir: Where to save native masks
+        subject_id: e.g., "sub-001"
+        session_id: e.g., "ses-001"
+        reference_modality: Modality registered directly to atlas (default: "t1")
+        modalities: List of modalities to process (default: all 4)
+    
+    Returns:
+        dict: results per modality
+    """
+    if modalities is None:
+        modalities = ["t1", "t1c", "t2", "t2fl"]
+    
+    results = {}
+    
+    # Paths to transforms
+    transform_subdir = transform_dir / subject_id / session_id / "anat"
+    nifti_subdir = nifti_dir / subject_id / session_id / "anat"
+    output_subdir = output_dir / subject_id / session_id / "anat"
+    
+    # Atlas transform (always needed)
+    atlas_transform = transform_subdir / f"{subject_id}_{session_id}_{reference_modality}_to_atlas.mat"
+    
+    if not atlas_transform.exists():
+        error_msg = f"Atlas transform not found: {atlas_transform}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+    
+    for modality in modalities:
+        # Find native-space reference image
+        native_ref = nifti_subdir / f"{subject_id}_{session_id}_{modality}.nii.gz"
+        
+        if not native_ref.exists():
+            logger.warning(f"  Native image not found for {modality}, skipping: {native_ref}")
+            results[modality] = {"success": False, "error": "Native image not found"}
+            continue
+        
+        # Build forward transform chain
+        if modality == reference_modality:
+            # T1: only atlas transform
+            forward_transforms = [atlas_transform]
+        else:
+            # Other modalities: atlas + cross-modality
+            cross_transform = transform_subdir / f"{subject_id}_{session_id}_{modality}_to_{reference_modality}.mat"
+            
+            if not cross_transform.exists():
+                logger.warning(f"  Cross-modality transform not found for {modality}, skipping: {cross_transform}")
+                results[modality] = {"success": False, "error": "Cross-modality transform not found"}
+                continue
+            
+            forward_transforms = [atlas_transform, cross_transform]
+        
+        # Output path
+        mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
+        output_path = output_subdir / f"{mask_stem}_segmask_native_{modality}.nii.gz"
+        
+        # Apply inverse transform
+        result = inverse_transform_mask(
+            mask_path=mask_path,
+            reference_path=native_ref,
+            transform_paths=forward_transforms,
+            output_path=output_path
+        )
+        
+        results[modality] = result
+    
+    # Summary
+    successful = sum(1 for r in results.values() if r.get("success"))
+    logger.info(f"Inverse transform complete for {subject_id}/{session_id}: "
+                f"{successful}/{len(modalities)} modalities")
+    
+    return results
 
 if __name__ == "__main__":
     # Test the registration step
