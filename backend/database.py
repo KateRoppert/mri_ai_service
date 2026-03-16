@@ -108,7 +108,7 @@ def create_pipeline_run(
     
     # Создаём записи для всех этапов
     stage_names = settings.stage_names_ru
-    for stage_num in range(1, 6):
+    for stage_num in range(1, 7):
         stage = StageExecution(
             run_id=run_id,
             stage_number=stage_num,
