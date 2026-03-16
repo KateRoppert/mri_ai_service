@@ -282,6 +282,7 @@ def create_output_directories(config: Dict[str, Any]) -> None:
         root_output / output_struct['stage_04'],
         root_output / output_struct['stage_05_data'],
         root_output / output_struct['stage_06'],
+        root_output / output_struct['stage_07'],
         root_output / output_struct['logs'],
         root_output / output_struct['logs'] / 'stages',
         root_output / output_struct['reports']
@@ -362,7 +363,7 @@ def run_pipeline(
     
     # Получаем список включенных этапов
     enabled_stages = get_enabled_stages(config)
-    logger.info(f"Enabled stages: {len(enabled_stages)}/6")
+    logger.info(f"Enabled stages: {len(enabled_stages)}/7")
     for stage in enabled_stages:
         logger.info(f"  ✓ {stage}")
     logger.info("")
