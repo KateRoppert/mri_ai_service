@@ -224,8 +224,8 @@ const ProgressMonitor = ({ runId, onComplete }) => {
             status={stageData.status}
             progress={Math.round(stageData.progress)}
             onShowQualityReport={stageData.stage_number === 3 ? handleShowQualityReport : null}
-            onShowVisualization={stageData.stage_number === 5 ? handleShowVisualization : null}
-            onShowVolumeReport={stageData.stage_number === 5 ? handleShowVolumeReport : null}
+            onShowVisualization={stageData.stage_number === 6 ? handleShowVisualization : null}
+            onShowVolumeReport={stageData.stage_number === 6 ? handleShowVolumeReport : null}
             />
         ))
         ) : (
