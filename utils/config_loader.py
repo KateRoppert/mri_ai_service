@@ -93,7 +93,7 @@ def _validate_general_section(general: Dict[str, Any]) -> None:
 def _validate_output_structure(output_structure: Dict[str, str]) -> None:
     """Валидация секции output_structure."""
     required_keys = ['stage_01', 'stage_02', 'stage_03', 'stage_04', 
-                     'stage_05_data', 'stage_06', 
+                     'stage_05_data', 'stage_06', 'stage_07', 
                      'logs', 'reports']
     
     for key in required_keys:
@@ -108,7 +108,7 @@ def _validate_stages_section(stages: Dict[str, Any], config_dir: Path) -> None:
     """Валидация секции stages."""
     required_stages = ['stage_01_reorganize', 'stage_02_metadata', 
                        'stage_03_convert', 'stage_04_quality',
-                       'stage_05_preprocessing', 'stage_06_segmentation']
+                       'stage_05_preprocessing', 'stage_06_segmentation', 'stage_07_inverse_transform']
     
     for stage_name in required_stages:
         if stage_name not in stages:
@@ -209,6 +209,7 @@ def get_stage_input_dir(stage_name: str, config: Dict[str, Any]) -> Path:
         'stage_04_quality': root_output / output_struct['stage_03'],
         'stage_05_preprocessing': root_output / output_struct['stage_03'],
         'stage_06_segmentation': root_output / output_struct['stage_05_data'],
+        'stage_07_inverse_transform': root_output / output_struct['stage_06'],
     }
     
     return input_mapping[stage_name]
@@ -236,6 +237,7 @@ def get_stage_output_dir(stage_name: str, config: Dict[str, Any]) -> Path:
         'stage_04_quality': root_output / output_struct['stage_04'],
         'stage_05_preprocessing': root_output / output_struct['stage_05_data'],
         'stage_06_segmentation': root_output / output_struct['stage_06'],
+        'stage_07_inverse_transform': root_output / output_struct['stage_07'],
     }
     
     return output_mapping[stage_name]
@@ -257,7 +259,8 @@ def get_enabled_stages(config: Dict[str, Any]) -> List[str]:
         'stage_03_convert',
         'stage_04_quality',
         'stage_05_preprocessing',
-        'stage_06_segmentation'
+        'stage_06_segmentation',
+        'stage_07_inverse_transform'
     ]
     
     return [stage for stage in all_stages if config['stages'][stage]['enabled']]
