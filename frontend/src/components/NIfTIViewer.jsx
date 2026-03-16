@@ -44,6 +44,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
   const [maskOpacity, setMaskOpacity] = useState(0.5);
   const [showMask, setShowMask] = useState(true);
 
+
   /**
    * Загружаем список файлов при открытии модального окна
    */

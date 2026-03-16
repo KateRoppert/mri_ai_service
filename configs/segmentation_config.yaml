@@ -23,7 +23,7 @@ segmentation:
     # ==========================================
     local:
       connection_type: "direct"
-      server_url: "http://localhost:5000"
+      server_url: "http://segmentation:5000" # "http://localhost:5000" - для запуска на тунке
       timeout: 1200
       description: "Local server on this machine"
     

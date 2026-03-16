@@ -13,6 +13,7 @@ services:
     volumes:
         - /home:/home:rw              # Вся домашняя директория
         - ./demo_workspace:/workspace:rw  # Локальная папка
+        - ./scripts:/app/scripts:ro
     depends_on:
       - segmentation
     profiles: ["full"]

@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 # Отключаем интерактивные диалоги во время установки
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,9 +32,13 @@ RUN python3 -m pip install --no-cache-dir --ignore-installed -r requirements.txt
 # Копируем код сегментации
 COPY *.py .
 COPY src/ ./src/
-COPY nnUNet/ .nnUNet/
+COPY nnUNet/ ./nnUNet/
+ENV SKLEARN_ALLOW_DEPRECATED_SKLEARN_PACKAGE_INSTALL=True
+RUN cd nnUNet && pip install .
 COPY nnUNetv1_data/ ./nnUNetv1_data/
 COPY nnUNetv2_data/ ./nnUNetv2_data/
+
+RUN mkdir -p /app/data/input /app/data/tmp /app/data/output
 
 EXPOSE 5000
 

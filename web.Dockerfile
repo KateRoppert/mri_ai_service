@@ -35,6 +35,8 @@ COPY utils/ ./utils/
 COPY orchestrator.py .
 COPY pipeline_config.yaml .
 
+ENV PYTHONPATH=/app
+
 # 8. Открываем порт
 EXPOSE 8000
 

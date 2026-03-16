@@ -49,7 +49,9 @@ stages:
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_01
 
   stage_02_metadata:
-    enabled: true
+    enabled: false
+    # WARNING: Do not run on anonymized BIDS data — tags already stripped.
+    # Use only for validation on original data or to re-extract from metadata/ JSONs.
     script: scripts/metadata_extractor.py
     args:
       config: configs/dicom_tags.yaml

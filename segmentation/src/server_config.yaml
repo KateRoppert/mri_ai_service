@@ -21,13 +21,13 @@ server:
   
   # Path to nnUNet source code directory
   # This should contain the nnUNet Python package
-  nnunet_path: "/media/ssd/roppert/segmentation_server/nnUNet"
+  nnunet_path: "/app/nnUNet" # "/media/ssd/roppert/segmentation_server/nnUNet"
   
   # Path to nnUNet v1 data directory (RESULTS_FOLDER)
   # This should contain:
   #   - nnUNet/3d_fullres/TaskXXX/.../fold_X/
   #   - Trained model weights
-  nnunet_models: "/media/ssd/roppert/segmentation_server/nnUNetv1_data"
+  nnunet_models: "/app/nnUNetv1_data" # "/media/ssd/roppert/segmentation_server/nnUNetv1_data"
   
   # ======================================================================
   # Model Configuration

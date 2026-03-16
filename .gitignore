@@ -27,6 +27,7 @@ output/
 results/
 runtime_configs/
 test_benchmark_results/
+demo_workspace/
 
 # Шаблоны для предобработки
 mni_templates/
