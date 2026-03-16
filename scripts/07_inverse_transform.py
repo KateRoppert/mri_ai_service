@@ -69,12 +69,11 @@ def find_masks(segmentation_dir: Path, max_subjects: Optional[int] = None
         if "_native_" in mask_path.name:
             continue
 
-        # Parse subject/session from path
+        # Parse subject/session from directory parts (exclude filename)
         # segmentation/sub-001/ses-001/anat/sub-001_ses-001_segmask.nii.gz
-        parts = mask_path.parts
         subject_id = None
         session_id = None
-        for p in parts:
+        for p in mask_path.parent.parts:
             if p.startswith("sub-"):
                 subject_id = p
             elif p.startswith("ses-"):
@@ -116,6 +115,17 @@ def process_one_mask(
             reference_modality=reference_modality,
             modalities=modalities
         )
+
+        # Early error return (no per-modality results)
+        if "error" in result and "success" in result:
+            return {
+                "subject_id": subject_id,
+                "session_id": session_id,
+                "success": False,
+                "modalities_ok": 0,
+                "modalities_total": len(modalities),
+                "error": result["error"]
+            }
 
         successful = sum(1 for r in result.values() if r.get("success"))
         total = len(modalities)
