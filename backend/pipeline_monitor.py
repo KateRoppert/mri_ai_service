@@ -74,8 +74,6 @@ class PipelineMonitor:
         db = SessionLocal()
         
         try:
-            # Даём время на создание записей в БД и первый REST-запрос от фронта
-            await asyncio.sleep(2)
             
             while True:
                 # Получаем текущий статус из БД
