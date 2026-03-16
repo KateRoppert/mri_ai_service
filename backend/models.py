@@ -33,6 +33,8 @@ class NIfTIFile(BaseModel):
     modality: str = Field(..., description="Модальность (T1, T2, FLAIR)")
     image_url: str = Field(..., description="URL для получения preprocessed файла")
     mask_url: str = Field(..., description="URL для получения маски")
+    native_image_url: Optional[str] = Field(None, description="URL нативного изображения из nifti/")
+    native_mask_url: Optional[str] = Field(None, description="URL нативной маски сегментации")
 
 class NIfTIFilesResponse(BaseModel):
     """Список доступных NIfTI файлов"""
