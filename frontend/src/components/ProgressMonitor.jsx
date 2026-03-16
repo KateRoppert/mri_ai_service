@@ -59,13 +59,21 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   /**
    * Получить начальный статус через REST API
    */
-  const fetchInitialStatus = async () => {
-    try {
-      const data = await getPipelineStatus(runId);
-      updateStatus(data);
-    } catch (error) {
-      console.error('Ошибка получения статуса:', error);
-      setError('Не удалось получить статус pipeline');
+  const fetchInitialStatus = async (retries = 3) => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const data = await getPipelineStatus(runId);
+        updateStatus(data);
+        return;
+      } catch (error) {
+        console.warn(`Попытка ${attempt}/${retries} получения статуса:`, error);
+        if (attempt < retries) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } else {
+          console.error('Не удалось получить статус после всех попыток:', error);
+          setError('Не удалось получить статус pipeline');
+        }
+      }
     }
   };
 
