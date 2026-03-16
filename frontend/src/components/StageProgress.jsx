@@ -56,8 +56,8 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
   const showQualityButton = stageNumber === 3 && status === 'completed' && onShowQualityReport;
   
   // Показываем кнопку визуализации только для 5-го этапа после завершения
-  const showVisualizationButton = stageNumber === 5 && status === 'completed' && onShowVisualization;
-  const showVolumeButton = stageNumber === 5 && status === 'completed' && onShowVolumeReport;
+  const showVisualizationButton = stageNumber === 6 && status === 'completed' && onShowVisualization;
+  const showVolumeButton = stageNumber === 6 && status === 'completed' && onShowVolumeReport;
 
   return (
     <div style={{ marginBottom: 16 }}>
