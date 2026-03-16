@@ -513,9 +513,8 @@ async def get_nifti_file(
             detail="Segmentation stage not yet completed"
         )
     
-    # Проверяем допустимость file_type
-    if file_type not in ["preprocessed", "segmentation"]:
-        raise HTTPException(status_code=400, detail="Invalid file_type. Must be 'preprocessed' or 'segmentation'")
+    if file_type not in ["preprocessed", "segmentation", "nifti"]:
+        raise HTTPException(status_code=400, detail="Invalid file_type. Must be 'preprocessed', 'segmentation', or 'nifti'")
     
     # Формируем путь к файлу
     base_dir = Path(run.output_path) / file_type
@@ -569,6 +568,7 @@ async def get_nifti_files_list(
     output_base = Path(run.output_path)
     preprocessed_dir = output_base / "preprocessed"
     segmentation_dir = output_base / "segmentation"
+    nifti_dir = output_base / "nifti"
     
     if not preprocessed_dir.exists():
         raise HTTPException(status_code=404, detail="Preprocessed directory not found")
@@ -610,6 +610,22 @@ async def get_nifti_files_list(
                     prep_parts = prep_base.split("_")
                     modality = prep_parts[2] if len(prep_parts) > 2 else "unknown"
                     
+                    # Ищем нативные файлы
+                    native_image_url = None
+                    native_mask_url = None
+                    
+                    # Нативное изображение в nifti/
+                    native_image_name = f"{patient_id}_{session_id}_{modality}.nii.gz"
+                    native_image_path = nifti_dir / patient_id / session_id / "anat" / native_image_name
+                    if native_image_path.exists():
+                        native_image_url = f"/api/nifti/{run_id}/nifti/{native_image_name}"
+                    
+                    # Нативная маска в segmentation/
+                    native_mask_name = f"{base_name}_segmask_native_{modality}.nii.gz"
+                    for native_mask_path in segmentation_dir.rglob(native_mask_name):
+                        native_mask_url = f"/api/nifti/{run_id}/segmentation/{native_mask_name}"
+                        break
+                    
                     nifti_files.append(NIfTIFile(
                         filename=prep_filename,
                         mask_filename=mask_filename,
@@ -618,9 +634,12 @@ async def get_nifti_files_list(
                         modality=modality.upper(),
                         image_url=f"/api/nifti/{run_id}/preprocessed/{prep_filename}",
                         mask_url=f"/api/nifti/{run_id}/segmentation/{mask_filename}",
+                        native_image_url=native_image_url,
+                        native_mask_url=native_mask_url,
                     ))
                     
-                    logger.info(f"Добавлен файл: {prep_filename} с маской {mask_filename}")
+                    logger.info(f"Добавлен файл: {prep_filename} с маской {mask_filename}"
+                               f"{' (+native)' if native_mask_url else ''}")
         
         except Exception as e:
             logger.warning(f"Не удалось распарсить имя файла {mask_filename}: {e}")
