@@ -13,6 +13,7 @@ import StageProgress from './StageProgress';
 import QualityReport from './QualityReport'; 
 import NIfTIViewer from './NIfTIViewer'; 
 import VolumeReport from './VolumeReport';
+import LobarReport from './LobarReport';
 import wsService from '../services/websocket';
 import { getPipelineStatus } from '../services/api';
 
@@ -26,6 +27,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   const [showQualityReport, setShowQualityReport] = useState(false); 
   const [showVisualization, setShowVisualization] = useState(false);
   const [showVolumeReport, setShowVolumeReport] = useState(false); 
+  const [showLobarReport, setShowLobarReport] = useState(false);
 
   /**
    * Подключение к WebSocket при монтировании компонента
@@ -106,6 +108,14 @@ const ProgressMonitor = ({ runId, onComplete }) => {
 
   const handleCloseVolumeReport = () => {
     setShowVolumeReport(false);
+  };
+
+  const handleShowLobarReport = () => {
+    setShowLobarReport(true);
+  };
+
+  const handleCloseLobarReport = () => {
+    setShowLobarReport(false);
   };
 
   /**
@@ -226,6 +236,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
             onShowQualityReport={stageData.stage_number === 3 ? handleShowQualityReport : null}
             onShowVisualization={stageData.stage_number === 6 ? handleShowVisualization : null}
             onShowVolumeReport={stageData.stage_number === 6 ? handleShowVolumeReport : null}
+            onShowLobarReport={stageData.stage_number === 7 ? handleShowLobarReport : null}
             />
         ))
         ) : (
@@ -262,6 +273,11 @@ const ProgressMonitor = ({ runId, onComplete }) => {
         runId={runId}
         visible={showVolumeReport}
         onClose={handleCloseVolumeReport}
+      />
+      <LobarReport
+        runId={runId}
+        visible={showLobarReport}
+        onClose={handleCloseLobarReport}
       />
     </Card>
   );

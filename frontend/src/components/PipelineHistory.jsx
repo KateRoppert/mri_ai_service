@@ -11,10 +11,11 @@ import {
   CloseCircleOutlined,
   SyncOutlined,
   PieChartOutlined,
+  EnvironmentOutlined,
 } from '@ant-design/icons';
 import { getPipelineHistory } from '../services/api';
 
-const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolumeReport }) => {
+const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolumeReport, onShowLobarReport }) => {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [total, setTotal] = useState(0);
@@ -214,6 +215,16 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolum
               onClick={() => onShowVolumeReport(record.run_id)}
             >
               Объёмы
+            </Button>
+          )}
+          {record.status === 'completed' && record.current_stage >= 7 && (
+            <Button
+              type="link"
+              size="small"
+              icon={<EnvironmentOutlined />}
+              onClick={() => onShowLobarReport(record.run_id)}
+            >
+              Локализация
             </Button>
           )}
           {record.status === 'completed' && record.current_stage >= 6 && (
