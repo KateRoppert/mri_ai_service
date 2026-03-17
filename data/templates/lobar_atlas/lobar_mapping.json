@@ -1,0 +1,87 @@
+{
+  "atlas_name": "Harvard-Oxford Cortical Structural Atlas",
+  "threshold": "25%",
+  "resolution": "1mm",
+  "lobes": {
+    "frontal": {
+      "name_en": "Frontal Lobe",
+      "name_ru": "Лобная доля",
+      "color": "#e74c3c"
+    },
+    "temporal": {
+      "name_en": "Temporal Lobe",
+      "name_ru": "Височная доля",
+      "color": "#2ecc71"
+    },
+    "parietal": {
+      "name_en": "Parietal Lobe",
+      "name_ru": "Теменная доля",
+      "color": "#3498db"
+    },
+    "occipital": {
+      "name_en": "Occipital Lobe",
+      "name_ru": "Затылочная доля",
+      "color": "#f39c12"
+    },
+    "cingulate": {
+      "name_en": "Cingulate Cortex",
+      "name_ru": "Поясная извилина",
+      "color": "#9b59b6"
+    },
+    "insula": {
+      "name_en": "Insular Cortex",
+      "name_ru": "Островковая доля",
+      "color": "#1abc9c"
+    }
+  },
+  "regions": {
+    "1":  {"name_en": "Frontal Pole",                              "name_ru": "Лобный полюс",                                "lobe": "frontal"},
+    "2":  {"name_en": "Insular Cortex",                            "name_ru": "Островковая кора",                            "lobe": "insula"},
+    "3":  {"name_en": "Superior Frontal Gyrus",                    "name_ru": "Верхняя лобная извилина",                     "lobe": "frontal"},
+    "4":  {"name_en": "Middle Frontal Gyrus",                      "name_ru": "Средняя лобная извилина",                     "lobe": "frontal"},
+    "5":  {"name_en": "Inferior Frontal Gyrus, pars triangularis", "name_ru": "Нижняя лобная извилина, треугольная часть",    "lobe": "frontal"},
+    "6":  {"name_en": "Inferior Frontal Gyrus, pars opercularis",  "name_ru": "Нижняя лобная извилина, покрышечная часть",   "lobe": "frontal"},
+    "7":  {"name_en": "Precentral Gyrus",                          "name_ru": "Прецентральная извилина",                     "lobe": "frontal"},
+    "8":  {"name_en": "Temporal Pole",                              "name_ru": "Височный полюс",                              "lobe": "temporal"},
+    "9":  {"name_en": "Superior Temporal Gyrus, anterior",         "name_ru": "Верхняя височная извилина, передняя часть",    "lobe": "temporal"},
+    "10": {"name_en": "Superior Temporal Gyrus, posterior",        "name_ru": "Верхняя височная извилина, задняя часть",      "lobe": "temporal"},
+    "11": {"name_en": "Middle Temporal Gyrus, anterior",           "name_ru": "Средняя височная извилина, передняя часть",    "lobe": "temporal"},
+    "12": {"name_en": "Middle Temporal Gyrus, posterior",          "name_ru": "Средняя височная извилина, задняя часть",      "lobe": "temporal"},
+    "13": {"name_en": "Middle Temporal Gyrus, temporooccipital",   "name_ru": "Средняя височная извилина, височно-затылочная","lobe": "temporal"},
+    "14": {"name_en": "Inferior Temporal Gyrus, anterior",         "name_ru": "Нижняя височная извилина, передняя часть",     "lobe": "temporal"},
+    "15": {"name_en": "Inferior Temporal Gyrus, posterior",        "name_ru": "Нижняя височная извилина, задняя часть",       "lobe": "temporal"},
+    "16": {"name_en": "Inferior Temporal Gyrus, temporooccipital", "name_ru": "Нижняя височная извилина, височно-затылочная", "lobe": "temporal"},
+    "17": {"name_en": "Postcentral Gyrus",                         "name_ru": "Постцентральная извилина",                    "lobe": "parietal"},
+    "18": {"name_en": "Superior Parietal Lobule",                  "name_ru": "Верхняя теменная долька",                      "lobe": "parietal"},
+    "19": {"name_en": "Supramarginal Gyrus, anterior",             "name_ru": "Надкраевая извилина, передняя часть",          "lobe": "parietal"},
+    "20": {"name_en": "Supramarginal Gyrus, posterior",            "name_ru": "Надкраевая извилина, задняя часть",            "lobe": "parietal"},
+    "21": {"name_en": "Angular Gyrus",                             "name_ru": "Угловая извилина",                             "lobe": "parietal"},
+    "22": {"name_en": "Lateral Occipital Cortex, superior",        "name_ru": "Латеральная затылочная кора, верхняя часть",   "lobe": "occipital"},
+    "23": {"name_en": "Lateral Occipital Cortex, inferior",        "name_ru": "Латеральная затылочная кора, нижняя часть",    "lobe": "occipital"},
+    "24": {"name_en": "Intracalcarine Cortex",                     "name_ru": "Внутришпорная кора",                           "lobe": "occipital"},
+    "25": {"name_en": "Frontal Medial Cortex",                     "name_ru": "Лобная медиальная кора",                       "lobe": "frontal"},
+    "26": {"name_en": "Juxtapositional Lobule Cortex (SMA)",      "name_ru": "Юкстапозиционная долька (ДМО)",                "lobe": "frontal"},
+    "27": {"name_en": "Subcallosal Cortex",                        "name_ru": "Подмозолистая кора",                           "lobe": "frontal"},
+    "28": {"name_en": "Paracingulate Gyrus",                       "name_ru": "Парапоясная извилина",                         "lobe": "cingulate"},
+    "29": {"name_en": "Cingulate Gyrus, anterior",                 "name_ru": "Поясная извилина, передняя часть",             "lobe": "cingulate"},
+    "30": {"name_en": "Cingulate Gyrus, posterior",                 "name_ru": "Поясная извилина, задняя часть",              "lobe": "cingulate"},
+    "31": {"name_en": "Precuneous Cortex",                         "name_ru": "Предклинье",                                   "lobe": "parietal"},
+    "32": {"name_en": "Cuneal Cortex",                             "name_ru": "Клиновидная кора",                             "lobe": "occipital"},
+    "33": {"name_en": "Frontal Orbital Cortex",                    "name_ru": "Лобная орбитальная кора",                      "lobe": "frontal"},
+    "34": {"name_en": "Parahippocampal Gyrus, anterior",           "name_ru": "Парагиппокампальная извилина, передняя часть",  "lobe": "temporal"},
+    "35": {"name_en": "Parahippocampal Gyrus, posterior",          "name_ru": "Парагиппокампальная извилина, задняя часть",    "lobe": "temporal"},
+    "36": {"name_en": "Lingual Gyrus",                             "name_ru": "Язычная извилина",                             "lobe": "occipital"},
+    "37": {"name_en": "Temporal Fusiform Cortex, anterior",        "name_ru": "Височная веретенообразная кора, передняя",      "lobe": "temporal"},
+    "38": {"name_en": "Temporal Fusiform Cortex, posterior",       "name_ru": "Височная веретенообразная кора, задняя",        "lobe": "temporal"},
+    "39": {"name_en": "Temporal Occipital Fusiform Cortex",        "name_ru": "Височно-затылочная веретенообразная кора",      "lobe": "occipital"},
+    "40": {"name_en": "Occipital Fusiform Gyrus",                  "name_ru": "Затылочная веретенообразная извилина",          "lobe": "occipital"},
+    "41": {"name_en": "Frontal Operculum Cortex",                  "name_ru": "Лобная покрышечная кора",                      "lobe": "frontal"},
+    "42": {"name_en": "Central Opercular Cortex",                  "name_ru": "Центральная покрышечная кора",                 "lobe": "frontal"},
+    "43": {"name_en": "Parietal Operculum Cortex",                 "name_ru": "Теменная покрышечная кора",                    "lobe": "parietal"},
+    "44": {"name_en": "Planum Polare",                             "name_ru": "Полярная площадка",                            "lobe": "temporal"},
+    "45": {"name_en": "Heschl's Gyrus",                            "name_ru": "Извилина Гешля",                               "lobe": "temporal"},
+    "46": {"name_en": "Planum Temporale",                          "name_ru": "Височная площадка",                            "lobe": "temporal"},
+    "47": {"name_en": "Supracalcarine Cortex",                     "name_ru": "Надшпорная кора",                              "lobe": "occipital"},
+    "48": {"name_en": "Occipital Pole",                            "name_ru": "Затылочный полюс",                             "lobe": "occipital"}
+  }
+}

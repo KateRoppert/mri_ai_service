@@ -1,0 +1,32 @@
+# ============================================
+# LOBAR ATLAS CONFIGURATION
+# ============================================
+
+# Source atlas
+source_atlas: "HarvardOxford-cort-maxprob-thr25-1mm"
+
+# Pre-registered atlas versions for each template
+# Key must match atlas.name in preprocessing_config.yaml
+templates:
+  SRI24:
+    file: "data/templates/lobar_atlas/HarvardOxford-cort-maxprob-thr25-1mm_SRI24.nii.gz"
+  MNI152:
+    file: "data/templates/lobar_atlas/HarvardOxford-cort-maxprob-thr25-1mm_MNI152.nii.gz"
+
+# Region-to-lobe mapping
+mapping_file: "data/templates/lobar_atlas/lobar_mapping.json"
+
+# Segmentation class labels (BraTS convention)
+segmentation_classes:
+  1: 
+    name_en: "Necrotic Core (NCR)"
+    name_ru: "Некротическое ядро (NCR)"
+  2:
+    name_en: "Peritumoral Edema (ED)"
+    name_ru: "Перитуморальный отёк (ED)"
+  3:
+    name_en: "Non-Enhancing Tumor (NET)"
+    name_ru: "Неусиливающаяся опухоль (NET)"
+  4:
+    name_en: "Enhancing Tumor (ET)"
+    name_ru: "Усиливающаяся опухоль (ET)"
