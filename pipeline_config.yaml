@@ -18,6 +18,8 @@ output_structure:
   stage_04: quality_reports
   stage_05_data: preprocessed
   stage_06: segmentation
+  stage_07: segmentation    # native masks saved alongside atlas masks
+  stage_08: segmentation    # lobar reports saved alongside masks
   logs: logs
   reports: reports
 
@@ -117,6 +119,31 @@ stages:
       gpu_ids: null
       max_subjects: null
       results-dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_06
+
+  stage_07_inverse_transform:
+    enabled: true
+    script: scripts/07_inverse_transform.py
+    args:
+      mode: parallel
+      workers: 14
+      skip-existing: true
+      benchmark: false
+      max_subjects: null
+      reference-modality: t1
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_07
+
+  stage_08_lobar_localization:
+    enabled: true
+    script: scripts/08_lobar_localization.py
+    args:
+      config: configs/lobar_atlas_config.yaml
+      preprocessing-config: configs/preprocessing_config.yaml
+      mode: parallel
+      workers: 14
+      skip-existing: true
+      benchmark: false
+      max_subjects: null
+      results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_08
 
 # ============================================
 # НАСТРОЙКИ ОТЧЕТНОСТИ

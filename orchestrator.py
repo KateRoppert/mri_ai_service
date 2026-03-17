@@ -68,6 +68,11 @@ def build_command(
             if arg_name == 'config':
                 config_path = project_root / arg_value
                 cmd.extend([f'--{arg_name}', str(config_path)])
+
+            elif arg_name == 'preprocessing-config':
+                config_path = project_root / arg_value
+                cmd.extend([f'--{arg_name}', str(config_path)])
+
             elif arg_name == 'results_dir':
                 if arg_value:
                     results_path = config['general']['root_output_dir'] / arg_value
@@ -283,6 +288,7 @@ def create_output_directories(config: Dict[str, Any]) -> None:
         root_output / output_struct['stage_05_data'],
         root_output / output_struct['stage_06'],
         root_output / output_struct['stage_07'],
+        root_output / output_struct['stage_08'],
         root_output / output_struct['logs'],
         root_output / output_struct['logs'] / 'stages',
         root_output / output_struct['reports']
@@ -363,7 +369,7 @@ def run_pipeline(
     
     # Получаем список включенных этапов
     enabled_stages = get_enabled_stages(config)
-    logger.info(f"Enabled stages: {len(enabled_stages)}/7")
+    logger.info(f"Enabled stages: {len(enabled_stages)}/8")
     for stage in enabled_stages:
         logger.info(f"  ✓ {stage}")
     logger.info("")
