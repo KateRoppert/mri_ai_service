@@ -60,6 +60,12 @@ export const getVolumeReports = async (runId) => {
   return response.data;
 };
 
+export const getLobarReports = async (runId) => {
+  const response = await fetch(`${API_BASE}/api/lobar-reports/${runId}`);
+  if (!response.ok) throw new Error('Failed to fetch lobar reports');
+  return response.json();
+};
+
 /**
  * Получить список доступных NIfTI файлов для визуализации
  */
