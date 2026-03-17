@@ -3,7 +3,7 @@ Pydantic модели для API
 """
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -63,6 +63,41 @@ class VolumeReportListResponse(BaseModel):
     """Список отчётов об объёмах"""
     total: int = Field(..., description="Количество отчётов")
     reports: List[VolumeReportResponse] = Field(..., description="Список отчётов")
+
+class LobarClassVolume(BaseModel):
+    """Объём одного класса поражения в доле"""
+    name_en: str = Field(..., description="Название класса (EN)")
+    name_ru: str = Field(..., description="Название класса (RU)")
+    voxel_count: int = Field(..., description="Количество вокселей")
+    volume_mm3: float = Field(..., description="Объём в мм³")
+    volume_cm3: float = Field(..., description="Объём в см³")
+
+class LobarResult(BaseModel):
+    """Результат локализации для одной доли"""
+    name_en: str = Field(..., description="Название доли (EN)")
+    name_ru: str = Field(..., description="Название доли (RU)")
+    color: str = Field(..., description="Цвет для визуализации")
+    total_voxels: int = Field(..., description="Всего вокселей поражения в доле")
+    total_volume_mm3: float = Field(..., description="Объём в мм³")
+    total_volume_cm3: float = Field(..., description="Объём в см³")
+    percent_of_lesion: float = Field(..., description="Процент от общего объёма поражения")
+    classes: Dict[str, LobarClassVolume] = Field(default_factory=dict, description="Объёмы по классам")
+
+class LobarReportResponse(BaseModel):
+    """Отчёт о лобарной локализации для одной маски"""
+    mask_file: str = Field(..., description="Имя файла маски")
+    patient_id: str = Field(..., description="ID пациента")
+    session_id: str = Field(..., description="ID сессии")
+    atlas_name: str = Field(..., description="Название атласа")
+    total_lesion_voxels: int = Field(..., description="Всего вокселей поражения")
+    total_lesion_volume_mm3: float = Field(..., description="Общий объём поражения мм³")
+    total_lesion_volume_cm3: float = Field(..., description="Общий объём поражения см³")
+    lobes: Dict[str, LobarResult] = Field(default_factory=dict, description="Результаты по долям")
+
+class LobarReportListResponse(BaseModel):
+    """Список лобарных отчётов"""
+    total: int = Field(..., description="Количество отчётов")
+    reports: List[LobarReportResponse] = Field(..., description="Список отчётов")
 
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
