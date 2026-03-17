@@ -393,6 +393,52 @@ class PipelineManager:
         
         logger.info(f"Успешно загружено {len(reports)} отчётов об объёмах")
         return reports
+
+    def get_lobar_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Получить все отчёты о лобарной локализации из segmentation/
+        
+        Структура: segmentation/sub-XXX/ses-XXX/anat/*_lobar_report.json
+        
+        Returns:
+            Список словарей с отчётами
+        """
+        seg_dir = Path(output_path) / "segmentation"
+        
+        if not seg_dir.exists():
+            logger.warning(f"Директория сегментации не найдена: {seg_dir}")
+            return None
+        
+        report_files = list(seg_dir.rglob("*_lobar_report.json"))
+        
+        if not report_files:
+            logger.warning(f"Лобарные отчёты не найдены в {seg_dir}")
+            return None
+        
+        logger.info(f"Найдено {len(report_files)} лобарных отчётов")
+        
+        reports = []
+        
+        for report_file in report_files:
+            try:
+                with open(report_file, 'r', encoding='utf-8') as f:
+                    report_data = json.load(f)
+                
+                reports.append(report_data)
+                
+                affected = len(report_data.get("lobes", {}))
+                logger.info(f"Отчёт загружен: {report_file.name}, поражённых долей: {affected}")
+            
+            except Exception as e:
+                logger.error(f"Ошибка чтения отчёта {report_file}: {e}")
+                continue
+        
+        if not reports:
+            logger.warning("Не удалось загрузить ни одного лобарного отчёта")
+            return None
+        
+        logger.info(f"Успешно загружено {len(reports)} лобарных отчётов")
+        return reports
     
     def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
         """
