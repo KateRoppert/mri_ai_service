@@ -719,6 +719,48 @@ async def get_lobar_reports(
         reports=reports
     )
 
+@app.get("/api/lobar-atlas")
+async def get_lobar_atlas():
+    """
+    Получить NIfTI файл лобарного атласа для визуализации
+    """
+    # Определяем путь к атласу на основе preprocessing конфига
+    try:
+        preprocessing_config_path = settings.pipeline_root / "configs" / "preprocessing_config.yaml"
+        lobar_config_path = settings.pipeline_root / "configs" / "lobar_atlas_config.yaml"
+        
+        import yaml
+        
+        with open(preprocessing_config_path, 'r') as f:
+            prep_config = yaml.safe_load(f)
+        
+        with open(lobar_config_path, 'r') as f:
+            lobar_config = yaml.safe_load(f)
+        
+        template_name = prep_config.get("atlas", {}).get("name", "SRI24")
+        templates = lobar_config.get("templates", {})
+        
+        if template_name not in templates:
+            raise HTTPException(status_code=404, detail=f"No lobar atlas for template {template_name}")
+        
+        atlas_rel = templates[template_name]["file"]
+        atlas_path = settings.pipeline_root / atlas_rel
+        
+        if not atlas_path.exists():
+            raise HTTPException(status_code=404, detail="Lobar atlas file not found")
+        
+        return FileResponse(
+            path=str(atlas_path),
+            media_type="application/gzip",
+            filename=atlas_path.name
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка получения лобарного атласа: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
 # ============================================
 # KAPPA AUTH ENDPOINTS
 # ============================================
