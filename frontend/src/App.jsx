@@ -10,6 +10,7 @@ import ProgressMonitor from './components/ProgressMonitor';
 import PipelineHistory from './components/PipelineHistory';
 import QualityReport from './components/QualityReport';
 import VolumeReport from './components/VolumeReport';
+import LobarReport from './components/LobarReport';
 import NIfTIViewer from './components/NIfTIViewer';
 import './App.css';
 
@@ -26,6 +27,8 @@ function App() {
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
   const [historyVolumeReportRunId, setHistoryVolumeReportRunId] = useState(null);
   const [showHistoryVolumeReport, setShowHistoryVolumeReport] = useState(false);
+  const [historyLobarReportRunId, setHistoryLobarReportRunId] = useState(null);
+  const [showHistoryLobarReport, setShowHistoryLobarReport] = useState(false);
   const [kappaSession, setKappaSession] = useState(null);
 
   const handleLoginSuccess = (data) => {
@@ -66,6 +69,11 @@ function App() {
   const handleShowHistoryVolumeReport = (runId) => {
     setHistoryVolumeReportRunId(runId);
     setShowHistoryVolumeReport(true);
+  };
+
+  const handleShowHistoryLobarReport = (runId) => {
+    setHistoryLobarReportRunId(runId);
+    setShowHistoryLobarReport(true);
   };
 
   /**
@@ -180,6 +188,7 @@ function App() {
                       onShowQualityReport={handleShowHistoryQualityReport}
                       onShowVisualization={handleShowHistoryVisualization}
                       onShowVolumeReport={handleShowHistoryVolumeReport}
+                      onShowLobarReport={handleShowHistoryLobarReport}
                     />
                   ),
                 },
@@ -205,6 +214,13 @@ function App() {
                 runId={historyVolumeReportRunId}
                 visible={showHistoryVolumeReport}
                 onClose={() => setShowHistoryVolumeReport(false)}
+              />
+            )}
+            {showHistoryLobarReport && (
+              <LobarReport
+                runId={historyLobarReportRunId}
+                visible={showHistoryLobarReport}
+                onClose={() => setShowHistoryLobarReport(false)}
               />
             )}
           </>
