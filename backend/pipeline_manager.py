@@ -207,8 +207,8 @@ class PipelineManager:
         фронтенд показывает этапы 1-5.
         """
         # Маппинг: номер в логе -> номер на фронте
-        LOG_TO_DISPLAY = {1: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6}
-        TOTAL_STAGES = 6
+        LOG_TO_DISPLAY = {1: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
+        TOTAL_STAGES = 7
         
         stages_status = {
             i: {"status": "pending", "progress": 0.0}
