@@ -33,7 +33,8 @@ from models import (
     QualityMetrics,
     NIfTIFile,     
     NIfTIFilesResponse,
-    VolumeReportListResponse 
+    VolumeReportListResponse,
+    LobarReportListResponse 
 )
 from database import (
     get_db,
@@ -681,6 +682,39 @@ async def get_volume_reports(
     logger.info(f"Найдено {len(reports)} отчётов об объёмах для run_id: {run_id}")
     
     return VolumeReportListResponse(
+        total=len(reports),
+        reports=reports
+    )
+
+@app.get("/api/lobar-reports/{run_id}", response_model=LobarReportListResponse)
+async def get_lobar_reports(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить отчёты о лобарной локализации поражений
+    """
+    logger.info(f"Запрос лобарных отчётов для run_id: {run_id}")
+    
+    run = get_pipeline_run(db, run_id)
+    
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    
+    if run.current_stage < 7:
+        raise HTTPException(
+            status_code=400,
+            detail="Lobar localization stage not yet completed"
+        )
+    
+    reports = pipeline_manager.get_lobar_reports(run.output_path)
+    
+    if not reports:
+        raise HTTPException(status_code=404, detail="Lobar reports not found")
+    
+    logger.info(f"Найдено {len(reports)} лобарных отчётов для run_id: {run_id}")
+    
+    return LobarReportListResponse(
         total=len(reports),
         reports=reports
     )
