@@ -61,6 +61,46 @@ class LobarAnalyzer:
             lobe_labels[lobe].add(int(label_str))
         return lobe_labels
 
+    def _resample_atlas_to_mask(self, mask_nii) -> Optional[np.ndarray]:
+        """Resample atlas to match mask grid using nearest-neighbor."""
+        try:
+            from scipy.ndimage import affine_transform
+
+            atlas_nii = nib.load(str(self.atlas_path))
+            atlas_data = np.asarray(atlas_nii.dataobj).astype(np.float64)
+
+            # Compute voxel-to-voxel mapping: mask voxel -> atlas voxel
+            # mask_voxel -> world: mask_affine
+            # world -> atlas_voxel: inv(atlas_affine)
+            mask_affine = mask_nii.affine
+            atlas_affine = atlas_nii.affine
+
+            # Combined: atlas_voxel = inv(atlas_affine) @ mask_affine @ mask_voxel
+            transform = np.linalg.inv(atlas_affine) @ mask_affine
+
+            # affine_transform uses: output[o] = input[matrix @ o + offset]
+            matrix = transform[:3, :3]
+            offset = transform[:3, 3]
+
+            resampled = affine_transform(
+                atlas_data,
+                matrix,
+                offset=offset,
+                output_shape=mask_nii.shape[:3],
+                order=0,  # nearest-neighbor
+                mode='constant',
+                cval=0
+            )
+
+            resampled = resampled.astype(int)
+            logger.info(f"  Resampled atlas: {resampled.shape}, "
+                        f"non-zero: {(resampled > 0).sum()}")
+            return resampled
+
+        except Exception as e:
+            logger.error(f"Failed to resample atlas: {e}")
+            return None
+
     def analyze_mask(self, mask_path: Path) -> Optional[Dict]:
         """
         Analyze a single segmentation mask against the lobar atlas.
@@ -76,11 +116,14 @@ class LobarAnalyzer:
             mask_data = np.asarray(mask_nii.dataobj).astype(int)
             mask_voxel_volume = float(np.prod(mask_nii.header.get_zooms()[:3]))
 
-            # Check shape compatibility
-            if mask_data.shape != self.atlas_data.shape:
-                logger.error(
-                    f"Shape mismatch: mask {mask_data.shape} vs atlas {self.atlas_data.shape}")
-                return None
+            # Resample atlas to mask grid if shapes differ
+            atlas_data = self.atlas_data
+            if mask_data.shape != atlas_data.shape:
+                logger.info(
+                    f"  Resampling atlas {atlas_data.shape} -> {mask_data.shape}")
+                atlas_data = self._resample_atlas_to_mask(mask_nii)
+                if atlas_data is None:
+                    return None
 
             # Overall lesion stats
             lesion_mask = mask_data > 0
@@ -96,7 +139,7 @@ class LobarAnalyzer:
                 lobe_info = self.mapping["lobes"][lobe_name]
 
                 # Create binary mask for this lobe
-                lobe_mask = np.isin(self.atlas_data, list(atlas_labels))
+                lobe_mask = np.isin(atlas_data, list(atlas_labels))
 
                 # Overlap with full lesion
                 overlap = lesion_mask & lobe_mask
