@@ -4,11 +4,11 @@ fsl:
 
 # Atlas configuration
 atlas:
-  name: "SRI24"
+  name: "MNI152_ICBM" # "SRI24", "MNI152_FSL" или "MNI152_ICBM"
   # NITRC direct download link for SRI24 T1 atlas
   url: "https://www.nitrc.org/frs/download.php/6267/sri24_t1.nii.gz"
   cache_dir: "data/templates"  # Относительно корня проекта
-  filename: "sri24_t1.nii.gz"
+  filename: "mni_icbm152_t1_tal_nlin_sym_09a.nii"
 
 # Processing steps
 steps:

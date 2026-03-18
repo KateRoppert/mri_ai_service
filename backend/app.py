@@ -719,23 +719,41 @@ async def get_lobar_reports(
         reports=reports
     )
 
-@app.get("/api/lobar-atlas")
-async def get_lobar_atlas():
+@app.get("/api/lobar-atlas/{run_id}")
+async def get_lobar_atlas(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
     """
-    Получить NIfTI файл лобарного атласа для визуализации
+    Получить лобарный атлас, ресэмплированный под preprocessed данные запуска
     """
-    # Определяем путь к атласу на основе preprocessing конфига
+    import nibabel as nib_local
+    import numpy as np
+    from scipy.ndimage import affine_transform
+    import tempfile
+    
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    
     try:
+        # Find any preprocessed file as reference
+        prep_dir = Path(run.output_path) / "preprocessed"
+        ref_files = list(prep_dir.rglob("*.nii.gz"))
+        if not ref_files:
+            raise HTTPException(status_code=404, detail="No preprocessed files found")
+        
+        ref_nii = nib_local.load(str(ref_files[0]))
+        
+        # Determine which lobar atlas to use from preprocessing config
+        import yaml as yaml_local
         preprocessing_config_path = settings.pipeline_root / "configs" / "preprocessing_config.yaml"
         lobar_config_path = settings.pipeline_root / "configs" / "lobar_atlas_config.yaml"
         
-        import yaml
-        
         with open(preprocessing_config_path, 'r') as f:
-            prep_config = yaml.safe_load(f)
-        
+            prep_config = yaml_local.safe_load(f)
         with open(lobar_config_path, 'r') as f:
-            lobar_config = yaml.safe_load(f)
+            lobar_config = yaml_local.safe_load(f)
         
         template_name = prep_config.get("atlas", {}).get("name", "SRI24")
         templates = lobar_config.get("templates", {})
@@ -749,10 +767,43 @@ async def get_lobar_atlas():
         if not atlas_path.exists():
             raise HTTPException(status_code=404, detail="Lobar atlas file not found")
         
+        atlas_nii = nib_local.load(str(atlas_path))
+        atlas_data = np.asarray(atlas_nii.dataobj).astype(np.float64)
+        ref_data = np.squeeze(ref_nii.get_fdata())
+        
+        # Check if resampling needed
+        if atlas_nii.shape[:3] == ref_nii.shape[:3] and np.allclose(atlas_nii.affine, ref_nii.affine):
+            # Exact match — serve as-is
+            return FileResponse(
+                path=str(atlas_path),
+                media_type="application/gzip",
+                filename=atlas_path.name
+            )
+        
+        # Resample atlas to match preprocessed file
+        logger.info(f"Resampling lobar atlas {atlas_nii.shape} -> {ref_nii.shape[:3]}")
+        
+        transform = np.linalg.inv(atlas_nii.affine) @ ref_nii.affine
+        matrix = transform[:3, :3]
+        offset = transform[:3, 3]
+        
+        resampled = affine_transform(
+            atlas_data, matrix, offset=offset,
+            output_shape=ref_nii.shape[:3],
+            order=0, mode='constant', cval=0
+        ).astype(np.int16)
+        
+        # Save to temp file with preprocessed affine
+        tmp = tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False)
+        out_nii = nib_local.Nifti1Image(resampled, ref_nii.affine)
+        nib_local.save(out_nii, tmp.name)
+        
+        logger.info(f"Lobar atlas resampled: {resampled.shape}, non-zero: {(resampled > 0).sum()}")
+        
         return FileResponse(
-            path=str(atlas_path),
+            path=tmp.name,
             media_type="application/gzip",
-            filename=atlas_path.name
+            filename=f"lobar_atlas_{template_name}.nii.gz"
         )
     
     except HTTPException:

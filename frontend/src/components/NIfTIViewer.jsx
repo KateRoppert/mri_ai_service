@@ -8,10 +8,11 @@ import {
   EyeInvisibleOutlined,
   RotateLeftOutlined,
   RotateRightOutlined,
-  QuestionCircleOutlined 
+  QuestionCircleOutlined,
+  EnvironmentOutlined 
 } from '@ant-design/icons';
 import { Niivue } from '@niivue/niivue';
-import { getNIfTIFiles, getNIfTIFileUrl } from '../services/api';
+import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl } from '../services/api';
 
 /**
  * Создаём кастомную цветовую карту для multi-class сегментации
@@ -43,6 +44,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [maskOpacity, setMaskOpacity] = useState(0.5);
   const [showMask, setShowMask] = useState(true);
+  const [showAtlas, setShowAtlas] = useState(false);
   const [viewMode, setViewMode] = useState('atlas'); // 'atlas' or 'native'
 
 
@@ -129,6 +131,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
    * Загружаем NIfTI файлы в niivue
    */
   const loadNIfTI = async (file, mode = viewMode) => {
+    setShowAtlas(false);
     if (!nvRef.current) {
       setError('Niivue не инициализирован');
       return;
@@ -258,6 +261,39 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
   };
 
   /**
+   * Переключение отображения лобарного атласа
+   */
+  const toggleAtlas = async () => {
+    if (!nvRef.current) return;
+    const nv = nvRef.current;
+
+    if (showAtlas) {
+      // Убираем атлас (третий volume)
+      if (nv.volumes && nv.volumes.length > 2) {
+        nv.removeVolumeByIndex(2);
+        nv.drawScene();
+      }
+      setShowAtlas(false);
+    } else {
+      // Добавляем атлас как третий слой
+      try {
+        const atlasUrl = getLobarAtlasUrl(runId);
+        await nv.addVolumeFromUrl({
+          url: atlasUrl,
+          colormap: 'freesurfer',
+          opacity: 0.3,
+          cal_min: 0.5,
+          cal_max: 48,
+        });
+        nv.drawScene();
+        setShowAtlas(true);
+      } catch (err) {
+        console.error('Ошибка загрузки лобарного атласа:', err);
+      }
+    }
+  };
+
+  /**
    * Сброс вида
    */
   const resetView = () => {
@@ -303,7 +339,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
           <div style={{ marginBottom: 8 }}>
             <Row gutter={16} align="middle">
               {/* Выбор файла */}
-              <Col span={7}>
+              <Col span={6}>
                 <Space direction="vertical" style={{ width: '100%' }} size="small">
                   <span style={{ fontSize: 12, color: '#999' }}>Выберите файл:</span>
                   <Select
@@ -319,7 +355,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
               </Col>
 
               {/* Переключатель пространства */}
-              <Col span={6}>
+              <Col span={4}>
                 <Space direction="vertical" style={{ width: '100%' }} size="small">
                   <span style={{ fontSize: 12, color: '#999' }}>Пространство:</span>
                   <Radio.Group
@@ -356,7 +392,7 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
               </Col>
 
               {/* Кнопки */}
-              <Col span={6}>
+              <Col span={9}>
                 <Space>
                   <Button
                     icon={showMask ? <EyeInvisibleOutlined /> : <EyeOutlined />}
@@ -369,6 +405,13 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
                     onClick={resetView}
                   >
                     Сброс
+                  </Button>
+                  <Button
+                    icon={<EnvironmentOutlined />}
+                    onClick={toggleAtlas}
+                    type={showAtlas ? 'primary' : 'default'}
+                  >
+                    {showAtlas ? 'Скрыть доли' : 'Показать доли'}
                   </Button>
                 </Space>
               </Col>

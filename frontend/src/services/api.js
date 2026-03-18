@@ -61,9 +61,8 @@ export const getVolumeReports = async (runId) => {
 };
 
 export const getLobarReports = async (runId) => {
-  const response = await fetch(`${API_BASE}/api/lobar-reports/${runId}`);
-  if (!response.ok) throw new Error('Failed to fetch lobar reports');
-  return response.json();
+  const response = await apiClient.get(`/lobar-reports/${runId}`);
+  return response.data;
 };
 
 /**
@@ -81,6 +80,13 @@ export const getNIfTIFiles = async (runId) => {
 export const getNIfTIFileUrl = (url) => {
   // Преобразуем относительный URL в полный
   return `http://localhost:8000${url}`;
+};
+
+/**
+ * Получить URL лобарного атласа
+ */
+export const getLobarAtlasUrl = (runId) => {
+  return `http://localhost:8000/api/lobar-atlas/${runId}`;
 };
 
 export default {

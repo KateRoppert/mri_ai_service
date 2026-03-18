@@ -10,8 +10,13 @@ source_atlas: "HarvardOxford-cort-maxprob-thr25-1mm"
 templates:
   SRI24:
     file: "data/templates/lobar_atlas/HarvardOxford-cort-maxprob-thr25-1mm_SRI24.nii.gz"
-  MNI152:
-    file: "data/templates/lobar_atlas/HarvardOxford-cort-maxprob-thr25-1mm_MNI152.nii.gz"
+    template_file: "data/templates/sri24_t1.nii.gz"
+  MNI152_FSL:
+    file: "data/templates/lobar_atlas/HarvardOxford-cort-maxprob-thr25-1mm_MNI152_FSL.nii.gz"
+    template_file: "data/templates/MNI152_T1_1mm.nii.gz"
+  MNI152_ICBM:
+    file: "data/templates/lobar_atlas/HarvardOxford-cort-maxprob-thr25-1mm_MNI152_ICBM.nii.gz"
+    template_file: "data/templates/mni_icbm152_t1_tal_nlin_sym_09a.nii"
 
 # Region-to-lobe mapping
 mapping_file: "data/templates/lobar_atlas/lobar_mapping.json"
