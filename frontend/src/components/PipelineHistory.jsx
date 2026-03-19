@@ -10,8 +10,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   SyncOutlined,
-  PieChartOutlined,
-  EnvironmentOutlined,
+  MedicineBoxOutlined,
 } from '@ant-design/icons';
 import { getPipelineHistory } from '../services/api';
 
