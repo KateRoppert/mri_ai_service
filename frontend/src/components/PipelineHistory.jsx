@@ -29,6 +29,12 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     fetchHistory();
   }, [currentPage, statusFilter]);
 
+  // Автообновление каждые 2 секунды
+  useEffect(() => {
+    const interval = setInterval(fetchHistory, 2000);
+    return () => clearInterval(interval);
+  }, [currentPage, statusFilter]);
+
   /**
    * Получить историю запусков
    */
@@ -203,7 +209,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
               icon={<FileTextOutlined />}
               onClick={() => onShowQualityReport(record.run_id)}
             >
-              Отчёт
+              Отчёт качества
             </Button>
           )}
           {record.status === 'completed' && record.current_stage >= 7 && (
@@ -213,7 +219,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
               icon={<MedicineBoxOutlined />}
               onClick={() => onShowClinicalReport(record.run_id)}
             >
-              Отчёт
+              Клинический отчёт
             </Button>
           )}
           {record.status === 'completed' && record.current_stage >= 6 && (
