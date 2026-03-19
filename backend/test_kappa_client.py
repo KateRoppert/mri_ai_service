@@ -33,15 +33,15 @@ async def main():
     print(f"user_id={user_id}, user_type_id={user_type_id}")
 
     # --- 2. Создание датасета ---
-    print("\n=== Создание тестового датасета ===")
+    print("\n=== Создание тестового датасета (BIDS DICOM) ===")
     dataset_id = await create_dataset(
         token=token,
         user_id=user_id,
         user_type_id=user_type_id,
-        dataset_name="test_mri_pipeline_bids_2",
-        dataset_short_info="Тестовый датасет для проверки интеграции",
+        dataset_name="test_bids_dicom_session",
+        dataset_short_info="Тест загрузки DICOM сессии из BIDS",
         dataset_type=1,
-        dataset_tags="test,mri,pipeline",
+        dataset_tags="test,mri,dicom,bids",
     )
 
     if dataset_id is None:
@@ -50,44 +50,104 @@ async def main():
 
     print(f"Датасет создан, ID: {dataset_id}")
 
-    # --- 3. Загрузка сущности ---
-    print("\n=== Загрузка тестовой сущности ===")
+    # --- 3. Загрузка сущности: DICOM сессия (все модальности) ---
+    print("\n=== Загрузка DICOM сессии как сущности ===")
 
-    # Ищем любой файл в demo_workspace для теста
-    demo_dir = Path(__file__).parent.parent / "demo_workspace" / "input"
-    test_files = list(demo_dir.rglob("*.json"))[:1]  # берём первый JSON
+    session_dir = Path("/home/ubuntu/mri_ai_service/demo_workspace/input/13_03_1850/bids_organized/sub-001/ses-001")
 
-    if not test_files:
-        # Если JSON нет, создадим тестовый файл
-        test_file = Path(__file__).parent / "test_entity.json"
-        test_file.write_text('{"test": true, "source": "mri_ai_service"}')
-        test_files = [test_file]
-        print(f"Тестовый файл создан: {test_file}")
-    else:
-        print(f"Найден файл для теста: {test_files[0]}")
+    if not session_dir.exists():
+        print(f"Директория не найдена: {session_dir}")
+        return
+
+    # Собираем все .dcm рекурсивно из всех модальностей
+    dicom_files = sorted(session_dir.rglob("*.dcm"))
+
+    # Определяем модальности (имена подпапок в anat/)
+    modalities = sorted(set(f.parent.name for f in dicom_files))
+
+    print(f"Найдено файлов: {len(dicom_files)}")
+    print(f"Модальности: {modalities}")
+    for mod in modalities:
+        mod_files = [f for f in dicom_files if f.parent.name == mod]
+        print(f"  {mod}: {len(mod_files)} файлов")
 
     entity_response = await upload_entity(
         token=token,
         user_id=user_id,
         user_type_id=user_type_id,
         dataset_id=dataset_id,
-        entity_name="test_sub-001_ses-001",
-        file_paths=test_files,
+        entity_name="sub-001_ses-001",
+        file_paths=dicom_files,
         entity_info={
             "patient_id": "sub-001",
             "session_id": "ses-001",
-            "pipeline_stage": "bids_organized",
-            "test": True,
+            "pipeline_stage": "01_bids_organized",
+            "modalities": modalities,
+            "source_dir": str(session_dir),
+            "file_count": len(dicom_files),
+            "files_per_modality": {
+                mod: len([f for f in dicom_files if f.parent.name == mod])
+                for mod in modalities
+            },
         },
     )
 
     if entity_response is None:
-        print("Ошибка загрузки сущности!")
+        print("Ошибка загрузки DICOM сущности!")
         return
 
-    print(f"Сущность загружена, ответ: {entity_response}")
+    print(f"DICOM сущность загружена: {entity_response}")
 
-    print("\n=== Тест завершён успешно ===")
+    # --- 4. Тест загрузки NIfTI (все модальности одной сессии) ---
+    print("\n=== Загрузка NIfTI файлов ===")
+
+    nifti_session_dir = Path("/home/ubuntu/mri_ai_service/demo_workspace/input/13_03_1850/nifti/sub-001/ses-001")
+
+    if not nifti_session_dir.exists():
+        print(f"NIfTI директория не найдена: {nifti_session_dir}, пропускаем")
+    else:
+        nifti_files = sorted(nifti_session_dir.rglob("*.nii.gz"))
+        print(f"NIfTI файлов: {len(nifti_files)}")
+        for f in nifti_files:
+            print(f"  {f.name} ({f.stat().st_size} bytes)")
+
+        nifti_dataset_id = await create_dataset(
+            token=token,
+            user_id=user_id,
+            user_type_id=user_type_id,
+            dataset_name="test_nifti_converted",
+            dataset_short_info="Тест загрузки NIfTI после конвертации",
+            dataset_type=1,
+            dataset_tags="test,mri,nifti",
+        )
+
+        if nifti_dataset_id is None:
+            print("Ошибка создания NIfTI датасета!")
+        else:
+            print(f"NIfTI датасет создан, ID: {nifti_dataset_id}")
+
+            nifti_response = await upload_entity(
+                token=token,
+                user_id=user_id,
+                user_type_id=user_type_id,
+                dataset_id=nifti_dataset_id,
+                entity_name="sub-001_ses-001",
+                file_paths=nifti_files,
+                entity_info={
+                    "patient_id": "sub-001",
+                    "session_id": "ses-001",
+                    "pipeline_stage": "03_nifti_conversion",
+                    "modalities": [f.stem.split("_")[-1] for f in nifti_files],
+                    "file_count": len(nifti_files),
+                },
+            )
+
+            if nifti_response:
+                print(f"NIfTI сущность загружена: {nifti_response}")
+            else:
+                print("Ошибка загрузки NIfTI сущности!")
+
+    print("\n=== Тест завершён ===")
 
 
 if __name__ == "__main__":
