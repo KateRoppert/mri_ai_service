@@ -38,8 +38,9 @@ async def main():
         token=token,
         user_id=user_id,
         user_type_id=user_type_id,
-        dataset_name="test_mri_pipeline_bids",
+        dataset_name="test_mri_pipeline_bids_2",
         dataset_short_info="Тестовый датасет для проверки интеграции",
+        dataset_type=1,
         dataset_tags="test,mri,pipeline",
     )
 
