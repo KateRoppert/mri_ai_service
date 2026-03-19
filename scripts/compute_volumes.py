@@ -93,6 +93,46 @@ def compute_volumes(mask_path: Path) -> dict:
         vol_cm3 = vol_mm3 / 1000.0
         total_voxels += count
 
+        # Clinical metrics (RANO-style)
+        ce_pos_voxels = results["classes"].get(4, {}).get("voxel_count", 0)  # ET
+        ncr_voxels = results["classes"].get(1, {}).get("voxel_count", 0)     # NCR
+        net_voxels = results["classes"].get(3, {}).get("voxel_count", 0)     # NET
+        ed_voxels = results["classes"].get(2, {}).get("voxel_count", 0)      # ED
+        
+        ce_neg_voxels = ncr_voxels + net_voxels
+        tumor_core_voxels = ce_pos_voxels + ce_neg_voxels
+        
+        results["clinical"] = {
+            "ce_positive": {
+                "name": "CE+ (Enhancing)",
+                "name_ru": "Контраст-позитивная (CE+)",
+                "voxel_count": ce_pos_voxels,
+                "volume_mm3": round(ce_pos_voxels * voxel_vol_mm3, 2),
+                "volume_cm3": round(ce_pos_voxels * voxel_vol_mm3 / 1000, 4),
+            },
+            "ce_negative": {
+                "name": "CE− (Non-enhancing)",
+                "name_ru": "Контраст-негативная (CE−)",
+                "voxel_count": ce_neg_voxels,
+                "volume_mm3": round(ce_neg_voxels * voxel_vol_mm3, 2),
+                "volume_cm3": round(ce_neg_voxels * voxel_vol_mm3 / 1000, 4),
+            },
+            "tumor_core": {
+                "name": "Total tumor (CE+ + CE−)",
+                "name_ru": "Суммарная опухоль (CE+ + CE−)",
+                "voxel_count": tumor_core_voxels,
+                "volume_mm3": round(tumor_core_voxels * voxel_vol_mm3, 2),
+                "volume_cm3": round(tumor_core_voxels * voxel_vol_mm3 / 1000, 4),
+            },
+            "edema": {
+                "name": "Peritumoral edema",
+                "name_ru": "Перитуморальный отёк",
+                "voxel_count": ed_voxels,
+                "volume_mm3": round(ed_voxels * voxel_vol_mm3, 2),
+                "volume_cm3": round(ed_voxels * voxel_vol_mm3 / 1000, 4),
+            },
+        }
+
         results["classes"][label] = {
             "name": name,
             "voxel_count": count,
@@ -146,6 +186,20 @@ def format_report(volumes: dict) -> str:
         f"  {'TOTAL TUMOR':<34} {total['voxel_count']:>8}  "
         f"{total['volume_mm3']:>12.2f}  {total['volume_cm3']:>10.4f}"
     )
+
+    # Clinical summary
+    if "clinical" in volumes:
+        lines.append("")
+        lines.append("CLINICAL SUMMARY (RANO):")
+        lines.append("-" * 60)
+        for key in ["ce_positive", "ce_negative", "tumor_core", "edema"]:
+            cls = volumes["clinical"][key]
+            lines.append(
+                f"  {cls['name']:<34} {cls['voxel_count']:>8}  "
+                f"{cls['volume_mm3']:>12.2f}  {cls['volume_cm3']:>10.4f}"
+            )
+        lines.append("-" * 60)
+        
     lines.append("=" * 60)
 
     return "\n".join(lines)
