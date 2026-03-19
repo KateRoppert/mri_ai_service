@@ -524,6 +524,7 @@ def process_subject_wrapper(args_tuple):
     
     # Set thread limits for this worker (only in parallel mode)
     if threads_per_worker is not None:
+        os.environ['ANTS_RANDOM_SEED'] = '42
         os.environ['OMP_NUM_THREADS'] = str(threads_per_worker)
         os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(threads_per_worker)
         os.environ['ANTS_NUMBER_OF_THREADS'] = str(threads_per_worker)
