@@ -14,6 +14,41 @@ logger = logging.getLogger(__name__)
 
 KAPPA_DATA_URL = "https://kappa.nsu.ru:8061/data-micro-services/v1"
 
+async def _find_dataset_id(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_name: str,
+) -> Optional[int]:
+    """
+    Найти dataset_id по имени через GET /datasets/{user_id}/{user_type_id}.
+    """
+    url = f"{KAPPA_DATA_URL}/datasets/{user_id}/{user_type_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            response = await client.get(url, headers=headers)
+
+        if not response.is_success:
+            logger.warning("Failed to get datasets list: status=%s", response.status_code)
+            return None
+
+        datasets = response.json()
+        if not isinstance(datasets, list):
+            logger.warning("Unexpected datasets response format: %s", type(datasets))
+            return None
+
+        for ds in datasets:
+            if ds.get("datasetName") == dataset_name:
+                return ds.get("datasetId")
+
+        logger.warning("Dataset not found by name: %s", dataset_name)
+        return None
+
+    except Exception as exc:
+        logger.exception("Error finding dataset ID: %s", exc)
+        return None
 
 async def create_dataset(
     token: str,
@@ -39,16 +74,17 @@ async def create_dataset(
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
+        logger.debug("Creating dataset: url=%s, payload=%s", url, payload)
         async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
             response = await client.post(url, json=payload, headers=headers)
 
         if response.is_success:
             result = response.json()
-            logger.info(
-                "Dataset created: name=%s, response=%s", dataset_name, result
-            )
-            # Ответ — строка или число (dataset_id)
-            return int(result) if isinstance(result, (str, int)) else result
+            logger.info("Dataset created: name=%s, response=%s", dataset_name, result)
+            # API возвращает строку-подтверждение, не ID.
+            # Получаем ID через список датасетов пользователя.
+            actual_id = await _find_dataset_id(token, user_id, user_type_id, dataset_name)
+            return actual_id
         else:
             logger.warning(
                 "Failed to create dataset: status=%s, body=%s",
