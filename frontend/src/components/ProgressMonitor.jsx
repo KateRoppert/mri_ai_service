@@ -12,8 +12,7 @@ import {
 import StageProgress from './StageProgress';
 import QualityReport from './QualityReport'; 
 import NIfTIViewer from './NIfTIViewer'; 
-import VolumeReport from './VolumeReport';
-import LobarReport from './LobarReport';
+import ClinicalReport from './ClinicalReport';
 import wsService from '../services/websocket';
 import { getPipelineStatus } from '../services/api';
 
@@ -26,8 +25,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   const [error, setError] = useState(null);
   const [showQualityReport, setShowQualityReport] = useState(false); 
   const [showVisualization, setShowVisualization] = useState(false);
-  const [showVolumeReport, setShowVolumeReport] = useState(false); 
-  const [showLobarReport, setShowLobarReport] = useState(false);
+  const [showClinicalReport, setShowClinicalReport] = useState(false);
 
   /**
    * Подключение к WebSocket при монтировании компонента
@@ -102,21 +100,8 @@ const ProgressMonitor = ({ runId, onComplete }) => {
     setShowVisualization(false);
   };
 
-  const handleShowVolumeReport = () => {
-    setShowVolumeReport(true);
-  };
-
-  const handleCloseVolumeReport = () => {
-    setShowVolumeReport(false);
-  };
-
-  const handleShowLobarReport = () => {
-    setShowLobarReport(true);
-  };
-
-  const handleCloseLobarReport = () => {
-    setShowLobarReport(false);
-  };
+  const handleShowClinicalReport = () => setShowClinicalReport(true);
+  const handleCloseClinicalReport = () => setShowClinicalReport(false);
 
   /**
    * Обновить состояние на основе данных от backend
@@ -235,8 +220,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
             progress={Math.round(stageData.progress)}
             onShowQualityReport={stageData.stage_number === 3 ? handleShowQualityReport : null}
             onShowVisualization={stageData.stage_number === 6 ? handleShowVisualization : null}
-            onShowVolumeReport={stageData.stage_number === 6 ? handleShowVolumeReport : null}
-            onShowLobarReport={stageData.stage_number === 7 ? handleShowLobarReport : null}
+            onShowClinicalReport={(stageData.stage_number === 6 || stageData.stage_number === 7) ? handleShowClinicalReport : null}
             />
         ))
         ) : (
@@ -269,15 +253,10 @@ const ProgressMonitor = ({ runId, onComplete }) => {
         visible={showVisualization}
         onClose={handleCloseVisualization}
       />
-      <VolumeReport
+      <ClinicalReport
         runId={runId}
-        visible={showVolumeReport}
-        onClose={handleCloseVolumeReport}
-      />
-      <LobarReport
-        runId={runId}
-        visible={showLobarReport}
-        onClose={handleCloseLobarReport}
+        visible={showClinicalReport}
+        onClose={handleCloseClinicalReport}
       />
     </Card>
   );

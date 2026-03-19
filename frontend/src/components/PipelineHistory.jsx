@@ -15,7 +15,7 @@ import {
 } from '@ant-design/icons';
 import { getPipelineHistory } from '../services/api';
 
-const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolumeReport, onShowLobarReport }) => {
+const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport }) => {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [total, setTotal] = useState(0);
@@ -207,24 +207,14 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowVolum
               Отчёт
             </Button>
           )}
-          {record.status === 'completed' && record.current_stage >= 6 && (
-            <Button
-              type="link"
-              size="small"
-              icon={<PieChartOutlined />}
-              onClick={() => onShowVolumeReport(record.run_id)}
-            >
-              Объёмы
-            </Button>
-          )}
           {record.status === 'completed' && record.current_stage >= 7 && (
             <Button
               type="link"
               size="small"
-              icon={<EnvironmentOutlined />}
-              onClick={() => onShowLobarReport(record.run_id)}
+              icon={<MedicineBoxOutlined />}
+              onClick={() => onShowClinicalReport(record.run_id)}
             >
-              Локализация
+              Отчёт
             </Button>
           )}
           {record.status === 'completed' && record.current_stage >= 6 && (

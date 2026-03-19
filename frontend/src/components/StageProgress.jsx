@@ -9,11 +9,10 @@ import {
   ClockCircleOutlined,
   FileTextOutlined,
   EyeOutlined,
-  PieChartOutlined,
-  EnvironmentOutlined,
+  MedicineBoxOutlined
 } from '@ant-design/icons';
 
-const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization, onShowVolumeReport, onShowLobarReport }) => {
+const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization, onShowClinicalReport }) => {
   /**
    * Определяем цвет и иконку в зависимости от статуса
    */
@@ -58,8 +57,7 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
   
   // Показываем кнопку визуализации только для 5-го этапа после завершения
   const showVisualizationButton = stageNumber === 6 && status === 'completed' && onShowVisualization;
-  const showVolumeButton = stageNumber === 6 && status === 'completed' && onShowVolumeReport;
-  const showLobarButton = stageNumber === 7 && status === 'completed' && onShowLobarReport;
+  const showClinicalButton = (stageNumber === 6 || stageNumber === 7) && status === 'completed' && onShowClinicalReport;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -85,26 +83,14 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
             </Button>
           )}
 
-          {/* Кнопка отчёта об объёмах */}
-          {showVolumeButton && (
+          {showClinicalButton && stageNumber === 7 && (
             <Button
               type="link"
               size="small"
-              icon={<PieChartOutlined />}
-              onClick={onShowVolumeReport}
+              icon={<MedicineBoxOutlined />}
+              onClick={onShowClinicalReport}
             >
-              Объёмы опухоли
-            </Button>
-          )}
-
-          {showLobarButton && (
-            <Button
-              type="link"
-              size="small"
-              icon={<EnvironmentOutlined />}
-              onClick={onShowLobarReport}
-            >
-              Локализация
+              Клинический отчёт
             </Button>
           )}
           

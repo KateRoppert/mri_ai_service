@@ -9,8 +9,7 @@ import PipelineForm from './components/PipelineForm';
 import ProgressMonitor from './components/ProgressMonitor';
 import PipelineHistory from './components/PipelineHistory';
 import QualityReport from './components/QualityReport';
-import VolumeReport from './components/VolumeReport';
-import LobarReport from './components/LobarReport';
+import ClinicalReport from './components/ClinicalReport';
 import NIfTIViewer from './components/NIfTIViewer';
 import './App.css';
 
@@ -25,10 +24,8 @@ function App() {
   const [historyVisualizationRunId, setHistoryVisualizationRunId] = useState(null);
   const [showHistoryQualityReport, setShowHistoryQualityReport] = useState(false);
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
-  const [historyVolumeReportRunId, setHistoryVolumeReportRunId] = useState(null);
-  const [showHistoryVolumeReport, setShowHistoryVolumeReport] = useState(false);
-  const [historyLobarReportRunId, setHistoryLobarReportRunId] = useState(null);
-  const [showHistoryLobarReport, setShowHistoryLobarReport] = useState(false);
+  const [historyClinicalReportRunId, setHistoryClinicalReportRunId] = useState(null);
+  const [showHistoryClinicalReport, setShowHistoryClinicalReport] = useState(false);
   const [kappaSession, setKappaSession] = useState(null);
 
   const handleLoginSuccess = (data) => {
@@ -66,14 +63,9 @@ function App() {
     setShowHistoryVisualization(true);
   };
 
-  const handleShowHistoryVolumeReport = (runId) => {
-    setHistoryVolumeReportRunId(runId);
-    setShowHistoryVolumeReport(true);
-  };
-
-  const handleShowHistoryLobarReport = (runId) => {
-    setHistoryLobarReportRunId(runId);
-    setShowHistoryLobarReport(true);
+  const handleShowHistoryClinicalReport = (runId) => {
+    setHistoryClinicalReportRunId(runId);
+    setShowHistoryClinicalReport(true);
   };
 
   /**
@@ -187,8 +179,7 @@ function App() {
                     <PipelineHistory
                       onShowQualityReport={handleShowHistoryQualityReport}
                       onShowVisualization={handleShowHistoryVisualization}
-                      onShowVolumeReport={handleShowHistoryVolumeReport}
-                      onShowLobarReport={handleShowHistoryLobarReport}
+                      onShowClinicalReport={handleShowHistoryClinicalReport}
                     />
                   ),
                 },
@@ -209,18 +200,11 @@ function App() {
                 onClose={() => setShowHistoryVisualization(false)}
               />
             )}
-            {showHistoryVolumeReport && (
-              <VolumeReport
-                runId={historyVolumeReportRunId}
-                visible={showHistoryVolumeReport}
-                onClose={() => setShowHistoryVolumeReport(false)}
-              />
-            )}
-            {showHistoryLobarReport && (
-              <LobarReport
-                runId={historyLobarReportRunId}
-                visible={showHistoryLobarReport}
-                onClose={() => setShowHistoryLobarReport(false)}
+            {showHistoryClinicalReport && (
+              <ClinicalReport
+                runId={historyClinicalReportRunId}
+                visible={showHistoryClinicalReport}
+                onClose={() => setShowHistoryClinicalReport(false)}
               />
             )}
           </>
