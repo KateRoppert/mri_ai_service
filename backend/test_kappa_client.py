@@ -50,53 +50,74 @@ async def main():
 
     print(f"Датасет создан, ID: {dataset_id}")
 
-    # --- 3. Загрузка сущности: DICOM сессия (все модальности) ---
-    print("\n=== Загрузка DICOM сессии как сущности ===")
+    # --- 3. Загрузка DICOM: пробуем разные объёмы ---
+    print("\n=== Тест лимитов загрузки ===")
 
     session_dir = Path("/home/ubuntu/mri_ai_service/demo_workspace/input/13_03_1850/bids_organized/sub-001/ses-001")
+    all_dcm = sorted(session_dir.rglob("*.dcm"))
+    print(f"Всего DICOM файлов: {len(all_dcm)}")
 
-    if not session_dir.exists():
-        print(f"Директория не найдена: {session_dir}")
-        return
-
-    # Собираем все .dcm рекурсивно из всех модальностей
-    dicom_files = sorted(session_dir.rglob("*.dcm"))
-
-    # Определяем модальности (имена подпапок в anat/)
-    modalities = sorted(set(f.parent.name for f in dicom_files))
-
-    print(f"Найдено файлов: {len(dicom_files)}")
-    print(f"Модальности: {modalities}")
-    for mod in modalities:
-        mod_files = [f for f in dicom_files if f.parent.name == mod]
-        print(f"  {mod}: {len(mod_files)} файлов")
-
-    entity_response = await upload_entity(
-        token=token,
-        user_id=user_id,
-        user_type_id=user_type_id,
+    # Тест A: 5 файлов
+    print("\n--- Тест A: 5 файлов ---")
+    resp = await upload_entity(
+        token=token, user_id=user_id, user_type_id=user_type_id,
         dataset_id=dataset_id,
-        entity_name="sub-001_ses-001",
-        file_paths=dicom_files,
-        entity_info={
-            "patient_id": "sub-001",
-            "session_id": "ses-001",
-            "pipeline_stage": "01_bids_organized",
-            "modalities": modalities,
-            "source_dir": str(session_dir),
-            "file_count": len(dicom_files),
-            "files_per_modality": {
-                mod: len([f for f in dicom_files if f.parent.name == mod])
-                for mod in modalities
-            },
-        },
+        entity_name="test_5_files",
+        file_paths=all_dcm[:5],
+        entity_info={"test": "5_files"},
     )
+    print(f"5 файлов: {'OK' if resp else 'FAIL'}")
 
-    if entity_response is None:
-        print("Ошибка загрузки DICOM сущности!")
-        return
+    # Тест B: 50 файлов
+    print("\n--- Тест B: 50 файлов ---")
+    resp = await upload_entity(
+        token=token, user_id=user_id, user_type_id=user_type_id,
+        dataset_id=dataset_id,
+        entity_name="test_50_files",
+        file_paths=all_dcm[:50],
+        entity_info={"test": "50_files"},
+    )
+    print(f"50 файлов: {'OK' if resp else 'FAIL'}")
 
-    print(f"DICOM сущность загружена: {entity_response}")
+    # Тест C: 192 файла (одна модальность)
+    print("\n--- Тест C: 192 файла (t1) ---")
+    t1_files = [f for f in all_dcm if f.parent.name == "t1"]
+    resp = await upload_entity(
+        token=token, user_id=user_id, user_type_id=user_type_id,
+        dataset_id=dataset_id,
+        entity_name="test_192_files_t1",
+        file_paths=t1_files,
+        entity_info={"test": "192_files_t1"},
+    )
+    print(f"192 файлов: {'OK' if resp else 'FAIL'}")
+
+    # Тест D: 1 NIfTI файл
+    print("\n--- Тест D: 1 NIfTI файл ---")
+    nifti_dir = Path("/home/ubuntu/mri_ai_service/demo_workspace/input/13_03_1850/nifti/sub-001/ses-001")
+    nifti_files = sorted(nifti_dir.rglob("*.nii.gz")) if nifti_dir.exists() else []
+    if nifti_files:
+        resp = await upload_entity(
+            token=token, user_id=user_id, user_type_id=user_type_id,
+            dataset_id=dataset_id,
+            entity_name="test_1_nifti",
+            file_paths=nifti_files[:1],
+            entity_info={"test": "1_nifti", "filename": nifti_files[0].name},
+        )
+        print(f"1 NIfTI: {'OK' if resp else 'FAIL'}")
+
+    # Тест E: 4 NIfTI файла (вся сессия)
+    print("\n--- Тест E: 4 NIfTI файла ---")
+    if nifti_files:
+        resp = await upload_entity(
+            token=token, user_id=user_id, user_type_id=user_type_id,
+            dataset_id=dataset_id,
+            entity_name="test_4_nifti",
+            file_paths=nifti_files,
+            entity_info={"test": "4_nifti"},
+        )
+        print(f"4 NIfTI: {'OK' if resp else 'FAIL'}")
+
+    print("\n=== Тесты завершены ===")
 
     # --- 4. Тест загрузки NIfTI (все модальности одной сессии) ---
     print("\n=== Загрузка NIfTI файлов ===")
