@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+import tempfile
+import zipfile
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,22 @@ async def create_dataset(
         logger.exception("Error creating dataset: %s", exc)
         return None
 
+def _zip_files(file_paths: List[Path], archive_name: str) -> Path:
+    """
+    Упаковать список файлов в zip-архив во временную директорию.
+    Сохраняет структуру: parent_dir/filename (чтобы модальности различались).
+    """
+    tmp_dir = Path(tempfile.mkdtemp())
+    zip_path = tmp_dir / f"{archive_name}.zip"
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fpath in file_paths:
+            # Сохраняем parent/filename (например t1/sub-001_ses-001_T1w_0001.dcm)
+            arcname = f"{fpath.parent.name}/{fpath.name}"
+            zf.write(fpath, arcname)
+
+    logger.info("Created zip: %s (%d files, %.1f MB)", zip_path, len(file_paths), zip_path.stat().st_size / 1024 / 1024)
+    return zip_path
 
 async def upload_entity(
     token: str,
@@ -107,11 +125,20 @@ async def upload_entity(
     entity_info: Optional[Dict[str, Any]] = None,
     entity_source: str = "mri-ai-service",
     labeling_algo: str = "default",
+    zip_as_archive: bool = False,
 ) -> Optional[str]:
     """
     Загрузить сущность (один или несколько файлов) в датасет Kappa.
-    Возвращает ответ сервера или None при ошибке.
+    Если zip_as_archive=True, файлы упаковываются в zip перед загрузкой.
     """
+    zip_path = None
+    try:
+        if zip_as_archive and len(file_paths) > 0:
+            zip_path = _zip_files(file_paths, entity_name)
+            actual_files = [zip_path]
+        else:
+            actual_files = file_paths
+
     url = (
         f"{KAPPA_DATA_URL}/datasets/datasetEntities/new"
         f"/{user_id}/{user_type_id}/{dataset_id}"
@@ -137,7 +164,7 @@ async def upload_entity(
     files = []
     open_handles = []
     try:
-        for fpath in file_paths:
+        for fpath in actual_files:
             if not fpath.exists():
                 logger.warning("File not found, skipping: %s", fpath)
                 continue
@@ -190,3 +217,6 @@ async def upload_entity(
     finally:
         for f in open_handles:
             f.close()
+        if zip_path and zip_path.exists():
+            zip_path.unlink()
+            zip_path.parent.rmdir()
