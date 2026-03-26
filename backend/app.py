@@ -285,7 +285,7 @@ async def start_pipeline(
     )
 
     # Запускаем мониторинг (из асинхронного контекста)
-    asyncio.create_task(pipeline_monitor.start_monitoring(run.run_id, run.output_path))
+    asyncio.create_task(pipeline_monitor.start_monitoring(run.run_id, run.output_path, request.kappa_session_id))
 
     logger.info(f"Pipeline запущен с run_id: {run.run_id}")
     
