@@ -201,40 +201,32 @@ async def upload_entity(
 
         headers = {"Authorization": f"Bearer {token}"}
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
-            verify=False,
-        ) as client:
-            response = await client.post(
-                url, data=data, files=files, headers=headers
-            )
+        # Retry с увеличивающимся таймаутом для больших файлов
+        last_exc = None
+        for attempt in range(3):
+            write_timeout = 300.0 * (attempt + 1)  # 300, 600, 900 сек
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0, read=300.0, write=write_timeout),
+                    verify=False,
+                ) as client:
+                    response = await client.post(
+                        url, data=data, files=files, headers=headers
+                    )
+                last_exc = None
+                break  # Успешно отправлено
+            except httpx.WriteTimeout as exc:
+                last_exc = exc
+                logger.warning(
+                    "WriteTimeout on attempt %d/%d (write_timeout=%.0fs), entity=%s",
+                    attempt + 1, 3, write_timeout, entity_name,
+                )
+                # Пересоздаём file handles для повторной попытки
+                for f in open_handles:
+                    f.seek(0)
 
-        if response.is_success:
-            logger.info(
-                "Entity uploaded: name=%s, dataset_id=%s, files=%d",
-                entity_name,
-                dataset_id,
-                len(files),
-            )
-            return response.text
-        elif response.status_code == 400:
-            # Каппа иногда возвращает 400, но файл при этом сохраняется
-            # (ошибка постобработки, например генерация превью для zip/dicom)
-            logger.warning(
-                "Entity likely uploaded with post-processing error: "
-                "name=%s, dataset_id=%s, status=%s, body=%s",
-                entity_name,
-                dataset_id,
-                response.status_code,
-                response.text[:300],
-            )
-            return f'{{"warning": "400 but likely saved", "entity_name": "{entity_name}"}}'
-        else:
-            logger.warning(
-                "Failed to upload entity: status=%s, body=%s",
-                response.status_code,
-                response.text[:300],
-            )
+        if last_exc is not None:
+            logger.exception("All upload attempts failed for entity: %s", entity_name)
             return None
 
     except Exception as exc:
