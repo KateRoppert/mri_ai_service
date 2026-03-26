@@ -4,17 +4,18 @@
 """
 import json
 import logging
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-import tempfile
-import zipfile
 
 logger = logging.getLogger(__name__)
 
 KAPPA_DATA_URL = "https://kappa.nsu.ru:8061/data-micro-services/v1"
+
 
 async def _find_dataset_id(
     token: str,
@@ -52,6 +53,7 @@ async def _find_dataset_id(
         logger.exception("Error finding dataset ID: %s", exc)
         return None
 
+
 async def create_dataset(
     token: str,
     user_id: int,
@@ -77,6 +79,7 @@ async def create_dataset(
 
     try:
         logger.debug("Creating dataset: url=%s, payload=%s", url, payload)
+
         async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
             response = await client.post(url, json=payload, headers=headers)
 
@@ -98,6 +101,7 @@ async def create_dataset(
         logger.exception("Error creating dataset: %s", exc)
         return None
 
+
 def _zip_files(file_paths: List[Path], archive_name: str) -> Path:
     """
     Упаковать список файлов в zip-архив во временную директорию.
@@ -112,8 +116,12 @@ def _zip_files(file_paths: List[Path], archive_name: str) -> Path:
             arcname = f"{fpath.parent.name}/{fpath.name}"
             zf.write(fpath, arcname)
 
-    logger.info("Created zip: %s (%d files, %.1f MB)", zip_path, len(file_paths), zip_path.stat().st_size / 1024 / 1024)
+    logger.info(
+        "Created zip: %s (%d files, %.1f MB)",
+        zip_path, len(file_paths), zip_path.stat().st_size / 1024 / 1024,
+    )
     return zip_path
+
 
 async def upload_entity(
     token: str,
@@ -130,15 +138,8 @@ async def upload_entity(
     """
     Загрузить сущность (один или несколько файлов) в датасет Kappa.
     Если zip_as_archive=True, файлы упаковываются в zip перед загрузкой.
+    Возвращает ответ сервера или None при ошибке.
     """
-    zip_path = None
-    try:
-        if zip_as_archive and len(file_paths) > 0:
-            zip_path = _zip_files(file_paths, entity_name)
-            actual_files = [zip_path]
-        else:
-            actual_files = file_paths
-
     url = (
         f"{KAPPA_DATA_URL}/datasets/datasetEntities/new"
         f"/{user_id}/{user_type_id}/{dataset_id}"
@@ -161,9 +162,17 @@ async def upload_entity(
     # multipart: form field + файлы
     data = {"new_dataset_entity": entity_json}
 
+    zip_path = None
     files = []
     open_handles = []
     try:
+        # Если нужен архив — упаковываем
+        if zip_as_archive and len(file_paths) > 0:
+            zip_path = _zip_files(file_paths, entity_name)
+            actual_files = [zip_path]
+        else:
+            actual_files = file_paths
+
         for fpath in actual_files:
             if not fpath.exists():
                 logger.warning("File not found, skipping: %s", fpath)
@@ -176,6 +185,8 @@ async def upload_entity(
                 ct = "application/json"
             elif suffix == ".gz":
                 ct = "application/gzip"
+            elif suffix == ".zip":
+                ct = "application/zip"
             elif suffix in (".png", ".jpg", ".jpeg"):
                 ct = f"image/{suffix.lstrip('.')}"
             elif suffix == ".dcm":
@@ -190,7 +201,10 @@ async def upload_entity(
 
         headers = {"Authorization": f"Bearer {token}"}
 
-        async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
+            verify=False,
+        ) as client:
             response = await client.post(
                 url, data=data, files=files, headers=headers
             )
@@ -203,6 +217,18 @@ async def upload_entity(
                 len(files),
             )
             return response.text
+        elif response.status_code == 400:
+            # Каппа иногда возвращает 400, но файл при этом сохраняется
+            # (ошибка постобработки, например генерация превью для zip/dicom)
+            logger.warning(
+                "Entity likely uploaded with post-processing error: "
+                "name=%s, dataset_id=%s, status=%s, body=%s",
+                entity_name,
+                dataset_id,
+                response.status_code,
+                response.text[:300],
+            )
+            return f'{{"warning": "400 but likely saved", "entity_name": "{entity_name}"}}'
         else:
             logger.warning(
                 "Failed to upload entity: status=%s, body=%s",
