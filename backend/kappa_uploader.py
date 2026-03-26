@@ -73,8 +73,6 @@ class KappaUploader:
 
         self._dataset_ids: Dict[str, int] = {}
         self._uploaded_files: Set[str] = set()
-        self._uploaded_entities: Set[str] = set()
-        self._lock = asyncio.Lock()
 
     async def _ensure_dataset(self, folder_name: str) -> Optional[int]:
         """Создать датасет для папки, если ещё не создан."""
@@ -143,10 +141,6 @@ class KappaUploader:
         return sessions
 
     async def upload_folder(self, folder_name: str) -> int:
-        """
-        Загрузить новые файлы из указанной папки.
-        Возвращает количество загруженных сущностей.
-        """
         if folder_name not in STAGE_FOLDERS:
             logger.warning("Unknown folder: %s", folder_name)
             return 0
@@ -155,72 +149,59 @@ class KappaUploader:
         if not folder_path.exists():
             return 0
 
-        async with self._lock:
-            sessions = self._discover_sessions(folder_path)
-            if not sessions:
-                return 0
+        sessions = self._discover_sessions(folder_path)
+        if not sessions:
+            return 0
 
-            dataset_id = await self._ensure_dataset(folder_name)
-            if dataset_id is None:
-                return 0
+        dataset_id = await self._ensure_dataset(folder_name)
+        if dataset_id is None:
+            return 0
 
-            config = STAGE_FOLDERS[folder_name]
-            use_zip = config["zip"]
-            uploaded_count = 0
+        config = STAGE_FOLDERS[folder_name]
+        use_zip = config["zip"]
+        uploaded_count = 0
 
-            for session_key, file_paths in sessions.items():
-                entity_key = f"{folder_name}:{session_key}"
-                if entity_key in self._uploaded_entities:
-                    continue
+        for session_key, file_paths in sessions.items():
+            entity_info = {
+                "run_id": self.run_id,
+                "pipeline_stage": folder_name,
+                "session": session_key,
+                "file_count": len(file_paths),
+                "filenames": [f.name for f in file_paths],
+            }
 
-                entity_info = {
-                    "run_id": self.run_id,
-                    "pipeline_stage": folder_name,
-                    "session": session_key,
-                    "file_count": len(file_paths),
-                }
+            if use_zip and session_key != "_meta":
+                modalities = sorted(set(
+                    f.parent.name for f in file_paths
+                    if f.parent.name not in ("anat", folder_name)
+                    and not f.parent.name.startswith("sub-")
+                    and not f.parent.name.startswith("ses-")
+                ))
+                if modalities:
+                    entity_info["modalities"] = modalities
+                entity_info["archive_format"] = "zip"
 
-                should_zip = use_zip and session_key != "_meta"
-                if should_zip:
-                    modalities = sorted(set(
-                        f.parent.name for f in file_paths
-                        if f.parent.name not in ("anat", folder_name)
-                        and not f.parent.name.startswith("sub-")
-                        and not f.parent.name.startswith("ses-")
-                    ))
-                    if modalities:
-                        entity_info["modalities"] = modalities
-                    entity_info["archive_format"] = "zip"
+            result = await upload_entity(
+                token=self.token,
+                user_id=self.user_id,
+                user_type_id=self.user_type_id,
+                dataset_id=dataset_id,
+                entity_name=session_key,
+                file_paths=file_paths,
+                entity_info=entity_info,
+                zip_as_archive=use_zip and session_key != "_meta",
+            )
 
-                result = await upload_entity(
-                    token=self.token,
-                    user_id=self.user_id,
-                    user_type_id=self.user_type_id,
-                    dataset_id=dataset_id,
-                    entity_name=session_key,
-                    file_paths=file_paths,
-                    entity_info=entity_info,
-                    zip_as_archive=should_zip,
+            if result is not None:
+                uploaded_count += 1
+                logger.info(
+                    "Uploaded entity: %s/%s (%d files), run=%s",
+                    folder_name, session_key, len(file_paths), self.run_id,
                 )
 
-                if result is not None:
-                    for fpath in file_paths:
-                        self._uploaded_files.add(str(fpath))
-                    self._uploaded_entities.add(entity_key)
-                    uploaded_count += 1
-                    logger.info(
-                        "Uploaded entity: %s/%s (%d files), run=%s",
-                        folder_name, session_key, len(file_paths), self.run_id,
-                    )
-                else:
-                    logger.error(
-                        "Failed to upload entity: %s/%s, run=%s",
-                        folder_name, session_key, self.run_id,
-                    )
+            await asyncio.sleep(2)
 
-                await asyncio.sleep(2)
-
-            return uploaded_count
+        return uploaded_count
 
     async def upload_all_new(self) -> Dict[str, int]:
         """
