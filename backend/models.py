@@ -118,6 +118,7 @@ class PipelineStartRequest(BaseModel):
         False, 
         description="Использовать путь по умолчанию для результатов"
     )
+    kappa_session_id: Optional[str] = None
 
     model_config = ConfigDict(
         json_schema_extra={
