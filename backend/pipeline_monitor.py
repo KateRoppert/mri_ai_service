@@ -76,9 +76,6 @@ class PipelineMonitor:
                 run_id, output_path, kappa_session_id
             )
         
-        # Отслеживание завершённых этапов (чтобы не триггерить повторно)
-        uploaded_stages: Set[int] = set()
-        
         try:
             while True:
                 run = get_pipeline_run(db, run_id)
@@ -91,31 +88,16 @@ class PipelineMonitor:
                     logger.info(f"Pipeline {run_id} завершён со статусом: {run.status}")
                     await self._send_update(run_id, output_path, db)
                     
-                    # Финальная загрузка в Kappa
+                    # Загрузка в Kappa после завершения пайплайна
                     if kappa_uploader and run.status == "completed":
+                        logger.info("Starting Kappa upload for completed run %s", run_id)
                         asyncio.create_task(
                             self._kappa_upload_safe(kappa_uploader)
                         )
                     break
                 
                 # Парсим логи и отправляем обновление
-                progress_info = await self._send_update(run_id, output_path, db)
-                
-                # Триггерим загрузку в Kappa при завершении этапа
-                if kappa_uploader and progress_info:
-                    for stage_num, stage_data in progress_info['stages'].items():
-                        if (
-                            stage_data['status'] == 'completed'
-                            and stage_num not in uploaded_stages
-                        ):
-                            uploaded_stages.add(stage_num)
-                            logger.info(
-                                "Stage %d completed, triggering Kappa upload for run %s",
-                                stage_num, run_id,
-                            )
-                            asyncio.create_task(
-                                self._kappa_upload_safe(kappa_uploader)
-                            )
+                await self._send_update(run_id, output_path, db)
                 
                 await asyncio.sleep(1)
         
