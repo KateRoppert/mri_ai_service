@@ -193,28 +193,54 @@ class KappaUploader:
                 }
 
                 if use_zip:
-                    # Для DICOM: определяем модальности из подпапок
-                    modalities = sorted(set(
-                        f.parent.name for f in file_paths
-                        if not f.parent.name.startswith("sub-")
-                        and not f.parent.name.startswith("ses-")
-                        and f.parent.name != "anat"
-                        and f.parent.name != folder_name
-                    ))
-                    if modalities:
-                        entity_info["modalities"] = modalities
-                    entity_info["archive_format"] = "zip"
+                    # Для DICOM: группируем по модальности и создаём отдельный zip на каждую
+                    from collections import defaultdict
+                    by_modality = defaultdict(list)
+                    for f in file_paths:
+                        mod = f.parent.name
+                        by_modality[mod].append(f)
 
-                result = await upload_entity(
-                    token=self.token,
-                    user_id=self.user_id,
-                    user_type_id=self.user_type_id,
-                    dataset_id=dataset_id,
-                    entity_name=entity_name,
-                    file_paths=file_paths,
-                    entity_info=entity_info,
-                    zip_as_archive=use_zip,
-                )
+                    modalities = sorted(by_modality.keys())
+                    entity_info["modalities"] = modalities
+                    entity_info["archive_format"] = "zip_per_modality"
+
+                    # Создаём zip для каждой модальности
+                    from kappa_client import _zip_files
+                    import tempfile
+                    zip_paths = []
+                    for mod, mod_files in sorted(by_modality.items()):
+                        zp = _zip_files(mod_files, f"{session_key}_{mod}")
+                        zip_paths.append(zp)
+
+                    result = await upload_entity(
+                        token=self.token,
+                        user_id=self.user_id,
+                        user_type_id=self.user_type_id,
+                        dataset_id=dataset_id,
+                        entity_name=entity_name,
+                        file_paths=zip_paths,
+                        entity_info=entity_info,
+                        zip_as_archive=False,  # уже zip, не архивировать повторно
+                    )
+
+                    # Чистим временные zip
+                    for zp in zip_paths:
+                        try:
+                            zp.unlink()
+                            zp.parent.rmdir()
+                        except Exception:
+                            pass
+                else:
+                    result = await upload_entity(
+                        token=self.token,
+                        user_id=self.user_id,
+                        user_type_id=self.user_type_id,
+                        dataset_id=dataset_id,
+                        entity_name=entity_name,
+                        file_paths=file_paths,
+                        entity_info=entity_info,
+                        zip_as_archive=False,
+                    )
 
                 if result is not None:
                     # Помечаем файлы и сущность как загруженные
