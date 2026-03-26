@@ -4,7 +4,6 @@
 """
 import asyncio
 import logging
-import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -17,7 +16,7 @@ STAGE_FOLDERS = {
     "bids_organized": {
         "description": "DICOM файлы после BIDS-реорганизации и деперсонализации",
         "tags": "mri,dicom,bids",
-        "zip": True,  # DICOM пакуем в zip
+        "zip": True,
     },
     "metadata": {
         "description": "Метаданные сессий (извлечённые из DICOM)",
@@ -72,16 +71,9 @@ class KappaUploader:
         self.user_id = user_id
         self.user_type_id = user_type_id
 
-        # dataset_id для каждой папки (создаётся лениво)
         self._dataset_ids: Dict[str, int] = {}
-
-        # Множество уже загруженных файлов (полные пути)
         self._uploaded_files: Set[str] = set()
-
-        # Множество уже загруженных сущностей (folder + session key)
         self._uploaded_entities: Set[str] = set()
-
-        # Блокировка для предотвращения параллельных загрузок одного этапа
         self._lock = asyncio.Lock()
 
     async def _ensure_dataset(self, folder_name: str) -> Optional[int]:
@@ -90,7 +82,9 @@ class KappaUploader:
             return self._dataset_ids[folder_name]
 
         config = STAGE_FOLDERS[folder_name]
-        dataset_name = f"run_{self.run_id}_{folder_name}"
+        # Используем первые 8 символов run_id чтобы уложиться в лимит имени Kappa
+        short_id = self.run_id[:8]
+        dataset_name = f"{short_id}_{folder_name}"
 
         dataset_id = await create_dataset(
             token=self.token,
@@ -105,23 +99,23 @@ class KappaUploader:
         if dataset_id is not None:
             self._dataset_ids[folder_name] = dataset_id
             logger.info(
-                "Kappa dataset created: folder=%s, dataset_id=%s, run=%s",
+                "Kappa dataset ready: folder=%s, dataset_id=%s, run=%s",
                 folder_name, dataset_id, self.run_id,
             )
         else:
             logger.error(
-                "Failed to create Kappa dataset: folder=%s, run=%s",
+                "Failed to create/find Kappa dataset: folder=%s, run=%s",
                 folder_name, self.run_id,
             )
 
+        await asyncio.sleep(1)
         return dataset_id
 
     def _discover_sessions(self, folder_path: Path) -> Dict[str, list]:
         """
         Сканирует папку и группирует файлы по сессиям.
         Возвращает {session_key: [file_paths]}, где session_key = "sub-XXX_ses-XXX".
-        Файлы в incomplete_data и корне (dataset_mapping.json и т.п.) 
-        группируются в сессию "_meta".
+        Файлы в incomplete_data и корне группируются в сессию "_meta".
         """
         sessions: Dict[str, list] = {}
 
@@ -132,11 +126,9 @@ class KappaUploader:
             if not fpath.is_file():
                 continue
 
-            # Пропускаем уже загруженные
             if str(fpath) in self._uploaded_files:
                 continue
 
-            # Определяем session_key из пути
             rel = fpath.relative_to(folder_path)
             parts = rel.parts
 
@@ -188,12 +180,12 @@ class KappaUploader:
                     "file_count": len(file_paths),
                 }
 
-                if use_zip and session_key != "_meta":
+                should_zip = use_zip and session_key != "_meta"
+                if should_zip:
                     modalities = sorted(set(
                         f.parent.name for f in file_paths
-                        if f.parent.name not in (
-                            "anat", folder_name,
-                        ) and not f.parent.name.startswith("sub-")
+                        if f.parent.name not in ("anat", folder_name)
+                        and not f.parent.name.startswith("sub-")
                         and not f.parent.name.startswith("ses-")
                     ))
                     if modalities:
@@ -208,7 +200,7 @@ class KappaUploader:
                     entity_name=session_key,
                     file_paths=file_paths,
                     entity_info=entity_info,
-                    zip_as_archive=use_zip and session_key != "_meta",
+                    zip_as_archive=should_zip,
                 )
 
                 if result is not None:
@@ -219,6 +211,11 @@ class KappaUploader:
                     logger.info(
                         "Uploaded entity: %s/%s (%d files), run=%s",
                         folder_name, session_key, len(file_paths), self.run_id,
+                    )
+                else:
+                    logger.error(
+                        "Failed to upload entity: %s/%s, run=%s",
+                        folder_name, session_key, self.run_id,
                     )
 
                 await asyncio.sleep(2)
