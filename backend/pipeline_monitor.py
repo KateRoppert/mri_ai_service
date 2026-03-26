@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 import logging
-from typing import Optional
+from typing import Optional, Set
 
 from database import SessionLocal, get_pipeline_run, update_pipeline_run, update_stage_execution
 from pipeline_manager import PipelineManager
@@ -23,13 +23,14 @@ class PipelineMonitor:
         self.pipeline_manager = PipelineManager()
         self.monitoring_tasks = {}  # run_id -> asyncio.Task
     
-    async def start_monitoring(self, run_id: str, output_path: str):
+    async def start_monitoring(
+        self,
+        run_id: str,
+        output_path: str,
+        kappa_session_id: Optional[str] = None,
+    ):
         """
         Запускает мониторинг для конкретного run_id
-        
-        Args:
-            run_id: ID запуска
-            output_path: Путь к выходной директории
         """
         if run_id in self.monitoring_tasks:
             logger.warning(f"Мониторинг для run_id {run_id} уже запущен")
@@ -37,17 +38,13 @@ class PipelineMonitor:
         
         logger.info(f"Запуск мониторинга для run_id: {run_id}")
         
-        # Создаём задачу мониторинга
-        task = asyncio.create_task(self._monitor_loop(run_id, output_path))
+        task = asyncio.create_task(
+            self._monitor_loop(run_id, output_path, kappa_session_id)
+        )
         self.monitoring_tasks[run_id] = task
     
     async def stop_monitoring(self, run_id: str):
-        """
-        Останавливает мониторинг для run_id
-        
-        Args:
-            run_id: ID запуска
-        """
+        """Останавливает мониторинг для run_id"""
         if run_id not in self.monitoring_tasks:
             return
         
@@ -63,39 +60,64 @@ class PipelineMonitor:
         
         del self.monitoring_tasks[run_id]
     
-    async def _monitor_loop(self, run_id: str, output_path: str):
-        """
-        Основной цикл мониторинга
-        
-        Args:
-            run_id: ID запуска
-            output_path: Путь к выходной директории
-        """
+    async def _monitor_loop(
+        self,
+        run_id: str,
+        output_path: str,
+        kappa_session_id: Optional[str] = None,
+    ):
+        """Основной цикл мониторинга"""
         db = SessionLocal()
         
+        # Инициализация Kappa uploader
+        kappa_uploader = None
+        if kappa_session_id:
+            kappa_uploader = self._create_kappa_uploader(
+                run_id, output_path, kappa_session_id
+            )
+        
+        # Отслеживание завершённых этапов (чтобы не триггерить повторно)
+        uploaded_stages: Set[int] = set()
+        
         try:
-            
             while True:
-                # Получаем текущий статус из БД
                 run = get_pipeline_run(db, run_id)
                 
                 if not run:
                     logger.error(f"Run {run_id} не найден в БД")
                     break
                 
-                # Если pipeline завершён или упал - останавливаем мониторинг
                 if run.status in ["completed", "failed"]:
                     logger.info(f"Pipeline {run_id} завершён со статусом: {run.status}")
-                    
-                    # Отправляем финальное обновление
                     await self._send_update(run_id, output_path, db)
+                    
+                    # Финальная загрузка в Kappa
+                    if kappa_uploader and run.status == "completed":
+                        asyncio.create_task(
+                            self._kappa_upload_safe(kappa_uploader)
+                        )
                     break
                 
                 # Парсим логи и отправляем обновление
-                await self._send_update(run_id, output_path, db)
+                progress_info = await self._send_update(run_id, output_path, db)
                 
-                # Ждём перед следующей проверкой
-                await asyncio.sleep(1)  # Проверяем каждую секунду
+                # Триггерим загрузку в Kappa при завершении этапа
+                if kappa_uploader and progress_info:
+                    for stage_num, stage_data in progress_info['stages'].items():
+                        if (
+                            stage_data['status'] == 'completed'
+                            and stage_num not in uploaded_stages
+                        ):
+                            uploaded_stages.add(stage_num)
+                            logger.info(
+                                "Stage %d completed, triggering Kappa upload for run %s",
+                                stage_num, run_id,
+                            )
+                            asyncio.create_task(
+                                self._kappa_upload_safe(kappa_uploader)
+                            )
+                
+                await asyncio.sleep(1)
         
         except asyncio.CancelledError:
             logger.info(f"Мониторинг для run_id {run_id} отменён")
@@ -106,26 +128,57 @@ class PipelineMonitor:
         finally:
             db.close()
     
+    def _create_kappa_uploader(
+        self,
+        run_id: str,
+        output_path: str,
+        kappa_session_id: str,
+    ):
+        """Создать KappaUploader из session_id"""
+        try:
+            from kappa_auth import get_session
+            from kappa_uploader import KappaUploader
+
+            session = get_session(kappa_session_id)
+            if not session:
+                logger.warning("Kappa session not found: %s", kappa_session_id)
+                return None
+
+            uploader = KappaUploader(
+                run_id=run_id,
+                output_path=output_path,
+                token=session["kappa_token"],
+                user_id=session["user_id"],
+                user_type_id=session["user_type_id"],
+            )
+            logger.info("KappaUploader created for run %s", run_id)
+            return uploader
+
+        except Exception as e:
+            logger.error("Failed to create KappaUploader: %s", e)
+            return None
+    
+    async def _kappa_upload_safe(self, uploader):
+        """Обёртка для безопасного вызова upload_all_new"""
+        try:
+            results = await uploader.upload_all_new()
+            if results:
+                logger.info("Kappa upload results: %s", results)
+        except Exception as e:
+            logger.error("Kappa upload error: %s", e)
+    
     async def _send_update(self, run_id: str, output_path: str, db):
         """
-        Парсит логи и отправляет обновление через WebSocket
-        
-        Args:
-            run_id: ID запуска
-            output_path: Путь к выходной директории
-            db: Сессия БД
+        Парсит логи и отправляет обновление через WebSocket.
+        Возвращает progress_info для использования в мониторе.
         """
-        # Получаем лог-файл
         log_path = self.pipeline_manager.get_log_file(output_path)
         
         if not log_path:
-            # Логи ещё не созданы
-            return
+            return None
         
-        # Парсим прогресс
         progress_info = self.pipeline_manager.parse_log_for_progress(log_path)
         
-        # Обновляем БД
         if progress_info['current_stage'] > 0:
             update_pipeline_run(
                 db,
@@ -134,7 +187,6 @@ class PipelineMonitor:
                 overall_progress=progress_info['overall_progress']
             )
             
-            # Обновляем статусы этапов
             for stage_num, stage_data in progress_info['stages'].items():
                 update_stage_execution(
                     db,
@@ -146,7 +198,6 @@ class PipelineMonitor:
                     completed_at=datetime.utcnow() if stage_data['status'] == 'completed' else None
                 )
         
-        # Формируем сообщение для WebSocket
         run = get_pipeline_run(db, run_id)
         
         message = {
@@ -167,8 +218,9 @@ class PipelineMonitor:
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        # Отправляем через WebSocket
         await ws_manager.broadcast(run_id, message)
+        
+        return progress_info
 
 
 # Создаём глобальный экземпляр
