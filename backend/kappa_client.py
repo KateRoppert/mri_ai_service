@@ -96,6 +96,18 @@ async def create_dataset(
                 response.status_code,
                 response.text[:300],
             )
+            # Возможно, датасет с таким именем уже существует
+            if response.status_code == 400:
+                logger.info("Trying to find existing dataset: %s", dataset_name)
+                existing_id = await _find_dataset_id(
+                    token, user_id, user_type_id, dataset_name
+                )
+                if existing_id is not None:
+                    logger.info(
+                        "Found existing dataset: name=%s, id=%s",
+                        dataset_name, existing_id,
+                    )
+                return existing_id
             return None
     except Exception as exc:
         logger.exception("Error creating dataset: %s", exc)
