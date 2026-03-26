@@ -18,10 +18,12 @@ const apiClient = axios.create({
  * Запуск pipeline
  */
 export const startPipeline = async (inputPath, outputPath, useDefaultOutput = false) => {
+  const kappaSessionId = localStorage.getItem('kappa_session_id');
   const response = await apiClient.post('/pipeline/start', {
     input_path: inputPath,
     output_path: outputPath,
     use_default_output: useDefaultOutput,
+    kappa_session_id: kappaSessionId,
   });
   return response.data;
 };
