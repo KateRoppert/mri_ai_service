@@ -17,13 +17,14 @@ const apiClient = axios.create({
 /**
  * Запуск pipeline
  */
-export const startPipeline = async (inputPath, outputPath, useDefaultOutput = false) => {
+export const startPipeline = async (inputPath, outputPath, useDefaultOutput = false, lesionType = null) => {
   const kappaSessionId = localStorage.getItem('kappa_session_id');
   const response = await apiClient.post('/pipeline/start', {
     input_path: inputPath,
     output_path: outputPath,
     use_default_output: useDefaultOutput,
     kappa_session_id: kappaSessionId,
+    lesion_type: lesionType,
   });
   return response.data;
 };
@@ -91,6 +92,14 @@ export const getLobarAtlasUrl = (runId) => {
   return `http://localhost:8000/api/lobar-atlas/${runId}`;
 };
 
+/**
+ * Получить список типов поражений
+ */
+export const getLesionTypes = async () => {
+  const response = await apiClient.get('/kappa/lesion-types');
+  return response.data;
+};
+
 export default {
   startPipeline,
   getPipelineStatus,
@@ -98,6 +107,7 @@ export default {
   getQualityReport,
   getVolumeReports,
   getNIfTIFiles,     
-  getNIfTIFileUrl,    
+  getNIfTIFileUrl, 
+  getLesionTypes,   
 };
 
