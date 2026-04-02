@@ -1,59 +1,25 @@
 """
-Модуль загрузки результатов пайплайна в Kappa.
-Отслеживает завершение этапов, создаёт датасеты и загружает сущности.
+Загрузка итоговых результатов пайплайна в Kappa.
+Один датасет (по lesion_type + preprocessing_id).
+Одна сущность = одна сессия (4 preprocessed NIfTI + 1 маска сегментации).
+dsEntityInfo = quality reports + volume report + lobar report + параметры запуска.
 """
 import asyncio
+import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Tuple
 
 from kappa_client import create_dataset, upload_entity
+from kappa_dataset_mapping import get_dataset_id, set_dataset_id
+from preprocessing_version import compute_preprocessing_id
 
 logger = logging.getLogger(__name__)
-
-# Папки, которые мониторим. Ключ — имя папки, значение — описание для датасета.
-STAGE_FOLDERS = {
-    "bids_organized": {
-        "description": "DICOM файлы после BIDS-реорганизации и деперсонализации",
-        "tags": "mri,dicom,bids",
-        "zip": True,
-    },
-    "metadata": {
-        "description": "Метаданные сессий (извлечённые из DICOM)",
-        "tags": "mri,metadata,json",
-        "zip": False,
-    },
-    "nifti": {
-        "description": "NIfTI файлы после конвертации из DICOM",
-        "tags": "mri,nifti,conversion",
-        "zip": False,
-    },
-    "quality_reports": {
-        "description": "Отчёты о качестве изображений",
-        "tags": "mri,quality,assessment",
-        "zip": False,
-    },
-    "preprocessed": {
-        "description": "Предобработанные NIfTI (коррекция, регистрация, нормализация)",
-        "tags": "mri,nifti,preprocessed",
-        "zip": False,
-    },
-    "transformations": {
-        "description": "Матрицы трансформаций и маски мозга",
-        "tags": "mri,transformations,registration",
-        "zip": False,
-    },
-    "segmentation": {
-        "description": "Маски сегментации, отчёты об объёмах и лобарной локализации",
-        "tags": "mri,segmentation,lesion",
-        "zip": False,
-    },
-}
 
 
 class KappaUploader:
     """
-    Управляет загрузкой результатов пайплайна в Kappa.
+    Загружает итоговые результаты пайплайна в Kappa.
     Один экземпляр на один запуск пайплайна (run_id).
     """
 
@@ -64,153 +30,354 @@ class KappaUploader:
         token: str,
         user_id: int,
         user_type_id: int,
+        lesion_type: str,
+        preprocessing_config_path: str,
     ):
         self.run_id = run_id
         self.output_path = Path(output_path)
         self.token = token
         self.user_id = user_id
         self.user_type_id = user_type_id
+        self.lesion_type = lesion_type
+        self.preprocessing_config_path = preprocessing_config_path
 
-        self._dataset_ids: Dict[str, int] = {}
-        self._uploaded_files: Set[str] = set()
+        # Вычисляем preprocessing_id
+        self.preprocessing_id = compute_preprocessing_id(preprocessing_config_path)
+        logger.info(
+            "KappaUploader: run=%s, lesion=%s, prep_id=%s",
+            run_id, lesion_type, self.preprocessing_id,
+        )
 
-    async def _ensure_dataset(self, folder_name: str) -> Optional[int]:
-        """Создать датасет для папки, если ещё не создан."""
-        if folder_name in self._dataset_ids:
-            return self._dataset_ids[folder_name]
+    async def upload_results(self) -> Dict[str, Any]:
+        """
+        Основной метод: загрузить все сессии в Kappa.
+        Возвращает отчёт о загрузке.
+        """
+        # 1. Получаем dataset_id
+        dataset_id = await self._resolve_dataset_id()
+        if dataset_id is None:
+            return {"error": "Failed to resolve dataset_id"}
 
-        config = STAGE_FOLDERS[folder_name]
-        # Используем первые 8 символов run_id чтобы уложиться в лимит имени Kappa
-        short_id = self.run_id[:8]
-        dataset_name = f"{short_id}_{folder_name}"
+        # 2. Находим все сессии
+        sessions = self._discover_sessions()
+        if not sessions:
+            logger.warning("No sessions found in %s", self.output_path)
+            return {"uploaded": 0, "sessions": []}
 
-        dataset_id = await create_dataset(
+        # 3. Загружаем каждую сессию
+        results = []
+        for session_key, session_data in sessions.items():
+            result = await self._upload_session(
+                dataset_id, session_key, session_data
+            )
+            results.append(result)
+            await asyncio.sleep(2)  # Пауза между запросами
+
+        uploaded = sum(1 for r in results if r.get("success"))
+        logger.info(
+            "Upload complete: %d/%d sessions, run=%s",
+            uploaded, len(results), self.run_id,
+        )
+
+        return {
+            "dataset_id": dataset_id,
+            "uploaded": uploaded,
+            "total": len(results),
+            "sessions": results,
+        }
+
+    async def _resolve_dataset_id(self) -> Optional[int]:
+        """Получить dataset_id из маппинга или создать новый."""
+        dataset_id = get_dataset_id(self.lesion_type, self.preprocessing_id)
+
+        if dataset_id is not None:
+            logger.info(
+                "Using existing dataset: lesion=%s, prep=%s, id=%d",
+                self.lesion_type, self.preprocessing_id, dataset_id,
+            )
+            return dataset_id
+
+        # Создаём новый датасет в Каппе
+        logger.info(
+            "Creating new dataset: lesion=%s, prep=%s",
+            self.lesion_type, self.preprocessing_id,
+        )
+        short_id = self.preprocessing_id[:8]
+        dataset_name = f"{self.lesion_type}_{short_id}"
+
+        new_id = await create_dataset(
             token=self.token,
             user_id=self.user_id,
             user_type_id=self.user_type_id,
             dataset_name=dataset_name,
-            dataset_short_info=config["description"],
-            dataset_type=1,
-            dataset_tags=config["tags"],
+            dataset_short_info=(
+                f"Lesion: {self.lesion_type}, "
+                f"Preprocessing: {self.preprocessing_id}"
+            ),
+            dataset_type=1,  # Image dataset
+            dataset_tags=f"mri,{self.lesion_type},segmentation",
         )
 
-        if dataset_id is not None:
-            self._dataset_ids[folder_name] = dataset_id
-            logger.info(
-                "Kappa dataset ready: folder=%s, dataset_id=%s, run=%s",
-                folder_name, dataset_id, self.run_id,
-            )
-        else:
-            logger.error(
-                "Failed to create/find Kappa dataset: folder=%s, run=%s",
-                folder_name, self.run_id,
-            )
+        if new_id is not None:
+            set_dataset_id(self.lesion_type, self.preprocessing_id, new_id)
+            logger.info("New dataset created: id=%d", new_id)
 
-        await asyncio.sleep(1)
-        return dataset_id
+        return new_id
 
-    def _discover_sessions(self, folder_path: Path) -> Dict[str, list]:
+    def _discover_sessions(self) -> Dict[str, Dict[str, Any]]:
         """
-        Сканирует папку и группирует файлы по сессиям.
-        Возвращает {session_key: [file_paths]}, где session_key = "sub-XXX_ses-XXX".
-        Файлы в incomplete_data и корне группируются в сессию "_meta".
+        Сканирует preprocessed/ и segmentation/ и группирует по сессиям.
+        Возвращает: {session_key: {preprocessed: [...], mask: Path, quality: [...], ...}}
         """
-        sessions: Dict[str, list] = {}
+        sessions: Dict[str, Dict[str, Any]] = {}
 
-        if not folder_path.exists():
+        preprocessed_dir = self.output_path / "preprocessed"
+        segmentation_dir = self.output_path / "segmentation"
+        quality_dir = self.output_path / "quality_reports"
+
+        if not preprocessed_dir.exists() or not segmentation_dir.exists():
+            logger.warning(
+                "preprocessed or segmentation dir not found in %s",
+                self.output_path,
+            )
             return sessions
 
-        for fpath in sorted(folder_path.rglob("*")):
-            if not fpath.is_file():
+        # Находим preprocessed NIfTI, группируем по сессии
+        for nifti in sorted(preprocessed_dir.rglob("*.nii.gz")):
+            session_key = self._extract_session_key(nifti)
+            if not session_key:
                 continue
+            sessions.setdefault(session_key, {
+                "preprocessed": [],
+                "masks": [],
+                "quality_reports": [],
+                "volume_report": None,
+                "lobar_report": None,
+            })
+            sessions[session_key]["preprocessed"].append(nifti)
 
-            if str(fpath) in self._uploaded_files:
-                continue
+        # Находим маски сегментации
+        for mask in sorted(segmentation_dir.rglob("*_segmask.nii.gz")):
+            session_key = self._extract_session_key(mask)
+            if session_key and session_key in sessions:
+                sessions[session_key]["masks"].append(mask)
 
-            rel = fpath.relative_to(folder_path)
-            parts = rel.parts
+        # Находим native маски (из inverse transform)
+        for mask in sorted(segmentation_dir.rglob("*_segmask_native_*.nii.gz")):
+            session_key = self._extract_session_key(mask)
+            if session_key and session_key in sessions:
+                sessions[session_key]["masks"].append(mask)
 
-            session_key = "_meta"
-            for i, part in enumerate(parts):
-                if part.startswith("sub-") and i + 1 < len(parts) and parts[i + 1].startswith("ses-"):
-                    session_key = f"{part}_{parts[i + 1]}"
-                    break
+        # Находим quality reports
+        if quality_dir.exists():
+            for qr in sorted(quality_dir.rglob("*_quality.json")):
+                session_key = self._extract_session_key(qr)
+                if session_key and session_key in sessions:
+                    sessions[session_key]["quality_reports"].append(qr)
 
-            sessions.setdefault(session_key, []).append(fpath)
+        # Находим volume reports
+        for vr in sorted(segmentation_dir.rglob("*_volume_report.txt")):
+            session_key = self._extract_session_key(vr)
+            if session_key and session_key in sessions:
+                sessions[session_key]["volume_report"] = vr
+
+        # Находим lobar reports
+        for lr in sorted(segmentation_dir.rglob("*_lobar_report.json")):
+            session_key = self._extract_session_key(lr)
+            if session_key and session_key in sessions:
+                sessions[session_key]["lobar_report"] = lr
+
+        logger.info("Discovered %d sessions", len(sessions))
+        for sk, sd in sessions.items():
+            logger.info(
+                "  %s: %d preprocessed, %d masks, %d quality, volume=%s, lobar=%s",
+                sk,
+                len(sd["preprocessed"]),
+                len(sd["masks"]),
+                len(sd["quality_reports"]),
+                sd["volume_report"] is not None,
+                sd["lobar_report"] is not None,
+            )
 
         return sessions
 
-    async def upload_folder(self, folder_name: str) -> int:
-        if folder_name not in STAGE_FOLDERS:
-            logger.warning("Unknown folder: %s", folder_name)
-            return 0
+    def _extract_session_key(self, filepath: Path) -> Optional[str]:
+        """Извлечь session_key (sub-XXX_ses-XXX) из пути или имени файла."""
+        parts = filepath.parts
+        sub = None
+        ses = None
+        for part in parts:
+            if part.startswith("sub-"):
+                sub = part
+            elif part.startswith("ses-"):
+                ses = part
 
-        folder_path = self.output_path / folder_name
-        if not folder_path.exists():
-            return 0
+        if sub and ses:
+            return f"{sub}_{ses}"
 
-        sessions = self._discover_sessions(folder_path)
-        if not sessions:
-            return 0
+        # Пробуем из имени файла: sub-001_ses-001_t1.nii.gz
+        name = filepath.name
+        name_parts = name.split("_")
+        for i, p in enumerate(name_parts):
+            if p.startswith("sub-") and i + 1 < len(name_parts):
+                if name_parts[i + 1].startswith("ses-"):
+                    return f"{p}_{name_parts[i + 1]}"
 
-        dataset_id = await self._ensure_dataset(folder_name)
-        if dataset_id is None:
-            return 0
+        return None
 
-        config = STAGE_FOLDERS[folder_name]
-        use_zip = config["zip"]
-        uploaded_count = 0
+    async def _upload_session(
+        self,
+        dataset_id: int,
+        session_key: str,
+        session_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Загрузить одну сессию как сущность."""
 
-        for session_key, file_paths in sessions.items():
-            entity_info = {
-                "run_id": self.run_id,
-                "pipeline_stage": folder_name,
+        # Собираем файлы: preprocessed + основная маска
+        file_paths = list(session_data["preprocessed"])
+
+        # Добавляем только основную маску (без native)
+        main_masks = [
+            m for m in session_data["masks"]
+            if "_native_" not in m.name
+        ]
+        file_paths.extend(main_masks)
+
+        if not file_paths:
+            return {"session": session_key, "success": False, "error": "no files"}
+
+        # Формируем dsEntityInfo
+        entity_info = self._build_entity_info(session_key, session_data)
+
+        result = await upload_entity(
+            token=self.token,
+            user_id=self.user_id,
+            user_type_id=self.user_type_id,
+            dataset_id=dataset_id,
+            entity_name=session_key,
+            file_paths=file_paths,
+            entity_info=entity_info,
+        )
+
+        if result is not None:
+            logger.info(
+                "Session uploaded: %s (%d files)", session_key, len(file_paths)
+            )
+            return {
                 "session": session_key,
-                "file_count": len(file_paths),
-                "filenames": [f.name for f in file_paths],
+                "success": True,
+                "files": len(file_paths),
+                "response": result,
             }
+        else:
+            logger.error("Failed to upload session: %s", session_key)
+            return {"session": session_key, "success": False, "error": "upload failed"}
 
-            if use_zip and session_key != "_meta":
-                modalities = sorted(set(
-                    f.parent.name for f in file_paths
-                    if f.parent.name not in ("anat", folder_name)
-                    and not f.parent.name.startswith("sub-")
-                    and not f.parent.name.startswith("ses-")
-                ))
-                if modalities:
-                    entity_info["modalities"] = modalities
-                entity_info["archive_format"] = "zip"
+    def _build_entity_info(
+        self,
+        session_key: str,
+        session_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Сформировать dsEntityInfo для сущности."""
 
-            result = await upload_entity(
-                token=self.token,
-                user_id=self.user_id,
-                user_type_id=self.user_type_id,
-                dataset_id=dataset_id,
-                entity_name=session_key,
-                file_paths=file_paths,
-                entity_info=entity_info,
-                zip_as_archive=use_zip and session_key != "_meta",
+        info: Dict[str, Any] = {
+            "bids_id": session_key,
+            "pipeline_run_id": self.run_id[:8],
+            "lesion_type": self.lesion_type,
+            "preprocessing_id": self.preprocessing_id,
+            "modalities": [
+                f.stem.split("_")[-1]
+                for f in session_data["preprocessed"]
+            ],
+            "file_count": (
+                len(session_data["preprocessed"])
+                + len([m for m in session_data["masks"] if "_native_" not in m.name])
+            ),
+        }
+
+        # Quality reports
+        if session_data["quality_reports"]:
+            info["quality_reports"] = []
+            for qr_path in session_data["quality_reports"]:
+                try:
+                    with open(qr_path, "r") as f:
+                        qr = json.load(f)
+                    info["quality_reports"].append({
+                        "modality": qr.get("modality"),
+                        "quality_score": qr.get("quality_score"),
+                        "quality_category": qr.get("quality_category"),
+                        "metrics": qr.get("metrics"),
+                    })
+                except Exception as e:
+                    logger.warning("Failed to read quality report %s: %s", qr_path, e)
+
+        # Volume report (парсим текстовый формат)
+        if session_data["volume_report"]:
+            info["volume_report"] = self._parse_volume_report(
+                session_data["volume_report"]
             )
 
-            if result is not None:
-                uploaded_count += 1
-                logger.info(
-                    "Uploaded entity: %s/%s (%d files), run=%s",
-                    folder_name, session_key, len(file_paths), self.run_id,
-                )
+        # Lobar report
+        if session_data["lobar_report"]:
+            try:
+                with open(session_data["lobar_report"], "r") as f:
+                    lr = json.load(f)
+                info["lobar_report"] = {
+                    "total_lesion_cm3": lr.get("total_lesion_volume_cm3"),
+                    "lobes": {
+                        lobe_id: {
+                            "cm3": lobe_data.get("total_volume_cm3"),
+                            "percent": lobe_data.get("percent_of_lesion"),
+                        }
+                        for lobe_id, lobe_data in lr.get("lobes", {}).items()
+                    },
+                }
+            except Exception as e:
+                logger.warning("Failed to read lobar report: %s", e)
 
-            await asyncio.sleep(2)
+        return info
 
-        return uploaded_count
+    def _parse_volume_report(self, report_path: Path) -> Optional[Dict[str, Any]]:
+        """Парсит текстовый volume report в JSON."""
+        try:
+            text = report_path.read_text(encoding="utf-8")
+            result = {"classes": {}}
 
-    async def upload_all_new(self) -> Dict[str, int]:
-        """
-        Проверить все папки и загрузить новые файлы.
-        Возвращает {folder_name: uploaded_count}.
-        """
-        results = {}
-        for folder_name in STAGE_FOLDERS:
-            count = await self.upload_folder(folder_name)
-            if count > 0:
-                results[folder_name] = count
-        return results
+            for line in text.splitlines():
+                line = line.strip()
+
+                if line.startswith("1. NCR"):
+                    result["classes"]["NCR"] = self._parse_volume_line(line)
+                elif line.startswith("2. ED"):
+                    result["classes"]["ED"] = self._parse_volume_line(line)
+                elif line.startswith("3. NET"):
+                    result["classes"]["NET"] = self._parse_volume_line(line)
+                elif line.startswith("4. ET"):
+                    result["classes"]["ET"] = self._parse_volume_line(line)
+                elif line.startswith("TOTAL TUMOR"):
+                    result["total_tumor_cm3"] = self._parse_volume_line(line).get("cm3")
+
+            return result if result["classes"] else None
+
+        except Exception as e:
+            logger.warning("Failed to parse volume report %s: %s", report_path, e)
+            return None
+
+    @staticmethod
+    def _parse_volume_line(line: str) -> Dict[str, float]:
+        """Извлечь voxels и cm3 из строки volume report."""
+        parts = line.split()
+        numbers = []
+        for p in reversed(parts):
+            try:
+                numbers.append(float(p))
+            except ValueError:
+                if numbers:
+                    break
+        numbers.reverse()
+
+        if len(numbers) >= 3:
+            return {"voxels": int(numbers[0]), "mm3": numbers[1], "cm3": numbers[2]}
+        elif len(numbers) >= 1:
+            return {"cm3": numbers[-1]}
+        return {}
