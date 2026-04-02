@@ -203,7 +203,8 @@ class KappaUploader:
 
     def _extract_session_key(self, filepath: Path) -> Optional[str]:
         """Извлечь session_key (sub-XXX_ses-XXX) из пути или имени файла."""
-        parts = filepath.parts
+        # Ищем в частях пути, ИСКЛЮЧАЯ имя файла (последний элемент)
+        parts = filepath.parts[:-1]  # только директории
         sub = None
         ses = None
         for part in parts:
@@ -215,8 +216,10 @@ class KappaUploader:
         if sub and ses:
             return f"{sub}_{ses}"
 
-        # Пробуем из имени файла: sub-001_ses-001_t1.nii.gz
-        name = filepath.name
+        # Fallback: парсим из имени файла
+        name = filepath.stem  # без расширения
+        if name.endswith(".nii"):
+            name = name[:-4]  # убираем .nii от .nii.gz
         name_parts = name.split("_")
         for i, p in enumerate(name_parts):
             if p.startswith("sub-") and i + 1 < len(name_parts):
