@@ -811,6 +811,18 @@ async def get_lobar_atlas(
     except Exception as e:
         logger.error(f"Ошибка получения лобарного атласа: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
+# KAPPA CONFIG ENDPOINTS
+# ============================================
+
+from kappa_dataset_mapping import get_lesion_types
+
+
+@app.get("/api/kappa/lesion-types")
+async def get_lesion_types_endpoint():
+    """Список доступных типов поражений"""
+    return get_lesion_types()
         
 # ============================================
 # KAPPA AUTH ENDPOINTS
