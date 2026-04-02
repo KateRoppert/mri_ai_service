@@ -1,40 +1,52 @@
 /**
  * Форма для запуска pipeline
  */
-import { useState } from 'react';
-import { Form, Input, Button, Card, message, Space, Checkbox } from 'antd';
-import { PlayCircleOutlined, FolderOpenOutlined } from '@ant-design/icons';
-import { startPipeline } from '../services/api';
+import { useState, useEffect } from 'react';
+import { Form, Input, Button, Card, message, Space, Checkbox, Select } from 'antd';
+import { PlayCircleOutlined, FolderOpenOutlined, MedicineBoxOutlined } from '@ant-design/icons';
+import { startPipeline, getLesionTypes } from '../services/api';
 
 const PipelineForm = ({ onPipelineStarted }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [useDefault, setUseDefault] = useState(false);
+  const [lesionTypes, setLesionTypes] = useState([]);
 
-  /**
-   * Обработчик отправки формы
-   */
+  useEffect(() => {
+    const fetchLesionTypes = async () => {
+      try {
+        const types = await getLesionTypes();
+        setLesionTypes(types);
+        // Если есть хотя бы один тип — выставляем по умолчанию
+        if (types.length > 0) {
+          form.setFieldsValue({ lesionType: types[0].id });
+        }
+      } catch (err) {
+        console.error('Ошибка загрузки типов поражений:', err);
+      }
+    };
+    fetchLesionTypes();
+  }, [form]);
+
   const handleSubmit = async (values) => {
     setLoading(true);
-    
+
     try {
-      // Вызываем API для запуска pipeline
       const response = await startPipeline(
         values.inputPath,
         useDefault ? null : values.outputPath,
-        useDefault
+        useDefault,
+        values.lesionType
       );
-      
+
       message.success('Pipeline запущен успешно!');
-      
-      // Уведомляем родительский компонент
+
       if (onPipelineStarted) {
         onPipelineStarted(response);
       }
-      
-      // Очищаем форму
+
       form.resetFields();
-      
+
     } catch (error) {
       console.error('Ошибка запуска pipeline:', error);
       message.error(
@@ -46,7 +58,7 @@ const PipelineForm = ({ onPipelineStarted }) => {
   };
 
   return (
-    <Card 
+    <Card
       title={
         <Space>
           <PlayCircleOutlined />
@@ -62,8 +74,29 @@ const PipelineForm = ({ onPipelineStarted }) => {
         initialValues={{
           inputPath: '',
           outputPath: '',
+          lesionType: '',
         }}
       >
+        {/* Тип поражения */}
+        <Form.Item
+          label="Тип поражения"
+          name="lesionType"
+          rules={[{ required: true, message: 'Выберите тип поражения' }]}
+          tooltip="Определяет модель сегментации и целевой датасет в Каппе"
+        >
+          <Select
+            placeholder="Выберите тип поражения"
+            size="large"
+            suffixIcon={<MedicineBoxOutlined />}
+          >
+            {lesionTypes.map((lt) => (
+              <Select.Option key={lt.id} value={lt.id}>
+                {lt.name}
+              </Select.Option>
+            ))}
+          </Select>
+        </Form.Item>
+
         {/* Входная директория */}
         <Form.Item
           label="Входные данные (DICOM)"
@@ -90,7 +123,7 @@ const PipelineForm = ({ onPipelineStarted }) => {
           </Checkbox>
         </Form.Item>
 
-        {/* Выходная директория (показываем только если не useDefault) */}
+        {/* Выходная директория */}
         {!useDefault && (
           <Form.Item
             label="Директория для результатов"
