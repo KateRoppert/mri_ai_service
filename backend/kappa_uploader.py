@@ -289,7 +289,7 @@ class KappaUploader:
             "lesion_type": self.lesion_type,
             "preprocessing_id": self.preprocessing_id,
             "modalities": [
-                f.stem.split("_")[-1]
+                f.stem.replace(".nii", "").split("_")[-1]
                 for f in session_data["preprocessed"]
             ],
             "file_count": (
