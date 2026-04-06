@@ -196,10 +196,16 @@ class KappaUploader:
                 if session_key and session_key in sessions:
                     sessions[session_key]["quality_reports"].append(qr)
 
-        # Находим volume reports
-        for vr in sorted(segmentation_dir.rglob("*_volume_report.txt")):
+        # Находим volume reports (JSON, с fallback на txt)
+        for vr in sorted(segmentation_dir.rglob("*_volume_report.json")):
             session_key = self._extract_session_key(vr)
             if session_key and session_key in sessions:
+                sessions[session_key]["volume_report"] = vr
+
+        # Fallback на txt если JSON не нашёлся
+        for vr in sorted(segmentation_dir.rglob("*_volume_report.txt")):
+            session_key = self._extract_session_key(vr)
+            if session_key and session_key in sessions and sessions[session_key]["volume_report"] is None:
                 sessions[session_key]["volume_report"] = vr
 
         # Находим lobar reports
@@ -429,11 +435,27 @@ class KappaUploader:
                 except Exception as e:
                     logger.warning("Failed to read quality report %s: %s", qr_path, e)
 
-        # Volume report (парсим текстовый формат)
+        # Volume report
         if session_data["volume_report"]:
-            info["volume_report"] = self._parse_volume_report(
-                session_data["volume_report"]
-            )
+            vr_path = session_data["volume_report"]
+            if vr_path.suffix == ".json":
+                try:
+                    with open(vr_path, "r") as f:
+                        vr = json.load(f)
+                    info["volume_report"] = {
+                        "total_tumor_cm3": vr.get("total_tumor", {}).get("volume_cm3"),
+                        "classes": {
+                            cls_data["name"].split("(")[0].strip(): {
+                                "voxels": cls_data.get("voxel_count"),
+                                "cm3": cls_data.get("volume_cm3"),
+                            }
+                            for cls_data in vr.get("classes", {}).values()
+                        },
+                    }
+                except Exception as e:
+                    logger.warning("Failed to read volume report JSON: %s", e)
+            else:
+                info["volume_report"] = self._parse_volume_report(vr_path)
 
         # Lobar report
         if session_data["lobar_report"]:
