@@ -30,7 +30,7 @@ async def _find_dataset_id(
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
             response = await client.get(url, headers=headers)
 
         if not response.is_success:
@@ -60,7 +60,7 @@ async def create_dataset(
     user_type_id: int,
     dataset_name: str,
     dataset_short_info: str = "",
-    dataset_type: int = 0,
+    dataset_type: int = 1,
     dataset_tags: str = "",
 ) -> Optional[int]:
     """
@@ -86,8 +86,6 @@ async def create_dataset(
         if response.is_success:
             result = response.json()
             logger.info("Dataset created: name=%s, response=%s", dataset_name, result)
-            # API возвращает строку-подтверждение, не ID.
-            # Получаем ID через список датасетов пользователя.
             actual_id = await _find_dataset_id(token, user_id, user_type_id, dataset_name)
             return actual_id
         else:
@@ -109,6 +107,7 @@ async def create_dataset(
                     )
                 return existing_id
             return None
+
     except Exception as exc:
         logger.exception("Error creating dataset: %s", exc)
         return None
@@ -124,7 +123,6 @@ def _zip_files(file_paths: List[Path], archive_name: str) -> Path:
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for fpath in file_paths:
-            # Сохраняем parent/filename (например t1/sub-001_ses-001_T1w_0001.dcm)
             arcname = f"{fpath.parent.name}/{fpath.name}"
             zf.write(fpath, arcname)
 
@@ -170,13 +168,12 @@ async def upload_entity(
     }
 
     entity_json = json.dumps(new_dataset_entity, ensure_ascii=False)
-
-    # multipart: form field + файлы
     data = {"new_dataset_entity": entity_json}
 
     zip_path = None
     files = []
     open_handles = []
+
     try:
         # Если нужен архив — упаковываем
         if zip_as_archive and len(file_paths) > 0:
@@ -191,7 +188,6 @@ async def upload_entity(
                 continue
             f = open(fpath, "rb")
             open_handles.append(f)
-            # Определяем content-type
             suffix = fpath.suffix.lower()
             if suffix == ".json":
                 ct = "application/json"
@@ -203,6 +199,10 @@ async def upload_entity(
                 ct = f"image/{suffix.lstrip('.')}"
             elif suffix == ".dcm":
                 ct = "application/dicom"
+            elif suffix == ".txt":
+                ct = "text/plain"
+            elif suffix == ".mat":
+                ct = "application/octet-stream"
             else:
                 ct = "application/octet-stream"
             files.append(("files", (fpath.name, f, ct)))
@@ -214,9 +214,10 @@ async def upload_entity(
         headers = {"Authorization": f"Bearer {token}"}
 
         # Retry с увеличивающимся таймаутом для больших файлов
+        response = None
         last_exc = None
         for attempt in range(3):
-            write_timeout = 300.0 * (attempt + 1)  # 300, 600, 900 сек
+            write_timeout = 300.0 * (attempt + 1)
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(30.0, read=300.0, write=write_timeout),
@@ -226,19 +227,43 @@ async def upload_entity(
                         url, data=data, files=files, headers=headers
                     )
                 last_exc = None
-                break  # Успешно отправлено
-            except httpx.WriteTimeout as exc:
+                break
+            except (httpx.WriteTimeout, httpx.ConnectTimeout) as exc:
                 last_exc = exc
                 logger.warning(
-                    "WriteTimeout on attempt %d/%d (write_timeout=%.0fs), entity=%s",
-                    attempt + 1, 3, write_timeout, entity_name,
+                    "Timeout on attempt %d/%d (write_timeout=%.0fs), entity=%s: %s",
+                    attempt + 1, 3, write_timeout, entity_name, type(exc).__name__,
                 )
-                # Пересоздаём file handles для повторной попытки
+                # Перематываем file handles для повторной попытки
                 for f in open_handles:
                     f.seek(0)
 
         if last_exc is not None:
-            logger.exception("All upload attempts failed for entity: %s", entity_name)
+            logger.error("All upload attempts failed for entity: %s", entity_name)
+            return None
+
+        # Обработка ответа
+        if response.is_success:
+            logger.info(
+                "Entity uploaded: name=%s, dataset_id=%s, files=%d",
+                entity_name, dataset_id, len(files),
+            )
+            return response.text
+        elif response.status_code == 400:
+            # Каппа иногда возвращает 400, но файл при этом сохраняется
+            logger.warning(
+                "Entity likely uploaded with post-processing error: "
+                "name=%s, dataset_id=%s, status=%s, body=%s",
+                entity_name, dataset_id, response.status_code,
+                response.text[:300],
+            )
+            return f'{{"warning": "400 but likely saved", "entity_name": "{entity_name}"}}'
+        else:
+            logger.warning(
+                "Failed to upload entity: status=%s, body=%s",
+                response.status_code,
+                response.text[:300],
+            )
             return None
 
     except Exception as exc:
@@ -250,3 +275,44 @@ async def upload_entity(
         if zip_path and zip_path.exists():
             zip_path.unlink()
             zip_path.parent.rmdir()
+
+async def update_entity_status(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_id: int,
+    entity_id: str,
+    status: int = 3,  # 3 = Labeled
+) -> bool:
+    """
+    Обновить статус сущности датасета.
+    Статусы: 0=Deactive, 1=Active, 2=New, 3=Labeled,
+             4=Under Verification, 5=Verified.
+    """
+    url = (
+        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
+        f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
+    )
+
+    payload = {"dsEntityStatus": status}
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            response = await client.put(url, json=payload, headers=headers)
+
+        if response.is_success:
+            logger.info(
+                "Entity status updated: entity=%s, status=%d", entity_id, status
+            )
+            return True
+        else:
+            logger.warning(
+                "Failed to update entity status: status_code=%s, body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            return False
+    except Exception as exc:
+        logger.exception("Error updating entity status: %s", exc)
+        return False
