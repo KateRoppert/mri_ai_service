@@ -378,6 +378,11 @@ class KappaUploader:
                     status=3,  # Labeled
                 )
 
+            # Регистрируем в локальном реестре
+            self._register_patient(
+                session_key, session_data, entity_id, dataset_id
+            )
+
             return {
                 "session": session_key,
                 "success": True,
@@ -531,3 +536,69 @@ class KappaUploader:
         except Exception:
             # Ответ может быть не JSON (soft error от 400)
             return None
+
+    def _register_patient(
+        self,
+        session_key: str,
+        session_data: Dict[str, Any],
+        kappa_entity_id: Optional[str],
+        kappa_dataset_id: int,
+    ) -> None:
+        """Зарегистрировать пациента в локальном реестре."""
+        try:
+            from patient_registry import register_patient
+
+            # Читаем метаданные для получения оригинальной информации
+            meta = self._read_session_metadata(session_data)
+
+            study_hash = self._compute_study_hash(session_data) or ""
+
+            register_patient(
+                bids_id=session_key,
+                study_hash=study_hash,
+                original_patient_id=meta.get("PatientID", ""),
+                patient_name=meta.get("PatientName", ""),
+                scan_date=meta.get("StudyDate", ""),
+                study_instance_uid=meta.get("StudyInstanceUID", ""),
+                kappa_entity_id=kappa_entity_id,
+                kappa_dataset_id=kappa_dataset_id,
+                pipeline_run_id=self.run_id,
+                lesion_type=self.lesion_type,
+                preprocessing_id=self.preprocessing_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to register patient: %s", e)
+
+    def _read_session_metadata(self, session_data: Dict[str, Any]) -> Dict[str, str]:
+        """Прочитать DICOM-метаданные сессии из папки metadata/."""
+        metadata_dir = self.output_path / "metadata"
+        if not metadata_dir.exists():
+            return {}
+
+        for prep_file in session_data.get("preprocessed", []):
+            session_key = self._extract_session_key(prep_file)
+            if not session_key:
+                continue
+            sub, ses = session_key.split("_", 1)
+            modality = prep_file.stem.replace(".nii", "").split("_")[-1]
+
+            meta_dir = metadata_dir / sub / ses / "anat" / modality
+            if meta_dir.exists():
+                for meta_file in meta_dir.glob("*.json"):
+                    try:
+                        with open(meta_file, "r") as f:
+                            meta = json.load(f)
+                        ident = meta.get("identification", {})
+                        # PatientName может быть списком символов
+                        patient_name = ident.get("PatientName", "")
+                        if isinstance(patient_name, list):
+                            patient_name = "".join(str(c) for c in patient_name)
+                        return {
+                            "PatientID": ident.get("PatientID", ""),
+                            "PatientName": patient_name,
+                            "StudyDate": ident.get("StudyDate", ""),
+                            "StudyInstanceUID": ident.get("StudyInstanceUID", ""),
+                        }
+                    except Exception:
+                        continue
+        return {}
