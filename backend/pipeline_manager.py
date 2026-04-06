@@ -378,12 +378,15 @@ class PipelineManager:
                 if use_json:
                     with open(report_file, 'r', encoding='utf-8') as f:
                         report_data = json.load(f)
+                    # Читаем txt тоже для фронтенда
+                    txt_path = report_file.with_suffix(".txt")
+                    report_text = txt_path.read_text(encoding='utf-8') if txt_path.exists() else ""
                     reports.append({
                         "mask_file": mask_file,
                         "patient_id": patient_id,
                         "session_id": session_id,
                         "report_data": report_data,
-                        "report_text": None,
+                        "report_text": report_text,
                     })
                 else:
                     report_text = report_file.read_text(encoding='utf-8')
