@@ -325,3 +325,37 @@ async def update_entity_status(
     except Exception as exc:
         logger.exception("Error updating entity status: %s", exc)
         return False
+
+async def get_dataset_entities(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_id: int,
+) -> Optional[list]:
+    """
+    Получить список сущностей датасета.
+    """
+    url = (
+        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
+        f"/{user_id}/{user_type_id}/{dataset_id}"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            response = await client.get(url, headers=headers)
+
+        if response.is_success:
+            data = response.json()
+            logger.debug("Got %d entities for dataset %d", len(data) if isinstance(data, list) else 0, dataset_id)
+            return data if isinstance(data, list) else []
+        else:
+            logger.warning(
+                "Failed to get entities: status=%s, body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            return None
+    except Exception as exc:
+        logger.exception("Error getting dataset entities: %s", exc)
+        return None
