@@ -58,6 +58,7 @@ async def main():
         print(f"\n  {sk}:")
         print(f"    modalities: {info.get('modalities')}")
         print(f"    file_count: {info.get('file_count')}")
+        print(f"    study_hash: {info.get('study_hash')}")
         if info.get("quality_reports"):
             for qr in info["quality_reports"]:
                 print(f"    quality {qr['modality']}: {qr['quality_score']} ({qr['quality_category']})")
