@@ -339,7 +339,7 @@ class PipelineManager:
         """
         Получить все отчёты об объёмах из segmentation/
         
-        Структура: segmentation/sub-XXX/ses-XXX/anat/*_volume_report.txt
+        Ищет JSON-версии (*_volume_report.json), с fallback на txt.
         
         Returns:
             Список словарей с отчётами
@@ -350,36 +350,50 @@ class PipelineManager:
             logger.warning(f"Директория сегментации не найдена: {seg_dir}")
             return None
         
-        report_files = list(seg_dir.rglob("*_volume_report.txt"))
+        # Сначала ищем JSON
+        report_files = list(seg_dir.rglob("*_volume_report.json"))
+        use_json = True
+        
+        if not report_files:
+            # Fallback на txt
+            report_files = list(seg_dir.rglob("*_volume_report.txt"))
+            use_json = False
         
         if not report_files:
             logger.warning(f"Отчёты об объёмах не найдены в {seg_dir}")
             return None
         
-        logger.info(f"Найдено {len(report_files)} отчётов об объёмах")
+        logger.info(f"Найдено {len(report_files)} отчётов об объёмах (format={'json' if use_json else 'txt'})")
         
         reports = []
         
         for report_file in report_files:
             try:
-                report_text = report_file.read_text(encoding='utf-8')
-                
-                # Парсим patient_id и session_id из имени файла
-                # sub-001_ses-001_T1w_volume_report.txt
-                name = report_file.name.replace("_volume_report.txt", "")
-                parts = name.split("_")
+                name_base = report_file.name.replace("_volume_report.json", "").replace("_volume_report.txt", "")
+                parts = name_base.split("_")
                 patient_id = parts[0] if len(parts) > 0 else "unknown"
                 session_id = parts[1] if len(parts) > 1 else "ses-001"
+                mask_file = name_base + "_segmask.nii.gz"
                 
-                # Имя маски — тот же базовый файл но с _segmask.nii.gz
-                mask_file = name + "_segmask.nii.gz"
-                
-                reports.append({
-                    "mask_file": mask_file,
-                    "patient_id": patient_id,
-                    "session_id": session_id,
-                    "report_text": report_text,
-                })
+                if use_json:
+                    with open(report_file, 'r', encoding='utf-8') as f:
+                        report_data = json.load(f)
+                    reports.append({
+                        "mask_file": mask_file,
+                        "patient_id": patient_id,
+                        "session_id": session_id,
+                        "report_data": report_data,
+                        "report_text": None,
+                    })
+                else:
+                    report_text = report_file.read_text(encoding='utf-8')
+                    reports.append({
+                        "mask_file": mask_file,
+                        "patient_id": patient_id,
+                        "session_id": session_id,
+                        "report_data": None,
+                        "report_text": report_text,
+                    })
                 
                 logger.info(f"Отчёт загружен: {report_file.name}")
             
