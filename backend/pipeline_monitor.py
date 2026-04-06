@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 import logging
-from typing import Optional, Set
+from typing import Optional
 
 from database import SessionLocal, get_pipeline_run, update_pipeline_run, update_stage_execution
 from pipeline_manager import PipelineManager
@@ -14,6 +14,9 @@ from websocket_manager import ws_manager
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Путь к конфигу препроцессинга (относительно корня проекта)
+PREPROCESSING_CONFIG = Path(__file__).parent.parent / "configs" / "preprocessing_config.yaml"
 
 
 class PipelineMonitor:
@@ -28,10 +31,9 @@ class PipelineMonitor:
         run_id: str,
         output_path: str,
         kappa_session_id: Optional[str] = None,
+        lesion_type: Optional[str] = None,
     ):
-        """
-        Запускает мониторинг для конкретного run_id
-        """
+        """Запускает мониторинг для конкретного run_id"""
         if run_id in self.monitoring_tasks:
             logger.warning(f"Мониторинг для run_id {run_id} уже запущен")
             return
@@ -39,7 +41,7 @@ class PipelineMonitor:
         logger.info(f"Запуск мониторинга для run_id: {run_id}")
         
         task = asyncio.create_task(
-            self._monitor_loop(run_id, output_path, kappa_session_id)
+            self._monitor_loop(run_id, output_path, kappa_session_id, lesion_type)
         )
         self.monitoring_tasks[run_id] = task
     
@@ -65,15 +67,16 @@ class PipelineMonitor:
         run_id: str,
         output_path: str,
         kappa_session_id: Optional[str] = None,
+        lesion_type: Optional[str] = None,
     ):
         """Основной цикл мониторинга"""
         db = SessionLocal()
         
         # Инициализация Kappa uploader
         kappa_uploader = None
-        if kappa_session_id:
+        if kappa_session_id and lesion_type:
             kappa_uploader = self._create_kappa_uploader(
-                run_id, output_path, kappa_session_id
+                run_id, output_path, kappa_session_id, lesion_type
             )
         
         try:
@@ -96,9 +99,7 @@ class PipelineMonitor:
                         )
                     break
                 
-                # Парсим логи и отправляем обновление
                 await self._send_update(run_id, output_path, db)
-                
                 await asyncio.sleep(1)
         
         except asyncio.CancelledError:
@@ -115,6 +116,7 @@ class PipelineMonitor:
         run_id: str,
         output_path: str,
         kappa_session_id: str,
+        lesion_type: str,
     ):
         """Создать KappaUploader из session_id"""
         try:
@@ -126,12 +128,19 @@ class PipelineMonitor:
                 logger.warning("Kappa session not found: %s", kappa_session_id)
                 return None
 
+            config_path = str(PREPROCESSING_CONFIG)
+            if not PREPROCESSING_CONFIG.exists():
+                logger.error("Preprocessing config not found: %s", config_path)
+                return None
+
             uploader = KappaUploader(
                 run_id=run_id,
                 output_path=output_path,
                 token=session["kappa_token"],
                 user_id=session["user_id"],
                 user_type_id=session["user_type_id"],
+                lesion_type=lesion_type,
+                preprocessing_config_path=config_path,
             )
             logger.info("KappaUploader created for run %s", run_id)
             return uploader
@@ -141,19 +150,15 @@ class PipelineMonitor:
             return None
     
     async def _kappa_upload_safe(self, uploader):
-        """Обёртка для безопасного вызова upload_all_new"""
+        """Обёртка для безопасного вызова upload_results"""
         try:
-            results = await uploader.upload_all_new()
-            if results:
-                logger.info("Kappa upload results: %s", results)
+            results = await uploader.upload_results()
+            logger.info("Kappa upload results: %s", results)
         except Exception as e:
             logger.error("Kappa upload error: %s", e)
     
     async def _send_update(self, run_id: str, output_path: str, db):
-        """
-        Парсит логи и отправляет обновление через WebSocket.
-        Возвращает progress_info для использования в мониторе.
-        """
+        """Парсит логи и отправляет обновление через WebSocket."""
         log_path = self.pipeline_manager.get_log_file(output_path)
         
         if not log_path:
