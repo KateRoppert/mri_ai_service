@@ -266,10 +266,25 @@ class KappaUploader:
             logger.info(
                 "Session uploaded: %s (%d files)", session_key, len(file_paths)
             )
+
+            # Извлекаем entity_id из ответа и ставим статус Labeled
+            entity_id = self._extract_entity_id(result)
+            if entity_id:
+                from kappa_client import update_entity_status
+                await update_entity_status(
+                    token=self.token,
+                    user_id=self.user_id,
+                    user_type_id=self.user_type_id,
+                    dataset_id=dataset_id,
+                    entity_id=entity_id,
+                    status=3,  # Labeled
+                )
+
             return {
                 "session": session_key,
                 "success": True,
                 "files": len(file_paths),
+                "entity_id": entity_id,
                 "response": result,
             }
         else:
@@ -384,3 +399,14 @@ class KappaUploader:
         elif len(numbers) >= 1:
             return {"cm3": numbers[-1]}
         return {}
+
+    @staticmethod
+    def _extract_entity_id(response_text: str) -> Optional[str]:
+        """Извлечь ds_entity_id из ответа Kappa."""
+        try:
+            import json as _json
+            data = _json.loads(response_text)
+            return data.get("ds_entity_id")
+        except Exception:
+            # Ответ может быть не JSON (soft error от 400)
+            return None
