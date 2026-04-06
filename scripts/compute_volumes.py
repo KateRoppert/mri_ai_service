@@ -243,6 +243,13 @@ def compute_and_save_volume_report(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(report_text, encoding="utf-8")
 
+        # Сохраняем JSON-версию рядом с текстовой
+        json_path = output_path.with_suffix(".json")
+        import json
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(volumes, f, ensure_ascii=False, indent=2)
+        logger.info(f"Volume report JSON saved: {json_path}")
+
         logger.info(f"Volume report saved: {output_path}")
         logger.info(
             f"  Total tumor volume: {volumes['total_tumor']['volume_cm3']:.4f} cm³ "
