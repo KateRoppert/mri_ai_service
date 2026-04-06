@@ -3,14 +3,16 @@
 Один датасет (по lesion_type + preprocessing_id).
 Одна сущность = одна сессия (4 preprocessed NIfTI + 1 маска сегментации).
 dsEntityInfo = quality reports + volume report + lobar report + параметры запуска.
+Дедупликация по study_hash (PatientID + StudyInstanceUID из DICOM-метаданных).
 """
 import asyncio
+import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from kappa_client import create_dataset, upload_entity
+from kappa_client import create_dataset, upload_entity, update_entity_status
 from kappa_dataset_mapping import get_dataset_id, set_dataset_id
 from preprocessing_version import compute_preprocessing_id
 
@@ -64,9 +66,29 @@ class KappaUploader:
             logger.warning("No sessions found in %s", self.output_path)
             return {"uploaded": 0, "sessions": []}
 
-        # 3. Загружаем каждую сессию
+        # 3. Проверяем дубликаты
+        existing_hashes = await self._get_existing_study_hashes(dataset_id)
+        logger.info("Existing study_hashes: %s", existing_hashes)
+
+        # 4. Загружаем каждую сессию
         results = []
         for session_key, session_data in sessions.items():
+            # Вычисляем study_hash для дедупликации
+            study_hash = self._compute_study_hash(session_data)
+
+            if study_hash and study_hash in existing_hashes:
+                logger.warning(
+                    "Duplicate detected, skipping: %s (study_hash=%s already in dataset %d)",
+                    session_key, study_hash, dataset_id,
+                )
+                results.append({
+                    "session": session_key,
+                    "success": False,
+                    "error": "duplicate",
+                    "message": f"Сессия {session_key} уже существует в датасете (study_hash={study_hash})",
+                })
+                continue
+
             result = await self._upload_session(
                 dataset_id, session_key, session_data
             )
@@ -127,7 +149,7 @@ class KappaUploader:
     def _discover_sessions(self) -> Dict[str, Dict[str, Any]]:
         """
         Сканирует preprocessed/ и segmentation/ и группирует по сессиям.
-        Возвращает: {session_key: {preprocessed: [...], mask: Path, quality: [...], ...}}
+        Возвращает: {session_key: {preprocessed: [...], masks: [...], quality: [...], ...}}
         """
         sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -228,6 +250,78 @@ class KappaUploader:
 
         return None
 
+    def _compute_study_hash(self, session_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Вычислить стабильный хэш сессии из DICOM-метаданных.
+        Используем PatientID + StudyInstanceUID.
+        """
+        metadata_dir = self.output_path / "metadata"
+        if not metadata_dir.exists():
+            return None
+
+        # Ищем JSON в metadata по той же структуре sub/ses
+        for prep_file in session_data.get("preprocessed", []):
+            session_key = self._extract_session_key(prep_file)
+            if not session_key:
+                continue
+            sub, ses = session_key.split("_", 1)
+            modality = prep_file.stem.replace(".nii", "").split("_")[-1]
+
+            meta_pattern = metadata_dir / sub / ses / "anat" / modality
+            if meta_pattern.exists():
+                for meta_file in meta_pattern.glob("*.json"):
+                    try:
+                        with open(meta_file, "r") as f:
+                            meta = json.load(f)
+                        ident = meta.get("identification", {})
+                        patient_id = ident.get("PatientID", "")
+                        study_uid = ident.get("StudyInstanceUID", "")
+                        if patient_id and study_uid:
+                            raw = f"{patient_id}:{study_uid}"
+                            return hashlib.sha256(raw.encode()).hexdigest()[:16]
+                    except Exception as e:
+                        logger.warning("Failed to read metadata %s: %s", meta_file, e)
+                        continue
+
+        return None
+
+    async def _get_existing_study_hashes(self, dataset_id: int) -> set:
+        """Получить множество study_hash уже загруженных сущностей."""
+        from kappa_client import get_dataset_entities
+
+        entities = await get_dataset_entities(
+            token=self.token,
+            user_id=self.user_id,
+            user_type_id=self.user_type_id,
+            dataset_id=dataset_id,
+        )
+
+        if not entities:
+            return set()
+
+        # Отладка: смотрим формат ответа
+        if entities:
+            logger.info(
+                "First entity sample: %s",
+                json.dumps(entities[0], ensure_ascii=False, default=str)[:500],
+            )
+
+        existing = set()
+        for entity in entities:
+            info = entity.get("dsEntityInfo") or {}
+            if isinstance(info, str):
+                try:
+                    info = json.loads(info)
+                except Exception:
+                    info = {}
+
+            study_hash = info.get("study_hash")
+            if study_hash:
+                existing.add(study_hash)
+
+        logger.info("Found %d existing study_hashes in dataset %d", len(existing), dataset_id)
+        return existing
+
     async def _upload_session(
         self,
         dataset_id: int,
@@ -270,7 +364,6 @@ class KappaUploader:
             # Извлекаем entity_id из ответа и ставим статус Labeled
             entity_id = self._extract_entity_id(result)
             if entity_id:
-                from kappa_client import update_entity_status
                 await update_entity_status(
                     token=self.token,
                     user_id=self.user_id,
@@ -300,6 +393,7 @@ class KappaUploader:
 
         info: Dict[str, Any] = {
             "bids_id": session_key,
+            "study_hash": self._compute_study_hash(session_data),
             "pipeline_run_id": self.run_id[:8],
             "lesion_type": self.lesion_type,
             "preprocessing_id": self.preprocessing_id,
@@ -311,6 +405,13 @@ class KappaUploader:
                 len(session_data["preprocessed"])
                 + len([m for m in session_data["masks"] if "_native_" not in m.name])
             ),
+            "data_files": [
+                f.name for f in session_data["preprocessed"]
+            ],
+            "prediction_files": [
+                m.name for m in session_data["masks"]
+                if "_native_" not in m.name
+            ],
         }
 
         # Quality reports
@@ -404,8 +505,7 @@ class KappaUploader:
     def _extract_entity_id(response_text: str) -> Optional[str]:
         """Извлечь ds_entity_id из ответа Kappa."""
         try:
-            import json as _json
-            data = _json.loads(response_text)
+            data = json.loads(response_text)
             return data.get("ds_entity_id")
         except Exception:
             # Ответ может быть не JSON (soft error от 400)
