@@ -294,7 +294,7 @@ async def update_entity_status(
         f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
     )
 
-    update_payload = json.dumps({"dsEntityStatus": status})
+    update_payload = json.dumps({"dsEntityStatus": status, "remark": ""})
 
     # API требует multipart/form-data с update_dataset_entity + files
     data = {"update_dataset_entity": update_payload}
