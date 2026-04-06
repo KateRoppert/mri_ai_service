@@ -68,7 +68,6 @@ class KappaUploader:
 
         # 3. Проверяем дубликаты
         existing_hashes = await self._get_existing_study_hashes(dataset_id)
-        logger.info("Existing study_hashes: %s", existing_hashes)
 
         # 4. Загружаем каждую сессию
         results = []
@@ -301,7 +300,7 @@ class KappaUploader:
 
         # Отладка: смотрим формат ответа
         if entities:
-            logger.info(
+            logger.debug(
                 "First entity sample: %s",
                 json.dumps(entities[0], ensure_ascii=False, default=str)[:500],
             )
