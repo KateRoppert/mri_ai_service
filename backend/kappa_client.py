@@ -294,12 +294,21 @@ async def update_entity_status(
         f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
     )
 
-    payload = {"dsEntityStatus": status}
+    update_payload = json.dumps({"dsEntityStatus": status})
+
+    # API требует multipart/form-data с update_dataset_entity + files
+    data = {"update_dataset_entity": update_payload}
+
+    # Пустой файл-заглушка (files обязателен в API)
+    files = [("files", ("empty.json", b"{}", "application/json"))]
+
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
         async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
-            response = await client.put(url, json=payload, headers=headers)
+            response = await client.put(
+                url, data=data, files=files, headers=headers
+            )
 
         if response.is_success:
             logger.info(
