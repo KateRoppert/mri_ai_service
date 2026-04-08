@@ -4,7 +4,12 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Tag, Button, Alert, Spin, Space, Typography } from 'antd';
 import { CheckCircleOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
-import { getValidationEntities, getLesionTypes } from '../services/api';
+import {
+  getValidationEntities,
+  getLesionTypes,
+  getValidationFileUrl,
+} from '../services/api';
+import NIfTIViewer from './NIfTIViewer';
 
 const { Text } = Typography;
 
@@ -16,12 +21,66 @@ const STATUS_COLORS = {
   'Self-Verified': 'cyan',
 };
 
-const ValidationPanel = ({ onViewEntity }) => {
+/**
+ * Извлечь модальность из имени файла preprocessed.
+ * sub-001_ses-001_t1.nii.gz → t1
+ * sub-001_ses-001_t1c.nii.gz → t1c
+ */
+const extractModality = (fileName) => {
+  const base = fileName.replace('.nii.gz', '');
+  const parts = base.split('_');
+  return parts[parts.length - 1];
+};
+
+/**
+ * Построить customFiles для NIfTIViewer из сущности Каппы
+ */
+const buildCustomFiles = (entity, datasetId) => {
+  const info = entity.dsEntityInfo || {};
+  const dataFileNames = info.data_files || [];
+  const predictionFileNames = info.prediction_files || [];
+  const allFiles = entity.files || [];
+
+  // Маппинг fileName → fileId
+  const fileIdByName = {};
+  allFiles.forEach((f) => {
+    fileIdByName[f.fileName] = f.fileId;
+  });
+
+  // Берём первую маску (у нас одна на сессию)
+  const maskFileName = predictionFileNames[0];
+  const maskFileId = fileIdByName[maskFileName];
+  const maskUrl = maskFileId ? getValidationFileUrl(datasetId, maskFileId) : null;
+
+  // Для каждой модальности — отдельный объект файла
+  return dataFileNames
+    .map((fileName) => {
+      const fileId = fileIdByName[fileName];
+      if (!fileId || !maskUrl) return null;
+      const modality = extractModality(fileName);
+      return {
+        filename: fileName,
+        mask_filename: maskFileName,
+        patient_id: info.bids_id || entity.dsEntityName,
+        session_id: '',
+        modality: modality.toUpperCase(),
+        image_url: getValidationFileUrl(datasetId, fileId),
+        mask_url: maskUrl,
+      };
+    })
+    .filter(Boolean);
+};
+
+const ValidationPanel = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [entities, setEntities] = useState([]);
   const [lesionTypes, setLesionTypes] = useState([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState(null);
+
+  // Состояние visualizer
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerFiles, setViewerFiles] = useState([]);
 
   useEffect(() => {
     loadLesionTypes();
@@ -37,7 +96,6 @@ const ValidationPanel = ({ onViewEntity }) => {
     try {
       const types = await getLesionTypes();
       setLesionTypes(types);
-      // Выбираем первый тип с привязанным dataset_id
       const first = types.find((t) => t.dataset_id);
       if (first) {
         setSelectedDatasetId(first.dataset_id);
@@ -60,6 +118,16 @@ const ValidationPanel = ({ onViewEntity }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleView = (entity) => {
+    const customFiles = buildCustomFiles(entity, selectedDatasetId);
+    if (customFiles.length === 0) {
+      setError('Не удалось подготовить файлы сессии для просмотра');
+      return;
+    }
+    setViewerFiles(customFiles);
+    setViewerOpen(true);
   };
 
   const columns = [
@@ -111,7 +179,7 @@ const ValidationPanel = ({ onViewEntity }) => {
       title: 'Дата загрузки',
       dataIndex: 'createdOn',
       key: 'created',
-      render: (date) => date ? new Date(date).toLocaleString('ru-RU') : '—',
+      render: (date) => (date ? new Date(date).toLocaleString('ru-RU') : '—'),
     },
     {
       title: 'Действия',
@@ -122,7 +190,7 @@ const ValidationPanel = ({ onViewEntity }) => {
             type="primary"
             icon={<EyeOutlined />}
             size="small"
-            onClick={() => onViewEntity && onViewEntity(entity, selectedDatasetId)}
+            onClick={() => handleView(entity)}
           >
             Просмотреть
           </Button>
@@ -132,49 +200,57 @@ const ValidationPanel = ({ onViewEntity }) => {
   ];
 
   return (
-    <Card
-      title={
-        <Space>
-          <CheckCircleOutlined />
-          <span>Сессии для валидации</span>
-        </Space>
-      }
-      extra={
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => selectedDatasetId && loadEntities(selectedDatasetId)}
-          loading={loading}
-        >
-          Обновить
-        </Button>
-      }
-    >
-      {error && (
-        <Alert
-          message={error}
-          type="error"
-          showIcon
-          closable
-          onClose={() => setError(null)}
-          style={{ marginBottom: 16 }}
-        />
-      )}
+    <>
+      <Card
+        title={
+          <Space>
+            <CheckCircleOutlined />
+            <span>Сессии для валидации</span>
+          </Space>
+        }
+        extra={
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => selectedDatasetId && loadEntities(selectedDatasetId)}
+            loading={loading}
+          >
+            Обновить
+          </Button>
+        }
+      >
+        {error && (
+          <Alert
+            message={error}
+            type="error"
+            showIcon
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 16 }}
+          />
+        )}
 
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: '40px 0' }}>
-          <Spin size="large" />
-          <p style={{ marginTop: 16 }}>Загрузка сессий...</p>
-        </div>
-      ) : (
-        <Table
-          columns={columns}
-          dataSource={entities}
-          rowKey={(entity) => entity.dsEntityId}
-          pagination={{ pageSize: 20 }}
-          locale={{ emptyText: 'Нет доступных сессий' }}
-        />
-      )}
-    </Card>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin size="large" />
+            <p style={{ marginTop: 16 }}>Загрузка сессий...</p>
+          </div>
+        ) : (
+          <Table
+            columns={columns}
+            dataSource={entities}
+            rowKey={(entity) => entity.dsEntityId}
+            pagination={{ pageSize: 20 }}
+            locale={{ emptyText: 'Нет доступных сессий' }}
+          />
+        )}
+      </Card>
+
+      <NIfTIViewer
+        visible={viewerOpen}
+        onClose={() => setViewerOpen(false)}
+        customFiles={viewerFiles}
+      />
+    </>
   );
 };
 
