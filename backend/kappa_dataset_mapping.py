@@ -3,7 +3,7 @@
 """
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import yaml
 
@@ -29,10 +29,18 @@ def _save_mapping(data: Dict) -> None:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
 
-def get_lesion_types() -> List[Dict[str, str]]:
-    """Получить список доступных типов поражений."""
+def get_lesion_types() -> List[Dict[str, Any]]:
+    """Получить список доступных типов поражений с привязанными dataset_id."""
     data = _load_mapping()
-    return data.get("lesion_types", [])
+    types = data.get("lesion_types", [])
+    
+    # Добавляем dataset_id (по 'current' маппингу) к каждому типу
+    enriched = []
+    for lt in types:
+        item = dict(lt)
+        item["dataset_id"] = get_dataset_id(lt["id"], "current")
+        enriched.append(item)
+    return enriched
 
 
 def get_dataset_id(lesion_type: str, preprocessing_id: str) -> Optional[int]:
