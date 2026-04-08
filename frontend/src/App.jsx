@@ -185,21 +185,14 @@ function App() {
                   ),
                 },
                 {
-                key: 'validation',
-                label: (
-                  <span>
-                    <CheckCircleOutlined />
-                    Валидация
-                  </span>
-                ),
-                children: (
-                  <ValidationPanel
-                    onViewEntity={(entity, datasetId) => {
-                      console.log('View entity:', entity, 'dataset:', datasetId);
-                      // Визуализация будет добавлена в подшаге 1.8b
-                    }}
-                  />
-                ),
+                  key: 'validation',
+                  label: (
+                    <span>
+                      <CheckCircleOutlined />
+                      Валидация
+                    </span>
+                  ),
+                  children: <ValidationPanel />,
               },
               ]}
             />
