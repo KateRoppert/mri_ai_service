@@ -392,3 +392,41 @@ async def get_entity_details(
     except Exception as exc:
         logger.exception("Error getting entity details: %s", exc)
         return None
+
+async def download_entity_file(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_id: int,
+    file_id: str,
+) -> Optional[bytes]:
+    """
+    Скачать файл сущности по file_id.
+    Возвращает bytes или None при ошибке.
+    """
+    url = (
+        f"{KAPPA_DATA_URL}/datasets/datasetEntities/files"
+        f"/{user_id}/{user_type_id}/{dataset_id}/{file_id}"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=300.0),
+            verify=False,
+        ) as client:
+            response = await client.get(url, headers=headers)
+
+        if response.is_success:
+            logger.info("File downloaded: %s (%d bytes)", file_id, len(response.content))
+            return response.content
+        else:
+            logger.warning(
+                "Failed to download file: status=%s, body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            return None
+    except Exception as exc:
+        logger.exception("Error downloading file: %s", exc)
+        return None
