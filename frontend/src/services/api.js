@@ -100,6 +100,25 @@ export const getLesionTypes = async () => {
   return response.data;
 };
 
+/**
+ * Получить список сущностей датасета валидации
+ */
+export const getValidationEntities = async (datasetId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.get(`/kappa/entities/${datasetId}`, {
+    params: { session_id: sessionId },
+  });
+  return response.data;
+};
+
+/**
+ * Получить URL файла из хранилища валидации (для NiiVue)
+ */
+export const getValidationFileUrl = (datasetId, fileId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  return `http://localhost:8000/api/kappa/file/${datasetId}/${fileId}?session_id=${sessionId}`;
+};
+
 export default {
   startPipeline,
   getPipelineStatus,
@@ -109,5 +128,7 @@ export default {
   getNIfTIFiles,     
   getNIfTIFileUrl, 
   getLesionTypes,   
+  getValidationEntities,
+  getValidationFileUrl,
 };
 
