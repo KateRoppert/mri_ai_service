@@ -870,6 +870,52 @@ async def kappa_logout(session_id: str):
         raise HTTPException(status_code=404, detail="Сессия не найдена")
     return {"status": "ok"}
 
+@app.get("/api/kappa/entities/{dataset_id}")
+async def get_kappa_entities(dataset_id: int, session_id: str):
+    """Список сущностей датасета Kappa"""
+    from kappa_auth import get_session
+    from kappa_client import get_dataset_entities
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    entities = await get_dataset_entities(
+        token=session["kappa_token"],
+        user_id=session["user_id"],
+        user_type_id=session["user_type_id"],
+        dataset_id=dataset_id,
+    )
+
+    if entities is None:
+        return {"entities": [], "total": 0}
+
+    return {"entities": entities, "total": len(entities)}
+
+
+@app.get("/api/kappa/entity/{dataset_id}/{entity_id}")
+async def get_kappa_entity_details(dataset_id: int, entity_id: str, session_id: str):
+    """Детали одной сущности (с информацией о файлах)"""
+    from kappa_auth import get_session
+    from kappa_client import get_entity_details
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    details = await get_entity_details(
+        token=session["kappa_token"],
+        user_id=session["user_id"],
+        user_type_id=session["user_type_id"],
+        dataset_id=dataset_id,
+        entity_id=entity_id,
+    )
+
+    if details is None:
+        raise HTTPException(status_code=404, detail="Сущность не найдена")
+
+    return details
+
 # ============================================
 # СТАТИКА ФРОНТЕНДА (React production build)
 # ============================================
