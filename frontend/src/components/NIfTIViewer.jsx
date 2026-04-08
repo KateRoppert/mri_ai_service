@@ -34,7 +34,7 @@ const createSegmentationColormap = () => {
   return colors;
 };
 
-const NIfTIViewer = ({ runId, visible, onClose }) => {
+const NIfTIViewer = ({ runId, visible, onClose, customFiles = null }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
   
@@ -52,10 +52,10 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
    * Загружаем список файлов при открытии модального окна
    */
   useEffect(() => {
-    if (visible && runId) {
+    if (visible && (runId || customFiles)) {
       fetchFiles();
     }
-  }, [visible, runId]);
+  }, [visible, runId, customFiles]);
 
   /**
    * Инициализируем niivue при монтировании
@@ -97,8 +97,15 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
     setError(null);
     
     try {
-      const data = await getNIfTIFiles(runId);
-      setFiles(data.files || []);
+      // Если customFiles переданы, используем их вместо fetch
+      let filesData;
+      if (customFiles && customFiles.length > 0) {
+        filesData = customFiles;
+      } else {
+        const data = await getNIfTIFiles(runId);
+        filesData = data.files || [];
+      }
+      setFiles(filesData);
       
       // Ждём пока Niivue инициализируется
       const maxAttempts = 10;
@@ -115,9 +122,9 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
       }
       
       // Автоматически загружаем первый файл
-      if (data.files && data.files.length > 0) {
-        setSelectedFile(data.files[0]);
-        await loadNIfTI(data.files[0]);
+      if (filesData.length > 0) {
+        setSelectedFile(filesData[0]);
+        await loadNIfTI(filesData[0]);
       }
     } catch (err) {
       console.error('Ошибка загрузки списка файлов:', err);
@@ -154,8 +161,13 @@ const NIfTIViewer = ({ runId, visible, onClose }) => {
     try {
       const nv = nvRef.current;
       
-      const imageUrl = getNIfTIFileUrl(imageUrlPath);
-      const maskUrl = getNIfTIFileUrl(maskUrlPath);
+      // Если URL уже абсолютный (http/https), используем как есть
+      const imageUrl = imageUrlPath.startsWith('http')
+        ? imageUrlPath
+        : getNIfTIFileUrl(imageUrlPath);
+      const maskUrl = maskUrlPath.startsWith('http')
+        ? maskUrlPath
+        : getNIfTIFileUrl(maskUrlPath);
       
       // Проверяем доступность файлов
       const imageResponse = await fetch(imageUrl);
