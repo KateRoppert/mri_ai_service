@@ -359,3 +359,36 @@ async def get_dataset_entities(
     except Exception as exc:
         logger.exception("Error getting dataset entities: %s", exc)
         return None
+
+async def get_entity_details(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_id: int,
+    entity_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Получить детали сущности датасета (включая список файлов).
+    """
+    url = (
+        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
+        f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            response = await client.get(url, headers=headers)
+
+        if response.is_success:
+            return response.json()
+        else:
+            logger.warning(
+                "Failed to get entity details: status=%s, body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            return None
+    except Exception as exc:
+        logger.exception("Error getting entity details: %s", exc)
+        return None
