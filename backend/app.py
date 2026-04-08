@@ -916,6 +916,32 @@ async def get_kappa_entity_details(dataset_id: int, entity_id: str, session_id: 
 
     return details
 
+from fastapi.responses import Response
+
+
+@app.get("/api/kappa/file/{dataset_id}/{file_id}")
+async def get_kappa_file(dataset_id: int, file_id: str, session_id: str):
+    """Скачать файл сущности из Kappa"""
+    from kappa_auth import get_session
+    from kappa_client import download_entity_file
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    content = await download_entity_file(
+        token=session["kappa_token"],
+        user_id=session["user_id"],
+        user_type_id=session["user_type_id"],
+        dataset_id=dataset_id,
+        file_id=file_id,
+    )
+
+    if content is None:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    return Response(content=content, media_type="application/gzip")
+
 # ============================================
 # СТАТИКА ФРОНТЕНДА (React production build)
 # ============================================
