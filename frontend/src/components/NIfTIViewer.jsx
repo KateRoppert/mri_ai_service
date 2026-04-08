@@ -184,15 +184,18 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null }) => {
       const segColormap = createSegmentationColormap();
       nv.addColormap('seg_custom', segColormap);
 
-      // Загружаем в niivue
+      // Загружаем в niivue. Передаём name для определения формата,
+      // т.к. URL из прокси не содержит расширения .nii.gz
       await nv.loadVolumes([
         {
           url: imageUrl,
+          name: file.filename,
           colormap: 'gray',
           opacity: 1.0,
         },
         {
           url: maskUrl,
+          name: file.mask_filename,
           colormap: 'seg_custom',
           opacity: maskOpacity,
           cal_min: 0,
