@@ -3,7 +3,7 @@
  */
 import { useState } from 'react';
 import { Layout, Typography, Space, Divider, Tabs, Card, Button } from 'antd';
-import { RocketOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
+import { RocketOutlined, HistoryOutlined, LogoutOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import KappaLogin from './components/KappaLogin';
 import PipelineForm from './components/PipelineForm';
 import ProgressMonitor from './components/ProgressMonitor';
@@ -11,6 +11,7 @@ import PipelineHistory from './components/PipelineHistory';
 import QualityReport from './components/QualityReport';
 import ClinicalReport from './components/ClinicalReport';
 import NIfTIViewer from './components/NIfTIViewer';
+import ValidationPanel from './components/ValidationPanel';
 import './App.css';
 
 const { Header, Content } = Layout;
@@ -183,6 +184,23 @@ function App() {
                     />
                   ),
                 },
+                {
+                key: 'validation',
+                label: (
+                  <span>
+                    <CheckCircleOutlined />
+                    Валидация
+                  </span>
+                ),
+                children: (
+                  <ValidationPanel
+                    onViewEntity={(entity, datasetId) => {
+                      console.log('View entity:', entity, 'dataset:', datasetId);
+                      // Визуализация будет добавлена в подшаге 1.8b
+                    }}
+                  />
+                ),
+              },
               ]}
             />
 
