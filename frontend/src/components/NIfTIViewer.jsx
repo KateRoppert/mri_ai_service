@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import { Niivue } from '@niivue/niivue';
 import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl } from '../services/api';
+import ValidationActions from './ValidationActions';
 
 /**
  * Создаём кастомную цветовую карту для multi-class сегментации
@@ -34,7 +35,7 @@ const createSegmentationColormap = () => {
   return colors;
 };
 
-const NIfTIViewer = ({ runId, visible, onClose, customFiles = null }) => {
+const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
   
@@ -452,6 +453,22 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null }) => {
               }}
             />
           </div>
+
+          {/* Панель валидации */}
+          {validationRef && (
+            <div style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              padding: '8px 0',
+              borderTop: '1px solid #f0f0f0',
+              marginTop: 8,
+            }}>
+              <ValidationActions
+                entityId={validationRef.entity_id}
+                datasetId={validationRef.dataset_id}
+              />
+            </div>
+          )}
 
           {/* Инструкция - показывается при наведении на иконку */}
           <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
