@@ -81,6 +81,7 @@ const ValidationPanel = () => {
   // Состояние visualizer
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFiles, setViewerFiles] = useState([]);
+  const [viewerEntityRef, setViewerEntityRef] = useState(null);
 
   useEffect(() => {
     loadLesionTypes();
@@ -127,6 +128,10 @@ const ValidationPanel = () => {
       return;
     }
     setViewerFiles(customFiles);
+    setViewerEntityRef({
+      entity_id: entity.dsEntityId,
+      dataset_id: selectedDatasetId,
+    });
     setViewerOpen(true);
   };
 
@@ -249,6 +254,7 @@ const ValidationPanel = () => {
         visible={viewerOpen}
         onClose={() => setViewerOpen(false)}
         customFiles={viewerFiles}
+        validationRef={viewerEntityRef}
       />
     </>
   );
