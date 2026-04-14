@@ -16,7 +16,7 @@ import subprocess
 import uvicorn
 import os
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from config import settings
 from models import (
@@ -828,6 +828,131 @@ from kappa_dataset_mapping import get_lesion_types
 async def get_lesion_types_endpoint():
     """Список доступных типов поражений"""
     return get_lesion_types()
+
+# ============================================
+# VALIDATION ENDPOINTS
+# ============================================
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class ValidationActionRequest(PydanticBaseModel):
+    entity_id: str
+    dataset_id: int
+    session_id: str
+    action: str  # 'confirm' / 'reject' / 'revoke'
+    comment: Optional[str] = None
+
+
+@app.post("/api/validation/action")
+async def validation_action(request: ValidationActionRequest):
+    """Записать действие валидации (confirm/reject/revoke) и обновить статус в Каппе."""
+    from kappa_auth import get_session
+    from kappa_client import update_entity_status
+    from validation_service import record_action, get_current_votes
+
+    session = get_session(request.session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    if request.action not in ("confirm", "reject", "revoke"):
+        raise HTTPException(status_code=400, detail="Недопустимое действие")
+
+    # Записываем действие в локальную БД
+    user_name = None
+    first_name = session.get("first_name") or ""
+    last_name = session.get("last_name") or ""
+    if first_name or last_name:
+        user_name = f"{first_name} {last_name}".strip()
+
+    record_action(
+        entity_id=request.entity_id,
+        dataset_id=request.dataset_id,
+        user_id=session["user_id"],
+        user_name=user_name,
+        action=request.action,
+        comment=request.comment,
+    )
+
+    # Обновляем статус в Каппе на основе новых голосов
+    votes = get_current_votes(request.entity_id)
+    new_status = _compute_entity_status(votes)
+
+    await update_entity_status(
+        token=session["kappa_token"],
+        user_id=session["user_id"],
+        user_type_id=session["user_type_id"],
+        dataset_id=request.dataset_id,
+        entity_id=request.entity_id,
+        status=new_status,
+    )
+
+    return {
+        "success": True,
+        "votes": votes,
+        "kappa_status": new_status,
+    }
+
+
+def _compute_entity_status(votes: Dict[str, Any]) -> int:
+    """
+    Вычислить статус Каппы на основе голосов.
+    3 = Labeled (нет голосов)
+    4 = Under Verification (1+ голос, но меньше 2 confirms)
+    5 = Verified (2+ подтверждения)
+    """
+    confirms = votes.get("confirms_count", 0)
+    total = votes.get("total_votes", 0)
+
+    if confirms >= 2:
+        return 5  # Verified
+    if total >= 1:
+        return 4  # Under Verification
+    return 3  # Labeled
+
+
+@app.get("/api/validation/entity/{entity_id}")
+async def get_entity_validation(entity_id: str, session_id: str):
+    """Получить текущее состояние валидации сущности."""
+    from kappa_auth import get_session
+    from validation_service import get_current_votes, get_user_current_vote, get_entity_history
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    votes = get_current_votes(entity_id)
+    my_vote = get_user_current_vote(entity_id, session["user_id"])
+    history = get_entity_history(entity_id)
+
+    return {
+        "votes": votes,
+        "my_vote": my_vote,
+        "history": history,
+    }
+
+
+@app.get("/api/validation/entities-for-run/{run_id}")
+async def get_entities_for_run(run_id: str):
+    """
+    Получить список сущностей Каппы, связанных с запуском пайплайна.
+    Нужен для отображения кнопок валидации в ProgressMonitor и PipelineHistory.
+    """
+    from patient_registry import find_by_run_id
+
+    records = find_by_run_id(run_id)
+    entities = [
+        {
+            "entity_id": r["kappa_entity_id"],
+            "dataset_id": r["kappa_dataset_id"],
+            "bids_id": r["bids_id"],
+            "study_hash": r["study_hash"],
+        }
+        for r in records
+        if r.get("kappa_entity_id") and r.get("kappa_dataset_id")
+    ]
+
+    return {"entities": entities, "total": len(entities)}
         
 # ============================================
 # KAPPA AUTH ENDPOINTS
