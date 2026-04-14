@@ -119,6 +119,40 @@ export const getValidationFileUrl = (datasetId, fileId) => {
   return `http://localhost:8000/api/kappa/file/${datasetId}/${fileId}?session_id=${sessionId}`;
 };
 
+/**
+ * Отправить действие валидации (confirm/reject/revoke)
+ */
+export const validationAction = async (datasetId, entityId, action, comment = null) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.post('/validation/action', {
+    entity_id: entityId,
+    dataset_id: datasetId,
+    session_id: sessionId,
+    action,
+    comment,
+  });
+  return response.data;
+};
+
+/**
+ * Получить текущее состояние валидации сущности
+ */
+export const getEntityValidation = async (entityId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.get(`/validation/entity/${entityId}`, {
+    params: { session_id: sessionId },
+  });
+  return response.data;
+};
+
+/**
+ * Получить сущности Каппы для запуска пайплайна
+ */
+export const getEntitiesForRun = async (runId) => {
+  const response = await apiClient.get(`/validation/entities-for-run/${runId}`);
+  return response.data;
+};
+
 export default {
   startPipeline,
   getPipelineStatus,
@@ -130,5 +164,8 @@ export default {
   getLesionTypes,   
   getValidationEntities,
   getValidationFileUrl,
+  validationAction,
+  getEntityValidation,
+  getEntitiesForRun,
 };
 
