@@ -67,6 +67,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Запуск {settings.app_name} v{settings.app_version}")
     init_db()
+    from patient_registry import ensure_tables
+    ensure_tables()
+    logger.info("Таблицы реестра и валидаций инициализированы")
     logger.info("База данных инициализирована")
     
     yield
