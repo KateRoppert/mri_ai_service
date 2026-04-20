@@ -14,6 +14,8 @@ services:
         - /home:/home:rw              # Вся домашняя директория
         - ./demo_workspace:/workspace:rw  # Локальная папка
         - ./scripts:/app/scripts:ro
+        - ./configs:/app/configs:rw
+        - ./backend/brain_lesion.db:/app/backend/brain_lesion.db:rw
     depends_on:
       - segmentation
     profiles: ["full"]
