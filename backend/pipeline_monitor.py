@@ -149,11 +149,51 @@ class PipelineMonitor:
             logger.error("Failed to create KappaUploader: %s", e)
             return None
     
-    async def _kappa_upload_safe(self, uploader):
+    async def _kappa_upload_safe(self, uploader, run_id: str = None):
         """Обёртка для безопасного вызова upload_results"""
         try:
             results = await uploader.upload_results()
             logger.info("Kappa upload results: %s", results)
+
+            # Уведомляем фронт о завершении загрузки в Каппу
+            if run_id:
+                entities = []
+                for s in results.get("sessions", []):
+                    if s.get("entity_id"):
+                        entities.append({
+                            "entity_id": s["entity_id"],
+                            "dataset_id": results.get("dataset_id"),
+                            "session": s.get("session"),
+                        })
+
+                # Также находим entity из реестра для дубликатов
+                if not entities:
+                    from patient_registry import find_by_run_id
+                    records = find_by_run_id(run_id)
+                    for r in records:
+                        if r.get("kappa_entity_id") and r.get("kappa_dataset_id"):
+                            entities.append({
+                                "entity_id": r["kappa_entity_id"],
+                                "dataset_id": r["kappa_dataset_id"],
+                                "session": r.get("bids_id"),
+                            })
+
+                message = {
+                    "type": "kappa_upload_complete",
+                    "run_id": run_id,
+                    "entities": entities,
+                }
+
+                # Уведомления о дубликатах
+                duplicates = [
+                    s for s in results.get("sessions", [])
+                    if s.get("error") == "duplicate"
+                ]
+                if duplicates:
+                    message["warnings"] = [s["message"] for s in duplicates]
+
+                await ws_manager.broadcast(run_id, message)
+
         except Exception as e:
             logger.error("Kappa upload error: %s", e)
     
