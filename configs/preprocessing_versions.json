@@ -1,0 +1,98 @@
+{
+  "1e2b93ad": {
+    "created_at": "2026-04-02T08:49:56.533593+00:00",
+    "source_file": "/home/ubuntu/mri_ai_service/configs/preprocessing_config.yaml",
+    "config": {
+      "atlas": {
+        "name": "SRI24",
+        "filename": "sri24_t1.nii.gz"
+      },
+      "steps": [
+        {
+          "name": "reorient",
+          "enabled": true,
+          "params": {
+            "target_orientation": "LAS"
+          }
+        },
+        {
+          "name": "bias_correction",
+          "enabled": true,
+          "params": {
+            "shrink_factor": 4,
+            "n_iterations": [
+              50,
+              50,
+              50,
+              50
+            ],
+            "convergence_threshold": 0.001,
+            "use_for_registration_only": true
+          }
+        },
+        {
+          "name": "registration",
+          "enabled": true,
+          "params": {
+            "reference_modality": "t1",
+            "registration_type": "Rigid",
+            "output_resolution": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "metric": "MI",
+            "metric_weight": 1.0,
+            "number_of_iterations": 1000,
+            "convergence_threshold": "1e-6",
+            "convergence_window_size": 10,
+            "smoothing_sigmas": [
+              3,
+              2,
+              1,
+              0
+            ],
+            "shrink_factors": [
+              8,
+              4,
+              2,
+              1
+            ],
+            "use_histogram_matching": true,
+            "save_transformations": true
+          }
+        },
+        {
+          "name": "resampling",
+          "enabled": false,
+          "params": {
+            "output_resolution": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "interpolation": "linear"
+          }
+        },
+        {
+          "name": "skull_stripping",
+          "enabled": true,
+          "params": {
+            "method": "bet",
+            "reference_modality": "t1",
+            "fractional_intensity": 0.35,
+            "vertical_gradient": -0.1,
+            "apply_to_all": true,
+            "cleanup": true
+          }
+        }
+      ],
+      "modalities": [
+        "t1",
+        "t1c",
+        "t2",
+        "t2fl"
+      ]
+    }
+  }
+}

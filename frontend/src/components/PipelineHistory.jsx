@@ -199,7 +199,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     {
       title: 'Действия',
       key: 'actions',
-      width: 120,
+      width: 200,
       render: (_, record) => (
         <Space direction="vertical" size={2}>
           {record.status === 'completed' && record.current_stage >= 3 && (

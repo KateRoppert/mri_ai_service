@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     
     # База данных
-    database_url: str = "sqlite:///./brain_lesion.db"
+    database_url: str = f"sqlite:////app/backend/brain_lesion.db"
     
     # Pipeline
     pipeline_root: Path = Path(__file__).parent.parent.resolve()

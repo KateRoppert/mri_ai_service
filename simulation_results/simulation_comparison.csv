@@ -1,0 +1,13 @@
+batch,mode,makespan_s,makespan_min,cpu_util,thr_hr,speedup
+20,Sequential,1285.7,21.4,4.2,56.0,1.0
+20,Stage-Seq. Parallel,562.3,9.4,46.0,128.0,2.29
+20,Pipeline Parallel,398.2,6.6,12.4,180.8,3.23
+20,MAS (Dynamic),321.5,5.4,29.4,224.0,4.0
+50,Sequential,3198.6,53.3,4.2,56.3,1.0
+50,Stage-Seq. Parallel,1398.5,23.3,45.8,128.7,2.29
+50,Pipeline Parallel,979.9,16.3,12.6,183.7,3.26
+50,MAS (Dynamic),656.0,10.9,31.9,274.4,4.88
+100,Sequential,6372.9,106.2,4.2,56.5,1.0
+100,Stage-Seq. Parallel,2784.4,46.4,46.0,129.3,2.29
+100,Pipeline Parallel,1956.2,32.6,12.6,184.0,3.26
+100,MAS (Dynamic),1356.0,22.6,31.6,265.5,4.7
