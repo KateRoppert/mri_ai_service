@@ -14,7 +14,7 @@ import QualityReport from './QualityReport';
 import NIfTIViewer from './NIfTIViewer'; 
 import ClinicalReport from './ClinicalReport';
 import wsService from '../services/websocket';
-import { getPipelineStatus } from '../services/api';
+import { getPipelineStatus, getEntitiesForRun } from '../services/api';
 
 const ProgressMonitor = ({ runId, onComplete }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
@@ -26,6 +26,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
   const [showQualityReport, setShowQualityReport] = useState(false); 
   const [showVisualization, setShowVisualization] = useState(false);
   const [showClinicalReport, setShowClinicalReport] = useState(false);
+  const [validationRef, setValidationRef] = useState(null);
 
   /**
    * Подключение к WebSocket при монтировании компонента
@@ -119,6 +120,18 @@ const ProgressMonitor = ({ runId, onComplete }) => {
     if (data.status === 'completed' || data.status === 'failed') {
       if (onComplete) {
         onComplete(data);
+      }
+      // Загружаем связку с Каппой для кнопок валидации
+      if (data.status === 'completed') {
+        getEntitiesForRun(runId).then((result) => {
+          if (result.entities && result.entities.length > 0) {
+            const e = result.entities[0];
+            setValidationRef({
+              entity_id: e.entity_id,
+              dataset_id: e.dataset_id,
+            });
+          }
+        }).catch((err) => console.error('Ошибка загрузки entity для валидации:', err));
       }
     }
   };
@@ -252,6 +265,7 @@ const ProgressMonitor = ({ runId, onComplete }) => {
         runId={runId}
         visible={showVisualization}
         onClose={handleCloseVisualization}
+        validationRef={validationRef}
       />
       <ClinicalReport
         runId={runId}
