@@ -80,6 +80,21 @@ class KappaUploader:
                     "Duplicate detected, skipping: %s (study_hash=%s already in dataset %d)",
                     session_key, study_hash, dataset_id,
                 )
+
+                # Обновляем pipeline_run_id в реестре, чтобы текущий запуск
+                # мог найти связку с Каппой
+                from patient_registry import find_by_study_hash, register_patient
+                existing_record = find_by_study_hash(study_hash)
+                if existing_record:
+                    register_patient(
+                        bids_id=session_key,
+                        study_hash=study_hash,
+                        original_patient_id=existing_record.get("original_patient_id", ""),
+                        kappa_entity_id=existing_record.get("kappa_entity_id"),
+                        kappa_dataset_id=existing_record.get("kappa_dataset_id"),
+                        pipeline_run_id=self.run_id,
+                    )
+
                 results.append({
                     "session": session_key,
                     "success": False,
@@ -545,6 +560,7 @@ class KappaUploader:
         kappa_dataset_id: int,
     ) -> None:
         """Зарегистрировать пациента в локальном реестре."""
+        logger.info("Registering patient: session=%s, entity=%s", session_key, kappa_entity_id)
         try:
             from patient_registry import register_patient
 
@@ -567,7 +583,7 @@ class KappaUploader:
                 preprocessing_id=self.preprocessing_id,
             )
         except Exception as e:
-            logger.warning("Failed to register patient: %s", e)
+            logger.error("Failed to register patient: %s", e, exc_info=True)
 
     def _read_session_metadata(self, session_data: Dict[str, Any]) -> Dict[str, str]:
         """Прочитать DICOM-метаданные сессии из папки metadata/."""
