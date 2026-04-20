@@ -77,6 +77,16 @@ const ProgressMonitor = ({ runId, onComplete }) => {
     if (data.type === 'progress_update') {
       updateStatus(data);
     }
+    if (data.type === 'kappa_upload_complete') {
+      // Каппа-загрузка завершилась — устанавливаем validationRef
+      if (data.entities && data.entities.length > 0) {
+        const e = data.entities[0];
+        setValidationRef({
+          entity_id: e.entity_id,
+          dataset_id: e.dataset_id,
+        });
+      }
+    }
   };
 
   /**
@@ -120,18 +130,6 @@ const ProgressMonitor = ({ runId, onComplete }) => {
     if (data.status === 'completed' || data.status === 'failed') {
       if (onComplete) {
         onComplete(data);
-      }
-      // Загружаем связку с Каппой для кнопок валидации
-      if (data.status === 'completed') {
-        getEntitiesForRun(runId).then((result) => {
-          if (result.entities && result.entities.length > 0) {
-            const e = result.entities[0];
-            setValidationRef({
-              entity_id: e.entity_id,
-              dataset_id: e.dataset_id,
-            });
-          }
-        }).catch((err) => console.error('Ошибка загрузки entity для валидации:', err));
       }
     }
   };
