@@ -13,6 +13,7 @@ import ClinicalReport from './components/ClinicalReport';
 import NIfTIViewer from './components/NIfTIViewer';
 import ValidationPanel from './components/ValidationPanel';
 import './App.css';
+import { getEntitiesForRun } from './services/api';
 
 const { Header, Content } = Layout;
 const { Title, Text } = Typography;
@@ -27,6 +28,7 @@ function App() {
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
   const [historyClinicalReportRunId, setHistoryClinicalReportRunId] = useState(null);
   const [showHistoryClinicalReport, setShowHistoryClinicalReport] = useState(false);
+  const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
 
   const handleLoginSuccess = (data) => {
@@ -59,9 +61,24 @@ function App() {
   /**
    * Показать визуализацию из истории
    */
-  const handleShowHistoryVisualization = (runId) => {
+  const handleShowHistoryVisualization = async (runId) => {
     setHistoryVisualizationRunId(runId);
+    setHistoryValidationRef(null);
     setShowHistoryVisualization(true);
+
+    // Загружаем связку с Каппой
+    try {
+      const result = await getEntitiesForRun(runId);
+      if (result.entities && result.entities.length > 0) {
+        const e = result.entities[0];
+        setHistoryValidationRef({
+          entity_id: e.entity_id,
+          dataset_id: e.dataset_id,
+        });
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки entity для валидации:', err);
+    }
   };
 
   const handleShowHistoryClinicalReport = (runId) => {
@@ -209,6 +226,7 @@ function App() {
                 runId={historyVisualizationRunId}
                 visible={showHistoryVisualization}
                 onClose={() => setShowHistoryVisualization(false)}
+                validationRef={historyValidationRef}
               />
             )}
             {showHistoryClinicalReport && (
