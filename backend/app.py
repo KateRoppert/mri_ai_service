@@ -834,6 +834,129 @@ async def get_lesion_types_endpoint():
 # ============================================
 
 from pydantic import BaseModel as PydanticBaseModel
+from fastapi.responses import FileResponse
+import tempfile
+import zipfile
+
+
+@app.get("/api/validation/download-package/{run_id}")
+async def download_slicer_package(run_id: str, session_id: str):
+    """
+    Скачать zip-пакет для редактирования в 3D Slicer.
+    Содержит: 4 preprocessed NIfTI + 4 native NIfTI + 1 маска + README.
+    """
+    from kappa_auth import get_session
+    from patient_registry import find_by_run_id
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия не найдена")
+
+    # Находим output_path через pipeline_runs
+    db = SessionLocal()
+    try:
+        run = get_pipeline_run(db, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Запуск не найден")
+        output_path = Path(run.output_path)
+    finally:
+        db.close()
+
+    # Находим entity info из реестра
+    records = find_by_run_id(run_id)
+    if not records:
+        raise HTTPException(status_code=404, detail="Нет связанных сущностей")
+
+    record = records[0]
+    bids_id = record.get("bids_id", "unknown")
+    sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+
+    # Собираем файлы
+    preprocessed_dir = output_path / "preprocessed" / sub / ses / "anat"
+    nifti_dir = output_path / "nifti" / sub / ses / "anat"
+    segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
+
+    files_to_pack = []
+
+    # Preprocessed NIfTI
+    if preprocessed_dir.exists():
+        for f in sorted(preprocessed_dir.glob("*.nii.gz")):
+            files_to_pack.append(("preprocessed", f))
+
+    # Native NIfTI
+    if nifti_dir.exists():
+        for f in sorted(nifti_dir.glob("*.nii.gz")):
+            files_to_pack.append(("native", f))
+
+    # Маска сегментации (основная, без native)
+    if segmentation_dir.exists():
+        for f in sorted(segmentation_dir.glob("*_segmask.nii.gz")):
+            if "_native_" not in f.name:
+                files_to_pack.append(("segmentation", f))
+
+    if not files_to_pack:
+        raise HTTPException(status_code=404, detail="Файлы не найдены")
+
+    # README
+    readme_text = f"""# Пакет для редактирования сегментации в 3D Slicer
+# Пациент: {bids_id}
+# Дата создания: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+## Содержимое
+- preprocessed/ — предобработанные NIfTI (4 модальности в пространстве атласа)
+- native/ — оригинальные NIfTI (4 модальности в нативном пространстве)
+- segmentation/ — маска сегментации от ИИ
+
+## Инструкция по редактированию в 3D Slicer
+
+1. Откройте 3D Slicer
+2. File → Add Data → выберите ВСЕ файлы из этого архива
+3. В выпадающем меню Volume выберите preprocessed модальность (например T1)
+4. Перейдите в модуль Segment Editor (в верхнем меню или через поиск модулей)
+5. Нажмите кнопку с иконкой стрелки вниз (Import Labelmap) рядом с "Add"
+6. Выберите файл маски (*_segmask.nii.gz)
+7. Маска загрузится с 4 сегментами:
+   - Сегмент 1 (красный): NCR — Некротическое ядро
+   - Сегмент 2 (зелёный): ED — Отёк
+   - Сегмент 3 (жёлтый): NET — Неусиливающаяся опухоль
+   - Сегмент 4 (синий): ET — Усиливающаяся опухоль
+
+## Инструменты редактирования
+- Paint (Кисть): рисовать области выбранного класса
+- Erase (Ластик): стирать области
+- Scissors (Ножницы): вырезать/оставить область
+- Threshold: выделение по интенсивности
+- Grow from Seeds: полуавтоматическая сегментация
+
+## Сохранение результата
+1. В Segment Editor нажмите кнопку экспорта (Export Labelmap)
+2. File → Save → выберите формат NIfTI (.nii.gz)
+3. Сохраните файл маски
+4. Загрузите отредактированную маску через интерфейс сервиса
+   (кнопка "Загрузить маску" в окне визуализации)
+"""
+
+    # Создаём zip
+    tmp_dir = tempfile.mkdtemp()
+    zip_name = f"slicer_package_{bids_id}.zip"
+    zip_path = Path(tmp_dir) / zip_name
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("README.txt", readme_text)
+        for folder, fpath in files_to_pack:
+            arcname = f"{folder}/{fpath.name}"
+            zf.write(fpath, arcname)
+
+    logger.info(
+        "Slicer package created: %s (%d files, %.1f MB)",
+        zip_name, len(files_to_pack), zip_path.stat().st_size / 1024 / 1024,
+    )
+
+    return FileResponse(
+        path=str(zip_path),
+        filename=zip_name,
+        media_type="application/zip",
+    )
 
 
 class ValidationActionRequest(PydanticBaseModel):
