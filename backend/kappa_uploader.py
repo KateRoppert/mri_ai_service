@@ -398,6 +398,20 @@ class KappaUploader:
                 session_key, session_data, entity_id, dataset_id
             )
 
+            # Регистрируем AI-маску в истории версий
+            if entity_id:
+                from mask_service import register_ai_mask
+                main_masks = [
+                    m for m in session_data["masks"]
+                    if "_native_" not in m.name
+                ]
+                if main_masks:
+                    register_ai_mask(
+                        entity_id=entity_id,
+                        dataset_id=dataset_id,
+                        file_path=str(main_masks[0]),
+                    )
+
             return {
                 "session": session_key,
                 "success": True,
