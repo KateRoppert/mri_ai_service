@@ -84,6 +84,41 @@ class Validation(Base):
 Index("ix_validations_entity_user", Validation.entity_id, Validation.user_id)
 Index("ix_patient_registry_patient_date", PatientRegistry.original_patient_id, PatientRegistry.scan_date)
 
+class MaskVersion(Base):
+    """
+    История версий масок сегментации.
+    Каждая запись — одна версия маски для сущности.
+    В Каппе хранится только актуальная (последняя), здесь — все.
+    """
+    __tablename__ = "mask_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Связь с Каппой
+    entity_id = Column(String, nullable=False, index=True)
+    dataset_id = Column(Integer, nullable=False)
+
+    # Версия (1 = оригинал от ИИ, 2+ = правки экспертов)
+    version = Column(Integer, nullable=False)
+
+    # Кто загрузил
+    source = Column(String, nullable=False)  # 'ai' или 'expert'
+    uploaded_by_user_id = Column(Integer, nullable=True)
+    uploaded_by_name = Column(String, nullable=True)
+
+    # Путь к файлу маски
+    file_path = Column(String, nullable=False)
+    file_name = Column(String, nullable=False)
+
+    # Временная метка
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+
+Index("ix_mask_versions_entity_version", MaskVersion.entity_id, MaskVersion.version)
 
 def init_registry_tables():
     """Создать таблицы реестра и валидаций (если их ещё нет)."""
