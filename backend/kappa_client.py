@@ -326,6 +326,67 @@ async def update_entity_status(
         logger.exception("Error updating entity status: %s", exc)
         return False
 
+async def replace_entity_file(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_id: int,
+    entity_id: str,
+    file_path: Path,
+    content_type: str = "application/gzip",
+) -> bool:
+    """
+    Заменить файл(ы) сущности в Каппе (PUT с новым файлом).
+    Используется для загрузки отредактированной маски экспертом.
+    """
+    url = (
+        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
+        f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
+    )
+
+    update_payload = json.dumps({"remark": "mask updated by expert"})
+    data = {"update_dataset_entity": update_payload}
+
+    headers = {"Authorization": f"Bearer {token}"}
+    f = None
+
+    try:
+        if not file_path.exists():
+            logger.error("File not found for replacement: %s", file_path)
+            return False
+
+        f = open(file_path, "rb")
+        files = [("files", (file_path.name, f, content_type))]
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
+            verify=False,
+        ) as client:
+            response = await client.put(
+                url, data=data, files=files, headers=headers
+            )
+
+        if response.is_success:
+            logger.info(
+                "Entity file replaced: entity=%s, file=%s",
+                entity_id, file_path.name,
+            )
+            return True
+        else:
+            logger.warning(
+                "Failed to replace entity file: status=%s, body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            return False
+    except Exception as exc:
+        logger.exception("Error replacing entity file: %s", exc)
+        return False
+    finally:
+        if f:
+            f.close()
+
+
 async def get_dataset_entities(
     token: str,
     user_id: int,
