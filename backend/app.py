@@ -853,6 +853,7 @@ async def download_slicer_package(run_id: str, session_id: str):
         raise HTTPException(status_code=401, detail="Сессия не найдена")
 
     # Находим output_path через pipeline_runs
+    from database import SessionLocal, get_pipeline_run
     db = SessionLocal()
     try:
         run = get_pipeline_run(db, run_id)
