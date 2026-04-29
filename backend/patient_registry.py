@@ -120,12 +120,14 @@ def register_patient(
         ).first()
 
         if existing:
-            # Обновляем kappa-поля если они появились
             if kappa_entity_id:
                 existing.kappa_entity_id = kappa_entity_id
             if kappa_dataset_id:
                 existing.kappa_dataset_id = kappa_dataset_id
+            if pipeline_run_id:
+                existing.pipeline_run_id = pipeline_run_id
             existing.updated_at = datetime.now(timezone.utc)
+            
             db.commit()
             db.refresh(existing)
             logger.info(
