@@ -960,6 +960,165 @@ async def download_slicer_package(run_id: str, session_id: str):
     )
 
 
+# ============================================
+# ЗАГРУЗКА ОТРЕДАКТИРОВАННОЙ МАСКИ
+# ============================================
+
+from fastapi import UploadFile, File, Form
+
+@app.post("/api/validation/upload-mask")
+async def upload_edited_mask(
+    entity_id: str = Form(...),
+    dataset_id: int = Form(...),
+    session_id: str = Form(...),
+    run_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """
+    Загрузить отредактированную маску от эксперта.
+    
+    Шаги:
+    1. Валидация сессии и файла
+    2. Сохранение файла локально (в директорию segmentation)
+    3. Регистрация новой версии в mask_versions
+    4. Замена файла маски в Каппе
+    5. Возврат информации о новой версии
+    """
+    import shutil
+    from kappa_auth import get_session
+    from kappa_client import replace_entity_file
+    from mask_service import register_expert_mask, get_mask_history
+    from patient_registry import find_by_run_id
+
+    # 1. Валидация сессии
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    # Валидация файла
+    if not file.filename or not file.filename.endswith((".nii.gz", ".nii")):
+        raise HTTPException(
+            status_code=400,
+            detail="Файл должен быть в формате NIfTI (.nii.gz или .nii)",
+        )
+
+    # 2. Определяем путь для сохранения
+    from database import SessionLocal as DBSessionLocal, get_pipeline_run
+    db = DBSessionLocal()
+    try:
+        run = get_pipeline_run(db, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Запуск не найден")
+        output_path = Path(run.output_path)
+    finally:
+        db.close()
+
+    # Находим bids_id через реестр
+    records = find_by_run_id(run_id)
+    if not records:
+        raise HTTPException(status_code=404, detail="Нет связанных сущностей")
+
+    record = records[0]
+    bids_id = record.get("bids_id", "unknown")
+    sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+
+    segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
+    segmentation_dir.mkdir(parents=True, exist_ok=True)
+
+    # Определяем номер версии
+    history = get_mask_history(entity_id)
+    next_version = len(history) + 1
+
+    # Имя файла: оригинальное имя + _v{N}
+    # Находим оригинальное имя маски
+    original_masks = list(segmentation_dir.glob("*_segmask.nii.gz"))
+    if original_masks:
+        base_name = original_masks[0].name.replace(".nii.gz", "")
+    else:
+        base_name = f"{sub}_{ses}_segmask"
+
+    versioned_name = f"{base_name}_v{next_version}.nii.gz"
+    save_path = segmentation_dir / versioned_name
+
+    # Сохраняем файл
+    try:
+        with open(save_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        logger.info("Expert mask saved: %s (%.1f MB)", save_path, len(content) / 1024 / 1024)
+    except Exception as e:
+        logger.error("Failed to save expert mask: %s", e)
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения файла: {e}")
+
+    # 3. Регистрируем в mask_versions
+    user_name = ""
+    first_name = session.get("first_name") or ""
+    last_name = session.get("last_name") or ""
+    if first_name or last_name:
+        user_name = f"{first_name} {last_name}".strip()
+
+    mask_info = register_expert_mask(
+        entity_id=entity_id,
+        dataset_id=dataset_id,
+        file_path=str(save_path),
+        user_id=session["user_id"],
+        user_name=user_name,
+    )
+
+    # 4. Заливаем в Каппу (замена файла сущности)
+    kappa_ok = await replace_entity_file(
+        token=session["kappa_token"],
+        user_id=session["user_id"],
+        user_type_id=session["user_type_id"],
+        dataset_id=dataset_id,
+        entity_id=entity_id,
+        file_path=save_path,
+    )
+
+    if not kappa_ok:
+        logger.warning(
+            "Mask saved locally but Kappa upload failed: entity=%s, version=%d",
+            entity_id, mask_info["version"],
+        )
+
+    # 5. Ответ
+    return {
+        "success": True,
+        "mask_version": mask_info,
+        "kappa_uploaded": kappa_ok,
+        "file_name": versioned_name,
+        "message": (
+            f"Маска v{mask_info['version']} сохранена"
+            + (" и загружена в Каппу" if kappa_ok else ", но загрузка в Каппу не удалась")
+        ),
+    }
+
+
+# ============================================
+# ПОЛУЧЕНИЕ ИСТОРИИ ВЕРСИЙ МАСОК
+# ============================================
+
+@app.get("/api/validation/mask-versions/{entity_id}")
+async def get_mask_versions(entity_id: str, session_id: str):
+    """Получить историю версий масок для сущности."""
+    from kappa_auth import get_session
+    from mask_service import get_mask_history, get_current_mask
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    history = get_mask_history(entity_id)
+    current = get_current_mask(entity_id)
+
+    return {
+        "entity_id": entity_id,
+        "versions": history,
+        "current_version": current["version"] if current else None,
+        "total": len(history),
+    }
+
+
 class ValidationActionRequest(PydanticBaseModel):
     entity_id: str
     dataset_id: int
