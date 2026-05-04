@@ -176,16 +176,24 @@ export const uploadMask = async (entityId, datasetId, runId, file) => {
   const sessionId = localStorage.getItem('kappa_session_id');
   const formData = new FormData();
   formData.append('entity_id', entityId);
-  formData.append('dataset_id', datasetId);
+  formData.append('dataset_id', String(datasetId));
   formData.append('session_id', sessionId);
   formData.append('run_id', runId);
-  formData.append('file', file);
+  formData.append('file', file, file.name);
 
-  const response = await apiClient.post('/validation/upload-mask', formData, {
-    headers: { 'Content-Type': undefined },  // Сбрасываем JSON-default, axios сам поставит multipart с boundary
-    timeout: 120000, // 2 мин для больших файлов
+  // Используем fetch вместо axios — axios некорректно обрабатывает
+  // multipart/form-data при наличии default Content-Type: application/json
+  const response = await fetch('/api/validation/upload-mask', {
+    method: 'POST',
+    body: formData,
   });
-  return response.data;
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Ошибка загрузки' }));
+    throw { response: { data: error } };
+  }
+
+  return await response.json();
 };
 
 /**
