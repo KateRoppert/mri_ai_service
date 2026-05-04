@@ -7,7 +7,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Button, Space, Tag, Tooltip, message, Popconfirm,
-  Modal, Upload, Steps, Typography, Alert, Spin, List,
+  Modal, Steps, Typography, Alert, Spin, List,
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -101,13 +101,18 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     window.open(url, '_blank');
   };
 
-  const handleUploadMask = async (options) => {
-    const { file, onSuccess, onError } = options;
+  const fileInputRef = useRef(null);
+
+  const handleFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Сбрасываем input, чтобы можно было выбрать тот же файл повторно
+    e.target.value = '';
 
     // Валидация на клиенте
     if (!file.name.endsWith('.nii.gz') && !file.name.endsWith('.nii')) {
       message.error('Файл должен быть в формате NIfTI (.nii.gz или .nii)');
-      onError(new Error('Неверный формат'));
       return;
     }
 
@@ -117,7 +122,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     try {
       const result = await uploadMask(entityId, datasetId, runId, file);
       setUploadResult(result);
-      onSuccess(result);
       message.success(result.message || 'Маска загружена');
 
       if (onMaskUploaded) {
@@ -127,7 +131,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       console.error('Ошибка загрузки маски:', err);
       const detail = err.response?.data?.detail || 'Не удалось загрузить маску';
       message.error(detail);
-      onError(err);
     } finally {
       setUploading(false);
     }
@@ -286,21 +289,22 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
               title: 'Загрузите отредактированную маску',
               description: (
                 <Space direction="vertical" size="small" style={{ marginTop: 8 }}>
-                  <Upload
-                    customRequest={handleUploadMask}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
                     accept=".nii.gz,.nii"
-                    maxCount={1}
-                    showUploadList={false}
+                    style={{ display: 'none' }}
+                    onChange={handleFileSelected}
+                  />
+                  <Button
+                    icon={<UploadOutlined />}
+                    loading={uploading}
+                    type={uploadResult ? 'default' : 'primary'}
+                    onClick={() => fileInputRef.current?.click()}
                     disabled={uploading}
                   >
-                    <Button
-                      icon={<UploadOutlined />}
-                      loading={uploading}
-                      type={uploadResult ? 'default' : 'primary'}
-                    >
-                      {uploading ? 'Загрузка...' : 'Выбрать файл маски (.nii.gz)'}
-                    </Button>
-                  </Upload>
+                    {uploading ? 'Загрузка...' : 'Выбрать файл маски (.nii.gz)'}
+                  </Button>
 
                   {uploadResult && (
                     <Alert
