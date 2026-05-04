@@ -488,10 +488,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                 datasetId={validationRef.dataset_id}
                 runId={resolvedRunId}
                 onMaskUploaded={() => {
-                  // Перезагружаем визуализацию с новой маской
-                  if (selectedFile) {
-                    loadNIfTI(selectedFile);
-                  }
+                  // Не перезагружаем визуализацию автоматически —
+                  // маска в Каппе обновлена, но file_id изменился.
+                  // Пользователь может закрыть и открыть viewer заново.
                 }}
               />
             </div>
