@@ -116,11 +116,14 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       return;
     }
 
+    console.log('[UPLOAD] Starting upload:', { entityId, datasetId, runId, fileName: file.name, fileSize: file.size });
+
     setUploading(true);
     setUploadResult(null);
 
     try {
       const result = await uploadMask(entityId, datasetId, runId, file);
+      console.log('[UPLOAD] Success:', result);
       setUploadResult(result);
       message.success(result.message || 'Маска загружена');
 
@@ -128,7 +131,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         onMaskUploaded(result);
       }
     } catch (err) {
-      console.error('Ошибка загрузки маски:', err);
+      console.error('[UPLOAD] Error:', err);
       const detail = err.response?.data?.detail || 'Не удалось загрузить маску';
       message.error(detail);
     } finally {
@@ -241,11 +244,13 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         </Tooltip>
       </Space>
 
-      {/* Модалка редактирования */}
+      {/* Модалка редактирования — рендерится на document.body,
+          чтобы не конфликтовать с модалкой NIfTIViewer */}
       <Modal
         title="Редактирование сегментации в 3D Slicer"
         open={editModalOpen}
         onCancel={() => setEditModalOpen(false)}
+        getContainer={document.body}
         footer={[
           <Button key="close" onClick={() => setEditModalOpen(false)}>
             Закрыть
@@ -332,6 +337,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         title="История версий маски"
         open={versionsModalOpen}
         onCancel={() => setVersionsModalOpen(false)}
+        getContainer={document.body}
         footer={null}
         width={500}
       >
