@@ -1066,14 +1066,18 @@ async def upload_edited_mask(
     )
 
     # 4. Заливаем в Каппу (замена файла сущности)
-    kappa_ok = await replace_entity_file(
-        token=session["kappa_token"],
-        user_id=session["user_id"],
-        user_type_id=session["user_type_id"],
-        dataset_id=dataset_id,
-        entity_id=entity_id,
-        file_path=save_path,
-    )
+    kappa_ok = False
+    try:
+        kappa_ok = await replace_entity_file(
+            token=session["kappa_token"],
+            user_id=session["user_id"],
+            user_type_id=session["user_type_id"],
+            dataset_id=dataset_id,
+            entity_id=entity_id,
+            file_path=save_path,
+        )
+    except Exception as kappa_err:
+        logger.error("Kappa upload exception (non-fatal): %s", kappa_err)
 
     if not kappa_ok:
         logger.warning(
