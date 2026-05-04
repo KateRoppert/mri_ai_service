@@ -154,6 +154,14 @@ export const getEntitiesForRun = async (runId) => {
 };
 
 /**
+ * Получить run_id по entity_id (для вкладки Валидации)
+ */
+export const getEntityRunInfo = async (entityId) => {
+  const response = await apiClient.get(`/validation/entity-run-info/${entityId}`);
+  return response.data;
+};
+
+/**
  * Скачать zip-пакет для 3D Slicer
  */
 export const getSlicerPackageUrl = (runId) => {
@@ -205,6 +213,7 @@ export default {
   validationAction,
   getEntityValidation,
   getEntitiesForRun,
+  getEntityRunInfo,
   getSlicerPackageUrl,
   uploadMask,
   getMaskVersions,

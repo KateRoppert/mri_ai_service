@@ -1119,6 +1119,27 @@ async def get_mask_versions(entity_id: str, session_id: str):
     }
 
 
+@app.get("/api/validation/entity-run-info/{entity_id}")
+async def get_entity_run_info(entity_id: str):
+    """
+    Получить run_id и другие данные пайплайна по entity_id из Каппы.
+    Нужен для вкладки Валидации, где данные приходят из Каппы
+    и run_id изначально неизвестен.
+    """
+    from patient_registry import find_by_kappa_entity
+
+    record = find_by_kappa_entity(entity_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Сущность не найдена в реестре")
+
+    return {
+        "entity_id": entity_id,
+        "run_id": record.get("pipeline_run_id"),
+        "bids_id": record.get("bids_id"),
+        "dataset_id": record.get("kappa_dataset_id"),
+    }
+
+
 class ValidationActionRequest(PydanticBaseModel):
     entity_id: str
     dataset_id: int
