@@ -466,6 +466,13 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
               <ValidationActions
                 entityId={validationRef.entity_id}
                 datasetId={validationRef.dataset_id}
+                runId={runId}
+                onMaskUploaded={() => {
+                  // Перезагружаем визуализацию с новой маской
+                  if (selectedFile) {
+                    loadNIfTI(selectedFile);
+                  }
+                }}
               />
             </div>
           )}
