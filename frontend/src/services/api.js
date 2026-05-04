@@ -182,7 +182,7 @@ export const uploadMask = async (entityId, datasetId, runId, file) => {
   formData.append('file', file);
 
   const response = await apiClient.post('/validation/upload-mask', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+    headers: { 'Content-Type': undefined },  // Сбрасываем JSON-default, axios сам поставит multipart с boundary
     timeout: 120000, // 2 мин для больших файлов
   });
   return response.data;
