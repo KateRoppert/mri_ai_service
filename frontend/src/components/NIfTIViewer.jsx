@@ -12,7 +12,7 @@ import {
   EnvironmentOutlined 
 } from '@ant-design/icons';
 import { Niivue } from '@niivue/niivue';
-import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl } from '../services/api';
+import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl, getEntityRunInfo } from '../services/api';
 import ValidationActions from './ValidationActions';
 
 /**
@@ -47,6 +47,26 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const [showMask, setShowMask] = useState(true);
   const [showAtlas, setShowAtlas] = useState(false);
   const [viewMode, setViewMode] = useState('atlas'); // 'atlas' or 'native'
+  const [resolvedRunId, setResolvedRunId] = useState(null);
+
+  /**
+   * Резолвим runId: если передан напрямую — используем,
+   * иначе запрашиваем по entity_id из patient_registry
+   */
+  useEffect(() => {
+    if (runId) {
+      setResolvedRunId(runId);
+    } else if (visible && validationRef?.entity_id && !runId) {
+      getEntityRunInfo(validationRef.entity_id)
+        .then((info) => {
+          setResolvedRunId(info.run_id || null);
+        })
+        .catch((err) => {
+          console.warn('Не удалось получить run_id по entity_id:', err);
+          setResolvedRunId(null);
+        });
+    }
+  }, [runId, visible, validationRef]);
 
 
   /**
@@ -466,7 +486,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
               <ValidationActions
                 entityId={validationRef.entity_id}
                 datasetId={validationRef.dataset_id}
-                runId={runId}
+                runId={resolvedRunId}
                 onMaskUploaded={() => {
                   // Перезагружаем визуализацию с новой маской
                   if (selectedFile) {
