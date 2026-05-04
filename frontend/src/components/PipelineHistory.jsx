@@ -29,11 +29,14 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     fetchHistory();
   }, [currentPage, statusFilter]);
 
-  // Автообновление каждые 2 секунды
+  // Автообновление каждые 5 секунд, только если есть запущенные пайплайны
   useEffect(() => {
-    const interval = setInterval(fetchHistory, 2000);
+    const hasRunning = history.some(run => run.status === 'running');
+    if (!hasRunning) return;
+
+    const interval = setInterval(fetchHistory, 5000);
     return () => clearInterval(interval);
-  }, [currentPage, statusFilter]);
+  }, [currentPage, statusFilter, history]);
 
   /**
    * Получить историю запусков
