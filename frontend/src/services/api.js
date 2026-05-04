@@ -153,6 +153,44 @@ export const getEntitiesForRun = async (runId) => {
   return response.data;
 };
 
+/**
+ * Скачать zip-пакет для 3D Slicer
+ */
+export const getSlicerPackageUrl = (runId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  return `http://localhost:8000/api/validation/download-package/${runId}?session_id=${sessionId}`;
+};
+
+/**
+ * Загрузить отредактированную маску эксперта
+ */
+export const uploadMask = async (entityId, datasetId, runId, file) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const formData = new FormData();
+  formData.append('entity_id', entityId);
+  formData.append('dataset_id', datasetId);
+  formData.append('session_id', sessionId);
+  formData.append('run_id', runId);
+  formData.append('file', file);
+
+  const response = await apiClient.post('/validation/upload-mask', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000, // 2 мин для больших файлов
+  });
+  return response.data;
+};
+
+/**
+ * Получить историю версий масок
+ */
+export const getMaskVersions = async (entityId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.get(`/validation/mask-versions/${entityId}`, {
+    params: { session_id: sessionId },
+  });
+  return response.data;
+};
+
 export default {
   startPipeline,
   getPipelineStatus,
@@ -167,5 +205,7 @@ export default {
   validationAction,
   getEntityValidation,
   getEntitiesForRun,
+  getSlicerPackageUrl,
+  uploadMask,
+  getMaskVersions,
 };
-
