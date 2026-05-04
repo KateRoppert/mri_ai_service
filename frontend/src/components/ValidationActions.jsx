@@ -107,19 +107,27 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Сбрасываем input, чтобы можно было выбрать тот же файл повторно
+    // Сбрасываем input
     e.target.value = '';
 
-    // Валидация на клиенте
+    // Валидация
     if (!file.name.endsWith('.nii.gz') && !file.name.endsWith('.nii')) {
       message.error('Файл должен быть в формате NIfTI (.nii.gz или .nii)');
       return;
     }
 
-    console.log('[UPLOAD] Starting upload:', { entityId, datasetId, runId, fileName: file.name, fileSize: file.size });
+    console.log('[UPLOAD] File selected:', { fileName: file.name, fileSize: file.size });
 
+    // Сохраняем файл и запускаем upload отложенно,
+    // чтобы выйти из контекста события input (Firefox может блокировать fetch)
     setUploading(true);
     setUploadResult(null);
+
+    setTimeout(() => doUpload(file), 0);
+  };
+
+  const doUpload = async (file) => {
+    console.log('[UPLOAD] Starting fetch:', { entityId, datasetId, runId });
 
     try {
       const result = await uploadMask(entityId, datasetId, runId, file);
