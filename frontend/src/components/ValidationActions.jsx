@@ -155,7 +155,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       onCloseViewer();
     }
     // Небольшая задержка, чтобы соединения успели закрыться
-    setTimeout(() => setEditModalOpen(true), 100);
+    setTimeout(() => setEditModalOpen(true), 500);
   };
 
   // === История версий ===

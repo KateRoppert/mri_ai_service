@@ -487,7 +487,19 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                 entityId={validationRef.entity_id}
                 datasetId={validationRef.dataset_id}
                 runId={resolvedRunId}
-                onCloseViewer={onClose}
+                onCloseViewer={() => {
+                  // Уничтожаем Niivue instance для освобождения HTTP-соединений
+                  if (nvRef.current) {
+                    try {
+                      nvRef.current.closeDrawing();
+                      nvRef.current = null;
+                    } catch (e) {
+                      console.warn('Niivue cleanup error:', e);
+                      nvRef.current = null;
+                    }
+                  }
+                  onClose();
+                }}
                 onMaskUploaded={() => {}}
               />
             </div>
