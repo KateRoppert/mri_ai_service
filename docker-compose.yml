@@ -18,6 +18,8 @@ services:
         - ./backend/brain_lesion.db:/app/backend/brain_lesion.db:rw
     depends_on:
       - segmentation
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     profiles: ["full"]
   
   # Сервис 2: сегментация на GPU
