@@ -34,7 +34,7 @@ const STATUS_TAG = {
   5: { text: 'Верифицировано', color: 'green' },
 };
 
-const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskUploaded }) => {
+const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskUploaded, onCloseViewer }) => {
   const [loading, setLoading] = useState(false);
   const [votes, setVotes] = useState(null);
   const [myVote, setMyVote] = useState(null);
@@ -125,16 +125,13 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
   const doUpload = async (file) => {
     console.log('[UPLOAD] Starting XHR:', { entityId, datasetId, runId });
-
-    // Не вызываем setUploading(true) здесь — это вызовет re-render,
-    // который в Firefox отменит pending XHR (NS_BINDING_ABORTED).
-    // Вместо этого обновляем UI только после получения ответа.
+    setUploading(true);
+    setUploadResult(null);
 
     try {
       const result = await uploadMask(entityId, datasetId, runId, file);
       console.log('[UPLOAD] Success:', result);
       setUploadResult(result);
-      setUploading(false);
       message.success(result.message || 'Маска загружена');
 
       if (onMaskUploaded) {
@@ -144,13 +141,21 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       console.error('[UPLOAD] Error:', err);
       const detail = err.response?.data?.detail || 'Не удалось загрузить маску';
       message.error(detail);
+    } finally {
       setUploading(false);
     }
   };
 
   const openEditModal = () => {
     setUploadResult(null);
-    setEditModalOpen(true);
+    // Закрываем NIfTIViewer, чтобы освободить HTTP-соединения
+    // (Firefox ограничивает 6 соединений к одному домену,
+    // а NIfTIViewer держит их через keep-alive)
+    if (onCloseViewer) {
+      onCloseViewer();
+    }
+    // Небольшая задержка, чтобы соединения успели закрыться
+    setTimeout(() => setEditModalOpen(true), 100);
   };
 
   // === История версий ===
