@@ -1144,6 +1144,108 @@ async def get_entity_run_info(entity_id: str):
     }
 
 
+# ============================================
+# ИНТЕГРАЦИЯ С 3D SLICER (ЧЕРЕЗ АГЕНТА)
+# ============================================
+
+SLICER_AGENT_URL = "http://host.docker.internal:8001"
+
+
+@app.get("/api/slicer/status")
+async def slicer_agent_status():
+    """Проверить доступность Slicer Agent."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{SLICER_AGENT_URL}/health")
+        if response.is_success:
+            return response.json()
+        return {"status": "error", "slicer_found": False}
+    except Exception:
+        return {"status": "unavailable", "slicer_found": False}
+
+
+@app.post("/api/slicer/open/{run_id}")
+async def open_in_slicer(run_id: str):
+    """
+    Открыть данные пациента в 3D Slicer через агента.
+    Собирает пути к файлам из результатов пайплайна и отправляет агенту.
+    """
+    from patient_registry import find_by_run_id
+
+    db = SessionLocal()
+    try:
+        run = get_pipeline_run(db, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Запуск не найден")
+        output_path = Path(run.output_path)
+    finally:
+        db.close()
+
+    # Находим данные пациента
+    records = find_by_run_id(run_id)
+    if not records:
+        raise HTTPException(status_code=404, detail="Нет данных пациента")
+
+    record = records[0]
+    bids_id = record.get("bids_id", "unknown")
+    sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+
+    # Собираем пути к файлам
+    preprocessed_dir = output_path / "preprocessed" / sub / ses / "anat"
+    segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
+    nifti_dir = output_path / "nifti" / sub / ses / "anat"
+
+    # Preprocessed изображения
+    image_paths = sorted([str(p) for p in preprocessed_dir.glob("*.nii.gz")]) if preprocessed_dir.exists() else []
+
+    # Маска — берём последнюю версию (без _v{N} суффикса = оригинал, с _v{N} = правка)
+    mask_path = ""
+    if segmentation_dir.exists():
+        masks = sorted(segmentation_dir.glob("*_segmask*.nii.gz"))
+        if masks:
+            mask_path = str(masks[-1])  # Последняя по имени = последняя версия
+
+    # Нативные изображения и маски
+    native_image_paths = sorted([str(p) for p in nifti_dir.glob("*.nii.gz") if "segmask" not in p.name]) if nifti_dir.exists() else []
+    native_mask_files = sorted([str(p) for p in nifti_dir.glob("*segmask*.nii.gz")]) if nifti_dir.exists() else []
+    native_mask_path = native_mask_files[-1] if native_mask_files else None
+
+    if not image_paths and not mask_path:
+        raise HTTPException(status_code=404, detail="Файлы результатов не найдены")
+
+    # Отправляем запрос агенту
+    payload = {
+        "image_paths": image_paths,
+        "mask_path": mask_path,
+        "native_image_paths": native_image_paths,
+        "native_mask_path": native_mask_path,
+        "patient_id": sub,
+        "session_id": ses,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(f"{SLICER_AGENT_URL}/open", json=payload)
+
+        if response.is_success:
+            result = response.json()
+            logger.info("Slicer opened for %s: %s", bids_id, result)
+            return result
+        else:
+            detail = response.json().get("detail", "Ошибка агента")
+            raise HTTPException(status_code=response.status_code, detail=detail)
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=503,
+            detail="Slicer Agent недоступен. Убедитесь, что slicer_agent.py запущен.",
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Slicer Agent не ответил вовремя",
+        )
+
+
 class ValidationActionRequest(PydanticBaseModel):
     entity_id: str
     dataset_id: int

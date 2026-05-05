@@ -154,6 +154,39 @@ export const getEntitiesForRun = async (runId) => {
 };
 
 /**
+ * Проверить доступность Slicer Agent
+ * Сначала пробуем напрямую (localhost:8001), потом через бэкенд-прокси
+ */
+export const checkSlicerAgent = async () => {
+  // Попытка 1: напрямую к агенту (когда всё на одной машине)
+  try {
+    const direct = await fetch('http://localhost:8001/health', { mode: 'cors' });
+    if (direct.ok) {
+      const data = await direct.json();
+      return { ...data, connection: 'direct' };
+    }
+  } catch {
+    // Агент не доступен напрямую
+  }
+
+  // Попытка 2: через бэкенд-прокси (когда бэкенд в Docker)
+  try {
+    const response = await apiClient.get('/slicer/status');
+    return { ...response.data, connection: 'proxy' };
+  } catch {
+    return { status: 'unavailable', slicer_found: false };
+  }
+};
+
+/**
+ * Открыть данные пациента в 3D Slicer
+ */
+export const openInSlicer = async (runId) => {
+  const response = await apiClient.post(`/slicer/open/${runId}`);
+  return response.data;
+};
+
+/**
  * Получить run_id по entity_id (для вкладки Валидации)
  */
 export const getEntityRunInfo = async (entityId) => {
@@ -235,6 +268,8 @@ export default {
   validationAction,
   getEntityValidation,
   getEntitiesForRun,
+  checkSlicerAgent,
+  openInSlicer,
   getEntityRunInfo,
   getSlicerPackageUrl,
   uploadMask,
