@@ -172,28 +172,42 @@ export const getSlicerPackageUrl = (runId) => {
 /**
  * Загрузить отредактированную маску эксперта
  */
-export const uploadMask = async (entityId, datasetId, runId, file) => {
-  const sessionId = localStorage.getItem('kappa_session_id');
-  const formData = new FormData();
-  formData.append('entity_id', entityId);
-  formData.append('dataset_id', String(datasetId));
-  formData.append('session_id', sessionId);
-  formData.append('run_id', runId);
-  formData.append('file', file, file.name);
+export const uploadMask = (entityId, datasetId, runId, file) => {
+  return new Promise((resolve, reject) => {
+    const sessionId = localStorage.getItem('kappa_session_id');
+    const formData = new FormData();
+    formData.append('entity_id', entityId);
+    formData.append('dataset_id', String(datasetId));
+    formData.append('session_id', sessionId);
+    formData.append('run_id', runId);
+    formData.append('file', file, file.name);
 
-  // Используем fetch вместо axios — axios некорректно обрабатывает
-  // multipart/form-data при наличии default Content-Type: application/json
-  const response = await fetch('/api/validation/upload-mask', {
-    method: 'POST',
-    body: formData,
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/validation/upload-mask');
+    xhr.timeout = 120000;
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          resolve({ success: true, message: xhr.responseText });
+        }
+      } else {
+        try {
+          reject({ response: { data: JSON.parse(xhr.responseText) } });
+        } catch {
+          reject({ response: { data: { detail: `Ошибка ${xhr.status}` } } });
+        }
+      }
+    };
+
+    xhr.onerror = () => reject({ response: { data: { detail: 'Сетевая ошибка' } } });
+    xhr.ontimeout = () => reject({ response: { data: { detail: 'Таймаут загрузки' } } });
+
+    console.log('[XHR] Sending upload...');
+    xhr.send(formData);
   });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Ошибка загрузки' }));
-    throw { response: { data: error } };
-  }
-
-  return await response.json();
 };
 
 /**
