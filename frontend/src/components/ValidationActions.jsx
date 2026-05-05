@@ -17,6 +17,7 @@ import {
   DownloadOutlined,
   UploadOutlined,
   HistoryOutlined,
+  DesktopOutlined,
 } from '@ant-design/icons';
 import {
   validationAction,
@@ -24,6 +25,8 @@ import {
   getSlicerPackageUrl,
   uploadMask,
   getMaskVersions,
+  checkSlicerAgent,
+  openInSlicer,
 } from '../services/api';
 
 const { Text } = Typography;
@@ -43,6 +46,11 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
+
+  // Slicer Agent
+  const [slicerStatus, setSlicerStatus] = useState(null); // null | 'checking' | 'available' | 'unavailable'
+  const [slicerOpening, setSlicerOpening] = useState(false);
+  const [slicerResult, setSlicerResult] = useState(null);
 
   // История версий
   const [versionsModalOpen, setVersionsModalOpen] = useState(false);
@@ -164,7 +172,39 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
   const openEditModal = () => {
     setUploadResult(null);
+    setSlicerResult(null);
     setEditModalOpen(true);
+
+    // Проверяем доступность Slicer Agent
+    setSlicerStatus('checking');
+    checkSlicerAgent()
+      .then((data) => {
+        setSlicerStatus(data.slicer_found ? 'available' : 'unavailable');
+      })
+      .catch(() => {
+        setSlicerStatus('unavailable');
+      });
+  };
+
+  const handleOpenInSlicer = async () => {
+    if (!runId) {
+      message.warning('Не удалось определить ID запуска');
+      return;
+    }
+    setSlicerOpening(true);
+    setSlicerResult(null);
+    try {
+      const result = await openInSlicer(runId);
+      setSlicerResult(result);
+      message.success('3D Slicer открыт с данными пациента');
+    } catch (err) {
+      console.error('Ошибка запуска Slicer:', err);
+      const detail = err.response?.data?.detail || 'Не удалось открыть Slicer';
+      message.error(detail);
+      setSlicerResult({ success: false, message: detail });
+    } finally {
+      setSlicerOpening(false);
+    }
   };
 
   // === История версий ===
@@ -284,32 +324,60 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         <Steps
           direction="vertical"
           size="small"
-          current={uploadResult ? 2 : 0}
+          current={uploadResult ? 3 : (slicerResult?.success ? 2 : 0)}
           items={[
             {
-              title: 'Скачайте пакет для 3D Slicer',
+              title: 'Откройте данные в 3D Slicer',
               description: (
                 <Space direction="vertical" size="small" style={{ marginTop: 8 }}>
-                  <Text type="secondary">
-                    Архив содержит preprocessed-изображения, нативные изображения и маску сегментации
-                    с инструкцией по редактированию.
-                  </Text>
-                  <Button
-                    type="primary"
-                    icon={<DownloadOutlined />}
-                    onClick={handleDownloadPackage}
-                  >
-                    Скачать пакет
-                  </Button>
+                  {slicerStatus === 'checking' && (
+                    <Text type="secondary">
+                      <Spin size="small" /> Проверка Slicer Agent...
+                    </Text>
+                  )}
+                  {slicerStatus === 'available' && (
+                    <>
+                      <Button
+                        type="primary"
+                        icon={<DesktopOutlined />}
+                        onClick={handleOpenInSlicer}
+                        loading={slicerOpening}
+                      >
+                        Открыть в 3D Slicer
+                      </Button>
+                      {slicerResult?.success && (
+                        <Alert type="success" message="Slicer запущен, данные загружены" showIcon />
+                      )}
+                      {slicerResult && !slicerResult.success && (
+                        <Alert type="error" message={slicerResult.message} showIcon />
+                      )}
+                    </>
+                  )}
+                  {slicerStatus === 'unavailable' && (
+                    <>
+                      <Alert
+                        type="warning"
+                        message="Slicer Agent не запущен"
+                        description="Запустите slicer_agent.py на этом компьютере или скачайте пакет вручную."
+                        showIcon
+                      />
+                      <Button
+                        icon={<DownloadOutlined />}
+                        onClick={handleDownloadPackage}
+                      >
+                        Скачать пакет вручную
+                      </Button>
+                    </>
+                  )}
                 </Space>
               ),
             },
             {
-              title: 'Отредактируйте маску в 3D Slicer',
+              title: 'Отредактируйте маску в Segment Editor',
               description: (
                 <Text type="secondary">
-                  Откройте архив в 3D Slicer, используйте Segment Editor для правки,
-                  затем экспортируйте маску в формате NIfTI (.nii.gz).
+                  Используйте инструменты Segment Editor для правки сегментации,
+                  затем сохраните маску: File → Save → выберите формат NIfTI (.nii.gz).
                 </Text>
               ),
             },
