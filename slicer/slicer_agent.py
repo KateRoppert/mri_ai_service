@@ -50,6 +50,7 @@ def find_slicer() -> Optional[str]:
     system = platform.system()
     if system == "Linux":
         candidates = [
+            "/home/ubuntu/Загрузки/Slicer-5.10.0-linux-amd64/Slicer",
             "/usr/local/bin/Slicer",
             "/opt/Slicer/Slicer",
             str(Path.home() / "Slicer" / "Slicer"),
@@ -61,6 +62,16 @@ def find_slicer() -> Optional[str]:
             candidates.append(str(d / "Slicer"))
         for d in sorted(Path("/opt").glob("Slicer-*"), reverse=True):
             candidates.append(str(d / "Slicer"))
+        # Поиск в ~/Загрузки (русская локаль)
+        downloads_ru = home / "Загрузки"
+        if downloads_ru.exists():
+            for d in sorted(downloads_ru.glob("Slicer-*"), reverse=True):
+                candidates.append(str(d / "Slicer"))
+        # Поиск в ~/Downloads
+        downloads_en = home / "Downloads"
+        if downloads_en.exists():
+            for d in sorted(downloads_en.glob("Slicer-*"), reverse=True):
+                candidates.append(str(d / "Slicer"))
     elif system == "Darwin":
         candidates = [
             "/Applications/Slicer.app/Contents/MacOS/Slicer",
@@ -195,11 +206,17 @@ async def open_in_slicer(request: SlicerOpenRequest):
     logger.info("Launching Slicer: %s", " ".join(cmd))
 
     try:
+        # Передаём DISPLAY для отображения GUI на Linux
+        env = os.environ.copy()
+        if "DISPLAY" not in env:
+            env["DISPLAY"] = ":0"  # Стандартный X11 display
+
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,  # Отвязываем от процесса агента
+            start_new_session=True,
+            env=env,
         )
         logger.info("Slicer launched, PID: %d", process.pid)
 
