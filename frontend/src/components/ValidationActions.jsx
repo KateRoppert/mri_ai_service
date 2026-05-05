@@ -103,7 +103,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
   const fileInputRef = useRef(null);
 
-  const handleFileSelected = async (e) => {
+  const handleFileSelected = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -118,21 +118,23 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
     console.log('[UPLOAD] File selected:', { fileName: file.name, fileSize: file.size });
 
-    // Сохраняем файл и запускаем upload отложенно,
-    // чтобы выйти из контекста события input (Firefox может блокировать fetch)
-    setUploading(true);
-    setUploadResult(null);
-
-    setTimeout(() => doUpload(file), 0);
+    // Запускаем upload напрямую — НЕ вызываем setState до завершения,
+    // чтобы избежать re-render и NS_BINDING_ABORTED в Firefox
+    doUpload(file);
   };
 
   const doUpload = async (file) => {
-    console.log('[UPLOAD] Starting fetch:', { entityId, datasetId, runId });
+    console.log('[UPLOAD] Starting XHR:', { entityId, datasetId, runId });
+
+    // Не вызываем setUploading(true) здесь — это вызовет re-render,
+    // который в Firefox отменит pending XHR (NS_BINDING_ABORTED).
+    // Вместо этого обновляем UI только после получения ответа.
 
     try {
       const result = await uploadMask(entityId, datasetId, runId, file);
       console.log('[UPLOAD] Success:', result);
       setUploadResult(result);
+      setUploading(false);
       message.success(result.message || 'Маска загружена');
 
       if (onMaskUploaded) {
@@ -142,7 +144,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       console.error('[UPLOAD] Error:', err);
       const detail = err.response?.data?.detail || 'Не удалось загрузить маску';
       message.error(detail);
-    } finally {
       setUploading(false);
     }
   };
