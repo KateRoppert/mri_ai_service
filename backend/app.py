@@ -1154,6 +1154,7 @@ SLICER_AGENT_URL = "http://host.docker.internal:8001"
 @app.get("/api/slicer/status")
 async def slicer_agent_status():
     """Проверить доступность Slicer Agent."""
+    import httpx
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.get(f"{SLICER_AGENT_URL}/health")
@@ -1171,8 +1172,10 @@ async def open_in_slicer(run_id: str):
     Собирает пути к файлам из результатов пайплайна и отправляет агенту.
     """
     from patient_registry import find_by_run_id
+    from database import SessionLocal as DBSessionLocal
+    import httpx
 
-    db = SessionLocal()
+    db = DBSessionLocal()
     try:
         run = get_pipeline_run(db, run_id)
         if not run:
