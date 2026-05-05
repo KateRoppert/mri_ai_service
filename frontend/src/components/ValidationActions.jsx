@@ -103,33 +103,49 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
   const fileInputRef = useRef(null);
 
-  const handleFileSelected = (e) => {
+  const handleFileSelected = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // Сбрасываем input
-    e.target.value = '';
 
     // Валидация
     if (!file.name.endsWith('.nii.gz') && !file.name.endsWith('.nii')) {
       message.error('Файл должен быть в формате NIfTI (.nii.gz или .nii)');
+      e.target.value = '';
       return;
     }
 
-    console.log('[UPLOAD] File selected:', { fileName: file.name, fileSize: file.size });
+    // КРИТИЧНО: читаем файл в память ДО любого setState/ре-рендера.
+    // После ре-рендера браузер может отозвать доступ к File объекту
+    // (ERR_ACCESS_DENIED в Chrome, NS_BINDING_ABORTED в Firefox).
+    const fileName = file.name;
+    const fileSize = file.size;
 
-    // Запускаем upload напрямую — НЕ вызываем setState до завершения,
-    // чтобы избежать re-render и NS_BINDING_ABORTED в Firefox
-    doUpload(file);
-  };
+    console.log('[UPLOAD] Reading file into memory:', { fileName, fileSize });
 
-  const doUpload = async (file) => {
-    console.log('[UPLOAD] Starting XHR:', { entityId, datasetId, runId });
+    let blob;
+    try {
+      const buffer = await file.arrayBuffer();
+      blob = new Blob([buffer], { type: 'application/gzip' });
+    } catch (readErr) {
+      console.error('[UPLOAD] Failed to read file:', readErr);
+      message.error('Не удалось прочитать файл');
+      e.target.value = '';
+      return;
+    }
+
+    // Сбрасываем input
+    e.target.value = '';
+
+    console.log('[UPLOAD] File read OK, starting upload');
+
+    // Теперь можно безопасно обновлять state — файл уже в памяти
     setUploading(true);
     setUploadResult(null);
 
     try {
-      const result = await uploadMask(entityId, datasetId, runId, file);
+      // Создаём новый File из Blob с оригинальным именем
+      const safeFile = new File([blob], fileName, { type: 'application/gzip' });
+      const result = await uploadMask(entityId, datasetId, runId, safeFile);
       console.log('[UPLOAD] Success:', result);
       setUploadResult(result);
       message.success(result.message || 'Маска загружена');
@@ -148,14 +164,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
   const openEditModal = () => {
     setUploadResult(null);
-    // Закрываем NIfTIViewer, чтобы освободить HTTP-соединения
-    // (Firefox ограничивает 6 соединений к одному домену,
-    // а NIfTIViewer держит их через keep-alive)
-    if (onCloseViewer) {
-      onCloseViewer();
-    }
-    // Небольшая задержка, чтобы соединения успели закрыться
-    setTimeout(() => setEditModalOpen(true), 500);
+    setEditModalOpen(true);
   };
 
   // === История версий ===
