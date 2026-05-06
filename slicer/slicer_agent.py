@@ -312,7 +312,7 @@ def _add_upload_button(params, seg_node):
     def _do_save_and_upload():
         """Экспортировать сегментацию и отправить на сервер."""
         try:
-            import urllib.request, urllib.parse, tempfile
+            import urllib.request, urllib.parse, urllib.error, tempfile
             
             # Находим сегментацию
             seg_nodes = slicer.util.getNodesByClass("vtkMRMLSegmentationNode")
@@ -339,7 +339,18 @@ def _add_upload_button(params, seg_node):
             slicer.util.saveNode(labelmap, save_path)
             slicer.mrmlScene.RemoveNode(labelmap)
             
-            print(f"  Mask saved: {{save_path}}")
+            # Проверяем, что файл сохранился
+            if not os.path.exists(save_path):
+                qt.QMessageBox.critical(
+                    None, "Ошибка",
+                    f"Файл маски не сохранился:\\n{{save_path}}\\n\\n"
+                    f"Папка: {{save_dir}}\\n"
+                    f"Папка существует: {{os.path.exists(save_dir)}}"
+                )
+                return
+            
+            file_size = os.path.getsize(save_path)
+            print(f"  Mask saved: {{save_path}} ({{file_size}} bytes)")
             
             # Отправляем на агент
             agent_url = "http://localhost:8001/upload-mask"
@@ -352,8 +363,12 @@ def _add_upload_button(params, seg_node):
             url = f"{{agent_url}}?{{query}}"
             
             req = urllib.request.Request(url, method="POST", data=b"")
-            resp = urllib.request.urlopen(req, timeout=60)
-            result = resp.read().decode()
+            try:
+                resp = urllib.request.urlopen(req, timeout=60)
+                result = resp.read().decode()
+            except urllib.error.HTTPError as http_err:
+                error_body = http_err.read().decode() if http_err.fp else ""
+                raise Exception(f"HTTP Error {{http_err.code}}: {{error_body[:200]}}")
             
             print(f"  Upload result: {{result}}")
             qt.QMessageBox.information(
