@@ -490,6 +490,8 @@ async def upload_mask_from_slicer(
     if not mask_file.exists():
         raise HTTPException(status_code=404, detail=f"Файл не найден: {file_path}")
 
+    import httpx as httpx_client
+
     # Если session_id не передан — берём из localStorage аналога
     if not session_id:
         # Пробуем прочитать из файла, который сохраняет агент при /open
@@ -519,8 +521,8 @@ async def upload_mask_from_slicer(
                 "run_id": run_id,
             }
 
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, read=120.0, write=120.0),
+            async with httpx_client.AsyncClient(
+                timeout=httpx_client.Timeout(30.0, read=120.0, write=120.0),
             ) as client:
                 response = await client.post(
                     f"{BACKEND_URL}/api/validation/upload-mask",
@@ -536,7 +538,7 @@ async def upload_mask_from_slicer(
             detail = response.text[:300]
             logger.error("Backend rejected mask: %s", detail)
             raise HTTPException(status_code=response.status_code, detail=detail)
-    except httpx.ConnectError:
+    except httpx_client.ConnectError:
         raise HTTPException(status_code=503, detail="Бэкенд недоступен")
     except Exception as e:
         logger.error("Error uploading mask: %s", e)
