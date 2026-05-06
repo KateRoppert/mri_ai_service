@@ -333,7 +333,18 @@ def _add_upload_button(params, seg_node):
             
             # Сохраняем в файл
             save_dir = segmentation_dir if segmentation_dir else tempfile.gettempdir()
-            os.makedirs(save_dir, exist_ok=True)
+            
+            # Проверяем права записи, если нет — используем /tmp
+            try:
+                os.makedirs(save_dir, exist_ok=True)
+                test_file = os.path.join(save_dir, ".write_test")
+                with open(test_file, "w") as tf:
+                    tf.write("test")
+                os.remove(test_file)
+            except (PermissionError, OSError):
+                print(f"  No write access to {{save_dir}}, using /tmp")
+                save_dir = tempfile.gettempdir()
+            
             save_path = os.path.join(save_dir, f"{{patient_id}}_edited_mask.nii.gz")
             
             slicer.util.saveNode(labelmap, save_path)
