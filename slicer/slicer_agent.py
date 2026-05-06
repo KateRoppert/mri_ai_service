@@ -105,14 +105,18 @@ LOADER_SCRIPT = Path(__file__).parent / "load_in_slicer.py"
 
 class SlicerOpenRequest(BaseModel):
     """Запрос на открытие данных в Slicer."""
-    # Пути к файлам на локальной файловой системе
-    image_paths: list[str]         # Preprocessed MRI (.nii.gz)
-    mask_path: str                 # Маска сегментации (.nii.gz)
-    native_image_paths: list[str] = []   # Нативные изображения (опционально)
-    native_mask_path: Optional[str] = None  # Нативная маска (опционально)
+    image_paths: list[str]
+    mask_path: str
+    native_image_paths: list[str] = []
+    native_mask_path: Optional[str] = None
     patient_id: str = ""
     session_id: str = ""
-    # Или URL-ы для скачивания (если файлы на сервере)
+    # Контекст для обратной отправки маски
+    entity_id: str = ""
+    dataset_id: int = 0
+    run_id: str = ""
+    segmentation_dir: str = ""
+    kappa_session_id: str = ""
     image_urls: list[str] = []
     mask_url: str = ""
 
@@ -190,11 +194,21 @@ async def open_in_slicer(request: SlicerOpenRequest):
         "native_mask_path": request.native_mask_path,
         "patient_id": request.patient_id,
         "session_id": request.session_id,
+        # Контекст для кнопки «Сохранить и отправить»
+        "entity_id": request.entity_id,
+        "dataset_id": request.dataset_id,
+        "run_id": request.run_id,
+        "segmentation_dir": request.segmentation_dir,
     }
 
     # Сохраняем параметры во временный файл
     params_file = Path(tempfile.mktemp(suffix=".json", prefix="slicer_params_"))
     params_file.write_text(json.dumps(params, ensure_ascii=False))
+
+    # Сохраняем session_id для /upload-mask
+    if request.kappa_session_id:
+        session_file = Path(tempfile.gettempdir()) / "slicer_kappa_session.txt"
+        session_file.write_text(request.kappa_session_id)
 
     # Запускаем Slicer БЕЗ аргументов (--python-script крашит Slicer 5.10).
     # Вместо этого записываем скрипт загрузки в ~/.slicerrc.py,
@@ -241,6 +255,7 @@ def _load_patient_data():
                     print(f"  Loaded: {{img_path}}")
         
         # Загружаем маску как сегментацию
+        seg_node = None
         if mask_path and os.path.exists(mask_path):
             print(f"  Loading mask: {{mask_path}}")
             labelmap_node = slicer.util.loadLabelVolume(mask_path)
@@ -266,6 +281,9 @@ def _load_patient_data():
         
         print(f"Patient {{patient_id}} loaded successfully!")
         
+        # === КНОПКА «СОХРАНИТЬ И ОТПРАВИТЬ» ===
+        _add_upload_button(params, seg_node)
+        
         # Удаляем временный файл параметров
         try:
             os.remove(_params_file)
@@ -275,6 +293,103 @@ def _load_patient_data():
         print(f"Slicer Agent error: {{e}}")
         import traceback
         traceback.print_exc()
+
+
+def _add_upload_button(params, seg_node):
+    """Добавить кнопку 'Сохранить и отправить' в toolbar Slicer."""
+    import qt
+    
+    entity_id = params.get("entity_id", "")
+    dataset_id = params.get("dataset_id", 0)
+    run_id = params.get("run_id", "")
+    segmentation_dir = params.get("segmentation_dir", "")
+    patient_id = params.get("patient_id", "")
+    
+    if not entity_id or not run_id:
+        print("  Warning: no entity_id/run_id, upload button disabled")
+        return
+    
+    def _do_save_and_upload():
+        """Экспортировать сегментацию и отправить на сервер."""
+        try:
+            import urllib.request, urllib.parse, tempfile
+            
+            # Находим сегментацию
+            seg_nodes = slicer.util.getNodesByClass("vtkMRMLSegmentationNode")
+            if not seg_nodes:
+                qt.QMessageBox.warning(None, "Ошибка", "Сегментация не найдена")
+                return
+            
+            active_seg = seg_nodes[0]
+            
+            # Находим reference volume
+            vol_nodes = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+            if not vol_nodes:
+                qt.QMessageBox.warning(None, "Ошибка", "Том не найден")
+                return
+            
+            ref_vol = vol_nodes[0]
+            
+            # Экспортируем сегментацию в labelmap
+            labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
+                active_seg, labelmap, ref_vol
+            )
+            
+            # Сохраняем в файл
+            save_dir = segmentation_dir if segmentation_dir else tempfile.gettempdir()
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, f"{{patient_id}}_edited_mask.nii.gz")
+            
+            slicer.util.saveNode(labelmap, save_path)
+            slicer.mrmlScene.RemoveNode(labelmap)
+            
+            print(f"  Mask saved: {{save_path}}")
+            
+            # Отправляем на агент
+            agent_url = "http://localhost:8001/upload-mask"
+            query = urllib.parse.urlencode({{
+                "file_path": save_path,
+                "entity_id": "{entity_id}",
+                "dataset_id": {dataset_id},
+                "run_id": "{run_id}",
+            }})
+            url = f"{{agent_url}}?{{query}}"
+            
+            req = urllib.request.Request(url, method="POST", data=b"")
+            resp = urllib.request.urlopen(req, timeout=60)
+            result = resp.read().decode()
+            
+            print(f"  Upload result: {{result}}")
+            qt.QMessageBox.information(
+                None, "Готово",
+                "Маска сохранена и отправлена на сервер!\\n"
+                f"Файл: {{os.path.basename(save_path)}}"
+            )
+        except Exception as e:
+            print(f"  Upload error: {{e}}")
+            import traceback
+            traceback.print_exc()
+            qt.QMessageBox.critical(
+                None, "Ошибка",
+                f"Не удалось отправить маску:\\n{{e}}"
+            )
+    
+    # Создаём toolbar с кнопкой
+    toolbar = qt.QToolBar("MRI AI Service")
+    toolbar.setToolButtonStyle(qt.Qt.ToolButtonTextBesideIcon)
+    
+    upload_action = qt.QAction("Сохранить и отправить маску", toolbar)
+    upload_action.setToolTip("Экспортировать сегментацию и отправить на сервер MRI AI Service")
+    upload_action.connect("triggered()", _do_save_and_upload)
+    toolbar.addAction(upload_action)
+    
+    # Добавляем toolbar в главное окно
+    main_window = slicer.util.mainWindow()
+    main_window.addToolBar(toolbar)
+    
+    print("  Upload button added to Slicer toolbar")
+
 
 # Восстанавливаем оригинальный .slicerrc.py
 _backup = r"{slicerrc_backup}"
@@ -329,6 +444,84 @@ qt.QTimer.singleShot(2000, _load_patient_data)
             status_code=500,
             detail=f"Не удалось запустить Slicer: {e}",
         )
+
+
+# ============================================
+# ПРИЁМ МАСКИ ОТ SLICER → ПЕРЕСЫЛКА НА БЭКЕНД
+# ============================================
+
+BACKEND_URL = "http://localhost:8000"
+
+
+@app.post("/upload-mask")
+async def upload_mask_from_slicer(
+    file_path: str,
+    entity_id: str,
+    dataset_id: int,
+    run_id: str,
+    session_id: str = "",
+):
+    """
+    Принимает путь к файлу маски от Slicer, пересылает на бэкенд.
+    Вызывается из Slicer Python через HTTP.
+    """
+    import aiofiles
+
+    mask_file = Path(file_path)
+    if not mask_file.exists():
+        raise HTTPException(status_code=404, detail=f"Файл не найден: {file_path}")
+
+    # Если session_id не передан — берём из localStorage аналога
+    if not session_id:
+        # Пробуем прочитать из файла, который сохраняет агент при /open
+        session_file = Path(tempfile.gettempdir()) / "slicer_kappa_session.txt"
+        if session_file.exists():
+            session_id = session_file.read_text().strip()
+
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id не указан. Откройте сервис в браузере и залогиньтесь.",
+        )
+
+    logger.info(
+        "Uploading mask from Slicer: file=%s, entity=%s, run=%s",
+        file_path, entity_id, run_id,
+    )
+
+    # Пересылаем файл на бэкенд
+    try:
+        with open(mask_file, "rb") as f:
+            files = [("file", (mask_file.name, f, "application/gzip"))]
+            data = {
+                "entity_id": entity_id,
+                "dataset_id": str(dataset_id),
+                "session_id": session_id,
+                "run_id": run_id,
+            }
+
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, read=120.0, write=120.0),
+            ) as client:
+                response = await client.post(
+                    f"{BACKEND_URL}/api/validation/upload-mask",
+                    data=data,
+                    files=files,
+                )
+
+        if response.is_success:
+            result = response.json()
+            logger.info("Mask uploaded successfully: %s", result.get("message"))
+            return result
+        else:
+            detail = response.text[:300]
+            logger.error("Backend rejected mask: %s", detail)
+            raise HTTPException(status_code=response.status_code, detail=detail)
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Бэкенд недоступен")
+    except Exception as e:
+        logger.error("Error uploading mask: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================
