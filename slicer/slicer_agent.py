@@ -460,8 +460,6 @@ async def upload_mask_from_slicer(
     Принимает путь к файлу маски от Slicer, пересылает на бэкенд.
     Вызывается из Slicer Python через HTTP.
     """
-    import aiofiles
-
     mask_file = Path(file_path)
     if not mask_file.exists():
         raise HTTPException(status_code=404, detail=f"Файл не найден: {file_path}")
