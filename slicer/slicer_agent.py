@@ -350,9 +350,9 @@ def _add_upload_button(params, seg_node):
             agent_url = "http://localhost:8001/upload-mask"
             query = urllib.parse.urlencode({{
                 "file_path": save_path,
-                "entity_id": "{entity_id}",
-                "dataset_id": {dataset_id},
-                "run_id": "{run_id}",
+                "entity_id": "{request.entity_id}",
+                "dataset_id": {request.dataset_id},
+                "run_id": "{request.run_id}",
             }})
             url = f"{{agent_url}}?{{query}}"
             
