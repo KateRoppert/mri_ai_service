@@ -182,7 +182,8 @@ export const checkSlicerAgent = async () => {
  * Открыть данные пациента в 3D Slicer
  */
 export const openInSlicer = async (runId) => {
-  const response = await apiClient.post(`/slicer/open/${runId}`);
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.post(`/slicer/open/${runId}?session_id=${sessionId}`);
   return response.data;
 };
 

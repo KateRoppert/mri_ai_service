@@ -1166,7 +1166,7 @@ async def slicer_agent_status():
 
 
 @app.post("/api/slicer/open/{run_id}")
-async def open_in_slicer(run_id: str):
+async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
     """
     Открыть данные пациента в 3D Slicer через агента.
     Собирает пути к файлам из результатов пайплайна и отправляет агенту.
@@ -1224,6 +1224,12 @@ async def open_in_slicer(run_id: str):
         "native_mask_path": native_mask_path,
         "patient_id": sub,
         "session_id": ses,
+        # Контекст для обратной отправки маски
+        "entity_id": record.get("kappa_entity_id", ""),
+        "dataset_id": record.get("kappa_dataset_id", 0),
+        "run_id": run_id,
+        "segmentation_dir": str(segmentation_dir),
+        "kappa_session_id": session_id or "",
     }
 
     try:
