@@ -322,18 +322,13 @@ def _add_upload_button(params, seg_node):
             
             active_seg = seg_nodes[0]
             
-            # Находим reference volume
-            vol_nodes = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
-            if not vol_nodes:
-                qt.QMessageBox.warning(None, "Ошибка", "Том не найден")
-                return
-            
-            ref_vol = vol_nodes[0]
-            
             # Экспортируем сегментацию в labelmap
             labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            
+            # Slicer 5.10: ExportAllSegmentsToLabelmapNode(segNode, labelmapNode)
+            # без reference volume — использует геометрию сегментации
             slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
-                active_seg, labelmap, ref_vol
+                active_seg, labelmap
             )
             
             # Сохраняем в файл
