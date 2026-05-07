@@ -25,6 +25,7 @@ import {
   getSlicerPackageUrl,
   uploadMask,
   getMaskVersions,
+  getMaskFileUrl,
   checkSlicerAgent,
   openInSlicer,
 } from '../services/api';
@@ -37,7 +38,7 @@ const STATUS_TAG = {
   5: { text: 'Верифицировано', color: 'green' },
 };
 
-const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskUploaded, onCloseViewer }) => {
+const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskUploaded, onCloseViewer, onMaskVersionSelect }) => {
   const [loading, setLoading] = useState(false);
   const [votes, setVotes] = useState(null);
   const [myVote, setMyVote] = useState(null);
@@ -56,6 +57,11 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
   const [versionsModalOpen, setVersionsModalOpen] = useState(false);
   const [versions, setVersions] = useState([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  const [activeVersion, setActiveVersion] = useState(null);
+
+  // Polling для Slicer (автообновление после отправки маски из Slicer)
+  const slicerPollRef = useRef(null);
+  const lastVersionCountRef = useRef(null);
 
   useEffect(() => {
     if (entityId) {
@@ -128,8 +134,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     const fileName = file.name;
     const fileSize = file.size;
 
-    console.log('[UPLOAD] Reading file into memory:', { fileName, fileSize });
-
     let blob;
     try {
       const buffer = await file.arrayBuffer();
@@ -144,8 +148,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     // Сбрасываем input
     e.target.value = '';
 
-    console.log('[UPLOAD] File read OK, starting upload');
-
     // Теперь можно безопасно обновлять state — файл уже в памяти
     setUploading(true);
     setUploadResult(null);
@@ -154,7 +156,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       // Создаём новый File из Blob с оригинальным именем
       const safeFile = new File([blob], fileName, { type: 'application/gzip' });
       const result = await uploadMask(entityId, datasetId, runId, safeFile);
-      console.log('[UPLOAD] Success:', result);
       setUploadResult(result);
       message.success(result.message || 'Маска загружена');
 
@@ -162,7 +163,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         onMaskUploaded(result);
       }
     } catch (err) {
-      console.error('[UPLOAD] Error:', err);
+      console.error('Upload error:', err);
       const detail = err.response?.data?.detail || 'Не удалось загрузить маску';
       message.error(detail);
     } finally {
@@ -197,6 +198,8 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       const result = await openInSlicer(runId);
       setSlicerResult(result);
       message.success('3D Slicer открыт с данными пациента');
+      // Запускаем polling: проверяем, не появилась ли новая версия маски
+      startSlicerPoll();
     } catch (err) {
       console.error('Ошибка запуска Slicer:', err);
       const detail = err.response?.data?.detail || 'Не удалось открыть Slicer';
@@ -207,6 +210,48 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     }
   };
 
+  /** Polling: каждые 5с проверяем, появилась ли новая версия маски (от Slicer Agent) */
+  const startSlicerPoll = () => {
+    stopSlicerPoll();
+    // Запоминаем текущее кол-во версий
+    getMaskVersions(entityId)
+      .then((data) => {
+        lastVersionCountRef.current = (data.versions || []).length;
+      })
+      .catch(() => {});
+
+    slicerPollRef.current = setInterval(async () => {
+      try {
+        const data = await getMaskVersions(entityId);
+        const newCount = (data.versions || []).length;
+        if (lastVersionCountRef.current !== null && newCount > lastVersionCountRef.current) {
+          // Появилась новая маска
+          lastVersionCountRef.current = newCount;
+          message.success('Получена новая версия маски от 3D Slicer');
+          setVersions(data.versions || []);
+          if (onMaskUploaded) {
+            onMaskUploaded({ fromSlicer: true, versions: data.versions });
+          }
+          stopSlicerPoll();
+        }
+      } catch {
+        // Игнорируем ошибки polling
+      }
+    }, 5000);
+  };
+
+  const stopSlicerPoll = () => {
+    if (slicerPollRef.current) {
+      clearInterval(slicerPollRef.current);
+      slicerPollRef.current = null;
+    }
+  };
+
+  // Cleanup polling при размонтировании или закрытии модалки
+  useEffect(() => {
+    return () => stopSlicerPoll();
+  }, []);
+
   // === История версий ===
 
   const openVersionsModal = async () => {
@@ -214,13 +259,27 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     setVersionsLoading(true);
     try {
       const data = await getMaskVersions(entityId);
-      setVersions(data.versions || []);
+      const versionsList = data.versions || [];
+      setVersions(versionsList);
+      // Текущая активная = последняя
+      if (versionsList.length > 0 && !activeVersion) {
+        setActiveVersion(versionsList[versionsList.length - 1].version);
+      }
     } catch (err) {
       console.error('Ошибка загрузки версий:', err);
       message.error('Не удалось загрузить историю версий');
     } finally {
       setVersionsLoading(false);
     }
+  };
+
+  const handleVersionClick = (version) => {
+    setActiveVersion(version.version);
+    const maskUrl = getMaskFileUrl(entityId, version.version);
+    if (onMaskVersionSelect) {
+      onMaskVersionSelect({ ...version, maskUrl });
+    }
+    setVersionsModalOpen(false);
   };
 
   // === Рендер ===
@@ -312,10 +371,13 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       <Modal
         title="Редактирование сегментации в 3D Slicer"
         open={editModalOpen}
-        onCancel={() => setEditModalOpen(false)}
+        onCancel={() => {
+          setEditModalOpen(false);
+          stopSlicerPoll();
+        }}
         getContainer={document.body}
         footer={[
-          <Button key="close" onClick={() => setEditModalOpen(false)}>
+          <Button key="close" onClick={() => { setEditModalOpen(false); stopSlicerPoll(); }}>
             Закрыть
           </Button>,
         ]}
@@ -439,10 +501,29 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         ) : versions.length === 0 ? (
           <Text type="secondary">Версии масок не найдены</Text>
         ) : (
+          <>
+            <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+              Нажмите на версию, чтобы переключить визуализацию
+            </Text>
           <List
             dataSource={versions}
             renderItem={(v) => (
-              <List.Item>
+              <List.Item
+                onClick={() => handleVersionClick(v)}
+                style={{
+                  cursor: 'pointer',
+                  background: v.version === activeVersion ? '#e6f7ff' : 'transparent',
+                  borderLeft: v.version === activeVersion ? '3px solid #1890ff' : '3px solid transparent',
+                  paddingLeft: 12,
+                  transition: 'background 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  if (v.version !== activeVersion) e.currentTarget.style.background = '#fafafa';
+                }}
+                onMouseLeave={(e) => {
+                  if (v.version !== activeVersion) e.currentTarget.style.background = 'transparent';
+                }}
+              >
                 <List.Item.Meta
                   title={
                     <Space>
@@ -450,6 +531,9 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
                         {v.source === 'ai' ? 'ИИ' : 'Эксперт'}
                       </Tag>
                       <Text strong>Версия {v.version}</Text>
+                      {v.version === activeVersion && (
+                        <Tag color="blue" style={{ marginLeft: 4 }}>текущая</Tag>
+                      )}
                     </Space>
                   }
                   description={
@@ -471,6 +555,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
               </List.Item>
             )}
           />
+          </>
         )}
       </Modal>
     </>

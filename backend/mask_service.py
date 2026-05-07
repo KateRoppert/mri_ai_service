@@ -19,6 +19,7 @@ def register_ai_mask(
     entity_id: str,
     dataset_id: int,
     file_path: str,
+    kappa_file_id: str = None,
 ) -> Dict[str, Any]:
     """
     Зарегистрировать оригинальную маску от ИИ (версия 1).
@@ -45,6 +46,7 @@ def register_ai_mask(
             uploaded_by_name="AI Pipeline",
             file_path=file_path,
             file_name=Path(file_path).name,
+            kappa_file_id=kappa_file_id,
         )
         db.add(record)
         db.commit()
@@ -62,6 +64,7 @@ def register_expert_mask(
     file_path: str,
     user_id: int,
     user_name: str = "",
+    kappa_file_id: str = None,
 ) -> Dict[str, Any]:
     """
     Зарегистрировать маску, загруженную экспертом.
@@ -85,6 +88,7 @@ def register_expert_mask(
             uploaded_by_name=user_name,
             file_path=file_path,
             file_name=Path(file_path).name,
+            kappa_file_id=kappa_file_id,
         )
         db.add(record)
         db.commit()
@@ -151,5 +155,6 @@ def _to_dict(record: MaskVersion) -> Dict[str, Any]:
         "uploaded_by_name": record.uploaded_by_name,
         "file_path": record.file_path,
         "file_name": record.file_name,
+        "kappa_file_id": record.kappa_file_id,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }

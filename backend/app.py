@@ -5,7 +5,7 @@
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
@@ -1050,7 +1050,29 @@ async def upload_edited_mask(
         logger.error("Failed to save expert mask: %s", e)
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения файла: {e}")
 
-    # 3. Регистрируем в mask_versions
+    # 3. Заливаем в Каппу (получаем kappa_file_id)
+    kappa_file_id = None
+    try:
+        kappa_file_id = await replace_entity_file(
+            token=session["kappa_token"],
+            user_id=session["user_id"],
+            user_type_id=session["user_type_id"],
+            dataset_id=dataset_id,
+            entity_id=entity_id,
+            file_path=save_path,
+        )
+    except Exception as kappa_err:
+        logger.error("Kappa upload exception (non-fatal): %s", kappa_err)
+
+    kappa_ok = kappa_file_id is not None and kappa_file_id != "uploaded_no_file_id"
+
+    if not kappa_ok:
+        logger.warning(
+            "Mask saved locally but Kappa upload issue: entity=%s, file_id=%s",
+            entity_id, kappa_file_id,
+        )
+
+    # 4. Регистрируем в mask_versions (с kappa_file_id)
     user_name = ""
     first_name = session.get("first_name") or ""
     last_name = session.get("last_name") or ""
@@ -1063,27 +1085,8 @@ async def upload_edited_mask(
         file_path=str(save_path),
         user_id=session["user_id"],
         user_name=user_name,
+        kappa_file_id=kappa_file_id if kappa_ok else None,
     )
-
-    # 4. Заливаем в Каппу (замена файла сущности)
-    kappa_ok = False
-    try:
-        kappa_ok = await replace_entity_file(
-            token=session["kappa_token"],
-            user_id=session["user_id"],
-            user_type_id=session["user_type_id"],
-            dataset_id=dataset_id,
-            entity_id=entity_id,
-            file_path=save_path,
-        )
-    except Exception as kappa_err:
-        logger.error("Kappa upload exception (non-fatal): %s", kappa_err)
-
-    if not kappa_ok:
-        logger.warning(
-            "Mask saved locally but Kappa upload failed: entity=%s, version=%d",
-            entity_id, mask_info["version"],
-        )
 
     # 5. Ответ
     return {
@@ -1121,6 +1124,54 @@ async def get_mask_versions(entity_id: str, session_id: str):
         "current_version": current["version"] if current else None,
         "total": len(history),
     }
+
+
+@app.get("/api/validation/mask-file/{entity_id}/{version}")
+async def serve_mask_version(entity_id: str, version: int, session_id: str):
+    """
+    Отдать файл маски конкретной версии.
+    Если есть kappa_file_id — проксирует из Каппы.
+    Иначе — отдаёт локальный файл (fallback).
+    """
+    from kappa_auth import get_session
+    from kappa_client import download_entity_file
+    from mask_service import get_mask_by_version
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    mask = get_mask_by_version(entity_id, version)
+    if not mask:
+        raise HTTPException(status_code=404, detail="Версия маски не найдена")
+
+    # Если есть kappa_file_id — загружаем из Каппы
+    if mask.get("kappa_file_id") and mask["kappa_file_id"] != "uploaded_no_file_id":
+        content = await download_entity_file(
+            token=session["kappa_token"],
+            user_id=session["user_id"],
+            user_type_id=session["user_type_id"],
+            dataset_id=mask["dataset_id"],
+            file_id=mask["kappa_file_id"],
+        )
+        if content:
+            return Response(
+                content=content,
+                media_type="application/gzip",
+                headers={"Content-Disposition": f'inline; filename="{mask["file_name"]}"'},
+            )
+        logger.warning("Kappa download failed for mask v%d, trying local fallback", version)
+
+    # Fallback: локальный файл
+    file_path = Path(mask["file_path"])
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Файл маски не найден")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/gzip",
+        filename=file_path.name,
+    )
 
 
 @app.get("/api/validation/entity-run-info/{entity_id}")

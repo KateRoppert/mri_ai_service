@@ -239,7 +239,6 @@ export const uploadMask = (entityId, datasetId, runId, file) => {
     xhr.onerror = () => reject({ response: { data: { detail: 'Сетевая ошибка' } } });
     xhr.ontimeout = () => reject({ response: { data: { detail: 'Таймаут загрузки' } } });
 
-    console.log('[XHR] Sending upload...');
     xhr.send(formData);
   });
 };
@@ -253,6 +252,14 @@ export const getMaskVersions = async (entityId) => {
     params: { session_id: sessionId },
   });
   return response.data;
+};
+
+/**
+ * Получить URL файла маски конкретной версии (для NiiVue)
+ */
+export const getMaskFileUrl = (entityId, version) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  return `http://localhost:8000/api/validation/mask-file/${entityId}/${version}?session_id=${sessionId}`;
 };
 
 export default {
@@ -275,4 +282,5 @@ export default {
   getSlicerPackageUrl,
   uploadMask,
   getMaskVersions,
+  getMaskFileUrl,
 };

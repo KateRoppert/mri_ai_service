@@ -110,6 +110,9 @@ class MaskVersion(Base):
     file_path = Column(String, nullable=False)
     file_name = Column(String, nullable=False)
 
+    # ID файла в Каппе (для загрузки через /kappa/file/{dataset_id}/{file_id})
+    kappa_file_id = Column(String, nullable=True)
+
     # Временная метка
     created_at = Column(
         DateTime,
@@ -123,3 +126,15 @@ Index("ix_mask_versions_entity_version", MaskVersion.entity_id, MaskVersion.vers
 def init_registry_tables():
     """Создать таблицы реестра и валидаций (если их ещё нет)."""
     Base.metadata.create_all(bind=engine)
+
+    # Миграция: добавить kappa_file_id если столбца нет (для существующих БД)
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "mask_versions" in insp.get_table_names():
+        columns = [c["name"] for c in insp.get_columns("mask_versions")]
+        if "kappa_file_id" not in columns:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE mask_versions ADD COLUMN kappa_file_id VARCHAR"
+                ))
+                conn.commit()

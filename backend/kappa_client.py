@@ -334,10 +334,11 @@ async def replace_entity_file(
     entity_id: str,
     file_path: Path,
     content_type: str = "application/gzip",
-) -> bool:
+) -> Optional[str]:
     """
     Заменить файл(ы) сущности в Каппе (PUT с новым файлом).
     Используется для загрузки отредактированной маски экспертом.
+    Возвращает kappa_file_id загруженного файла или None при ошибке.
     """
     url = (
         f"{KAPPA_DATA_URL}/datasets/datasetEntities"
@@ -349,14 +350,15 @@ async def replace_entity_file(
 
     headers = {"Authorization": f"Bearer {token}"}
     f = None
+    target_filename = file_path.name
 
     try:
         if not file_path.exists():
             logger.error("File not found for replacement: %s", file_path)
-            return False
+            return None
 
         f = open(file_path, "rb")
-        files = [("files", (file_path.name, f, content_type))]
+        files = [("files", (target_filename, f, content_type))]
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
@@ -369,22 +371,49 @@ async def replace_entity_file(
         if response.is_success:
             logger.info(
                 "Entity file replaced: entity=%s, file=%s",
-                entity_id, file_path.name,
+                entity_id, target_filename,
             )
-            return True
         else:
             logger.warning(
                 "Failed to replace entity file: status=%s, body=%s",
                 response.status_code,
                 response.text[:300],
             )
-            return False
+            return None
     except Exception as exc:
         logger.exception("Error replacing entity file: %s", exc)
-        return False
+        return None
     finally:
         if f:
             f.close()
+
+    # Получаем file_id загруженного файла из деталей сущности
+    try:
+        details = await get_entity_details(
+            token=token,
+            user_id=user_id,
+            user_type_id=user_type_id,
+            dataset_id=dataset_id,
+            entity_id=entity_id,
+        )
+        if details and "files" in details:
+            for file_info in details["files"]:
+                if file_info.get("fileName") == target_filename:
+                    file_id = file_info.get("fileId")
+                    logger.info(
+                        "Resolved kappa_file_id: %s for %s",
+                        file_id, target_filename,
+                    )
+                    return file_id
+            logger.warning(
+                "File %s not found in entity details after upload",
+                target_filename,
+            )
+    except Exception as exc:
+        logger.warning("Failed to resolve kappa_file_id: %s", exc)
+
+    # Файл загружен, но file_id не удалось получить
+    return "uploaded_no_file_id"
 
 
 async def get_dataset_entities(

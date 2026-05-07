@@ -2,7 +2,7 @@
  * Компонент для 3D визуализации NIfTI файлов с niivue
  */
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col, Popover, Radio } from 'antd';
+import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col, Popover, Radio, message } from 'antd';
 import { 
   EyeOutlined, 
   EyeInvisibleOutlined,
@@ -12,7 +12,7 @@ import {
   EnvironmentOutlined 
 } from '@ant-design/icons';
 import { Niivue } from '@niivue/niivue';
-import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl, getEntityRunInfo } from '../services/api';
+import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl, getEntityRunInfo, getMaskFileUrl } from '../services/api';
 import ValidationActions from './ValidationActions';
 
 /**
@@ -48,6 +48,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const [showAtlas, setShowAtlas] = useState(false);
   const [viewMode, setViewMode] = useState('atlas'); // 'atlas' or 'native'
   const [resolvedRunId, setResolvedRunId] = useState(null);
+  const [activeMaskLabel, setActiveMaskLabel] = useState(null); // для отображения выбранной версии
 
   /**
    * Резолвим runId: если передан напрямую — используем,
@@ -257,6 +258,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
     const file = files.find(f => f.filename === value);
     if (file) {
       setSelectedFile(file);
+      setActiveMaskLabel(null);
       loadNIfTI(file);
     }
   };
@@ -267,6 +269,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const handleViewModeChange = (e) => {
     const mode = e.target.value;
     setViewMode(mode);
+    setActiveMaskLabel(null);
     if (selectedFile) {
       loadNIfTI(selectedFile, mode);
     }
@@ -335,6 +338,61 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const resetView = () => {
     if (nvRef.current) {
       nvRef.current.setSliceType(nvRef.current.sliceTypeMultiplanar);
+    }
+  };
+
+  /**
+   * Загрузить конкретную версию маски (по URL из mask_service)
+   * Заменяет текущий overlay (volume index 1) на новую маску.
+   */
+  const loadMaskVersion = async (versionInfo) => {
+    if (!nvRef.current || !versionInfo?.maskUrl) return;
+
+    const nv = nvRef.current;
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Убираем атлас если показан
+      if (showAtlas && nv.volumes && nv.volumes.length > 2) {
+        nv.removeVolumeByIndex(2);
+        setShowAtlas(false);
+      }
+
+      // Удаляем текущую маску (index 1)
+      if (nv.volumes && nv.volumes.length >= 2) {
+        nv.removeVolumeByIndex(1);
+      }
+
+      // Проверяем доступность нового файла маски
+      const maskResponse = await fetch(versionInfo.maskUrl);
+      if (!maskResponse.ok) {
+        throw new Error(`Не удалось загрузить маску v${versionInfo.version}: ${maskResponse.status}`);
+      }
+
+      // Создаём colormap
+      const segColormap = createSegmentationColormap();
+      nv.addColormap('seg_custom', segColormap);
+
+      // Добавляем новую маску
+      await nv.addVolumeFromUrl({
+        url: versionInfo.maskUrl,
+        name: versionInfo.file_name || `mask_v${versionInfo.version}.nii.gz`,
+        colormap: 'seg_custom',
+        opacity: maskOpacity,
+        cal_min: 0,
+        cal_max: 4,
+      });
+
+      nv.drawScene();
+      setShowMask(true);
+      setActiveMaskLabel(`v${versionInfo.version} (${versionInfo.source === 'ai' ? 'ИИ' : 'Эксперт'})`);
+      message.success(`Маска переключена на версию ${versionInfo.version}`);
+    } catch (err) {
+      console.error('Ошибка загрузки версии маски:', err);
+      setError(`Ошибка загрузки маски: ${err.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -436,6 +494,11 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                   >
                     {showMask ? 'Скрыть' : 'Показать'}
                   </Button>
+                  {activeMaskLabel && (
+                    <span style={{ fontSize: 12, color: '#1890ff', fontWeight: 500 }}>
+                      Маска: {activeMaskLabel}
+                    </span>
+                  )}
                   <Button
                     icon={<RotateLeftOutlined />}
                     onClick={resetView}
@@ -500,7 +563,14 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                   }
                   onClose();
                 }}
-                onMaskUploaded={() => {}}
+                onMaskUploaded={(result) => {
+                  // Автообновление: перезагружаем текущий файл чтобы показать новую маску
+                  if (selectedFile) {
+                    loadNIfTI(selectedFile);
+                  }
+                  setActiveMaskLabel(null);
+                }}
+                onMaskVersionSelect={loadMaskVersion}
               />
             </div>
           )}
