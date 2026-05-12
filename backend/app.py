@@ -1118,6 +1118,12 @@ async def get_mask_versions(entity_id: str, session_id: str):
     history = get_mask_history(entity_id)
     current = get_current_mask(entity_id)
 
+    # Помечаем доступность каждой версии
+    for v in history:
+        has_kappa = v.get("kappa_file_id") and v["kappa_file_id"] != "uploaded_no_file_id"
+        has_local = Path(v.get("file_path", "")).exists() if v.get("file_path") else False
+        v["available"] = has_kappa or has_local
+
     return {
         "entity_id": entity_id,
         "versions": history,
@@ -1258,6 +1264,9 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
         masks = sorted(segmentation_dir.glob("*_segmask*.nii.gz"))
         if masks:
             mask_path = str(masks[-1])  # Последняя по имени = последняя версия
+    
+    logger.info("Slicer open: patient=%s, mask_path=%s, masks_found=%s",
+                sub, mask_path, [m.name for m in masks] if segmentation_dir.exists() else [])
 
     # Нативные изображения и маски
     native_image_paths = sorted([str(p) for p in nifti_dir.glob("*.nii.gz") if "segmask" not in p.name]) if nifti_dir.exists() else []

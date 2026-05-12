@@ -238,6 +238,9 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         // Игнорируем ошибки polling
       }
     }, 5000);
+
+    // Автоостановка через 2 минуты
+    setTimeout(() => stopSlicerPoll(), 120000);
   };
 
   const stopSlicerPoll = () => {
@@ -509,16 +512,17 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
             dataSource={versions}
             renderItem={(v) => (
               <List.Item
-                onClick={() => handleVersionClick(v)}
+                onClick={() => v.available !== false && handleVersionClick(v)}
                 style={{
-                  cursor: 'pointer',
+                  cursor: v.available === false ? 'not-allowed' : 'pointer',
                   background: v.version === activeVersion ? '#e6f7ff' : 'transparent',
                   borderLeft: v.version === activeVersion ? '3px solid #1890ff' : '3px solid transparent',
                   paddingLeft: 12,
+                  opacity: v.available === false ? 0.45 : 1,
                   transition: 'background 0.2s',
                 }}
                 onMouseEnter={(e) => {
-                  if (v.version !== activeVersion) e.currentTarget.style.background = '#fafafa';
+                  if (v.version !== activeVersion && v.available !== false) e.currentTarget.style.background = '#fafafa';
                 }}
                 onMouseLeave={(e) => {
                   if (v.version !== activeVersion) e.currentTarget.style.background = 'transparent';
@@ -533,6 +537,9 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
                       <Text strong>Версия {v.version}</Text>
                       {v.version === activeVersion && (
                         <Tag color="blue" style={{ marginLeft: 4 }}>текущая</Tag>
+                      )}
+                      {v.available === false && (
+                        <Tag color="red" style={{ marginLeft: 4 }}>недоступна</Tag>
                       )}
                     </Space>
                   }
