@@ -266,12 +266,13 @@ def _load_patient_data():
                 return None
             seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
             seg_node.SetName(seg_name)
-            if ref_volume:
-                seg_node.SetReferenceImageGeometryParameterFromVolumeNode(ref_volume)
             slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
                 labelmap_node, seg_node
             )
             slicer.mrmlScene.RemoveNode(labelmap_node)
+            # Привязываем reference geometry ПОСЛЕ импорта
+            if ref_volume:
+                seg_node.SetReferenceImageGeometryParameterFromVolumeNode(ref_volume)
             segment_names = {{1: "NCR", 2: "ED", 3: "NET", 4: "ET"}}
             segmentation = seg_node.GetSegmentation()
             for i in range(segmentation.GetNumberOfSegments()):

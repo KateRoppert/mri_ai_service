@@ -195,7 +195,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     setSlicerOpening(true);
     setSlicerResult(null);
     try {
-      const result = await openInSlicer(runId);
+      const result = await openInSlicer(runId, activeVersion);
       setSlicerResult(result);
       message.success('3D Slicer открыт с данными пациента');
       // Запускаем polling: проверяем, не появилась ли новая версия маски

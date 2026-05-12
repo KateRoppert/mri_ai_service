@@ -1223,10 +1223,11 @@ async def slicer_agent_status():
 
 
 @app.post("/api/slicer/open/{run_id}")
-async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
+async def open_in_slicer(run_id: str, session_id: Optional[str] = None, selected_mask_version: Optional[int] = None):
     """
     Открыть данные пациента в 3D Slicer через агента.
     Собирает пути к файлам из результатов пайплайна и отправляет агенту.
+    selected_mask_version — если указана, эта версия маски будет default в Slicer.
     """
     from patient_registry import find_by_run_id
     from database import SessionLocal as DBSessionLocal
@@ -1273,13 +1274,21 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
         else:
             expert_masks.append(fp)
 
-    # Маска по умолчанию: последняя экспертная, или ИИ-маска
-    if expert_masks:
-        default_mask = expert_masks[-1]
-    elif ai_masks:
-        default_mask = ai_masks[-1]
-    else:
-        default_mask = ""
+    # Маска по умолчанию: выбранная в UI, или последняя экспертная, или ИИ
+    default_mask = ""
+    if selected_mask_version:
+        # Ищем конкретную версию в mask_history
+        for mv in mask_history:
+            fp = mv.get("file_path", "")
+            if mv["version"] == selected_mask_version and fp and Path(fp).exists():
+                default_mask = fp
+                break
+
+    if not default_mask:
+        if expert_masks:
+            default_mask = expert_masks[-1]
+        elif ai_masks:
+            default_mask = ai_masks[-1]
 
     logger.info(
         "Slicer open: patient=%s, default_mask=%s, ai=%d, expert=%d",
