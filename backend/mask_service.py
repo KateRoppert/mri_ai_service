@@ -143,6 +143,26 @@ def get_mask_by_version(entity_id: str, version: int) -> Optional[Dict[str, Any]
         db.close()
 
 
+def delete_mask_version(entity_id: str, version: int) -> bool:
+    """Удалить конкретную версию маски из БД."""
+    db = SessionLocal()
+    try:
+        record = db.query(MaskVersion).filter(
+            MaskVersion.entity_id == entity_id,
+            MaskVersion.version == version,
+        ).first()
+
+        if not record:
+            return False
+
+        db.delete(record)
+        db.commit()
+        logger.info("Deleted mask version: entity=%s, version=%d", entity_id, version)
+        return True
+    finally:
+        db.close()
+
+
 def _to_dict(record: MaskVersion) -> Dict[str, Any]:
     """Преобразовать SQLAlchemy объект в dict."""
     return {

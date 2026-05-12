@@ -1132,7 +1132,62 @@ async def get_mask_versions(entity_id: str, session_id: str):
     }
 
 
-@app.get("/api/validation/mask-file/{entity_id}/{version}")
+@app.post("/api/validation/sync-masks/{entity_id}")
+async def sync_masks_with_kappa(entity_id: str, session_id: str):
+    """
+    Синхронизировать mask_versions БД с Каппой.
+    Удаляет записи, для которых нет ни kappa_file_id, ни локального файла.
+    Для записей с kappa_file_id проверяет наличие файла в Каппе.
+    """
+    from kappa_auth import get_session
+    from kappa_client import get_entity_details
+    from mask_service import get_mask_history, delete_mask_version
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    history = get_mask_history(entity_id)
+    if not history:
+        return {"entity_id": entity_id, "removed": 0, "remaining": 0}
+
+    # Получаем список файлов в Каппе
+    dataset_id = history[0].get("dataset_id")
+    kappa_files = set()
+    try:
+        details = await get_entity_details(
+            token=session["kappa_token"],
+            user_id=session["user_id"],
+            user_type_id=session["user_type_id"],
+            dataset_id=dataset_id,
+            entity_id=entity_id,
+        )
+        if details and "files" in details:
+            kappa_files = {f["fileId"] for f in details["files"] if f.get("fileId")}
+            # Также собираем имена файлов для сопоставления
+            kappa_filenames = {f["fileName"] for f in details["files"] if f.get("fileName")}
+    except Exception as e:
+        logger.warning("Failed to fetch entity details from Kappa: %s", e)
+        kappa_filenames = set()
+
+    removed = 0
+    for v in history:
+        has_local = Path(v.get("file_path", "")).exists() if v.get("file_path") else False
+        has_kappa_id = v.get("kappa_file_id") and v["kappa_file_id"] in kappa_files
+        has_kappa_name = v.get("file_name") in kappa_filenames if kappa_filenames else False
+
+        if not has_local and not has_kappa_id and not has_kappa_name:
+            delete_mask_version(entity_id, v["version"])
+            removed += 1
+            logger.info("Removed orphan mask version: entity=%s, v=%d, file=%s",
+                       entity_id, v["version"], v.get("file_name"))
+
+    remaining = len(history) - removed
+    return {
+        "entity_id": entity_id,
+        "removed": removed,
+        "remaining": remaining,
+    }
 async def serve_mask_version(entity_id: str, version: int, session_id: str):
     """
     Отдать файл маски конкретной версии.

@@ -26,6 +26,7 @@ import {
   uploadMask,
   getMaskVersions,
   getMaskFileUrl,
+  syncMasks,
   checkSlicerAgent,
   openInSlicer,
 } from '../services/api';
@@ -285,6 +286,26 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
     setVersionsModalOpen(false);
   };
 
+  const handleSyncMasks = async () => {
+    setVersionsLoading(true);
+    try {
+      const result = await syncMasks(entityId);
+      if (result.removed > 0) {
+        message.success(`Удалено ${result.removed} осиротевших версий`);
+        // Перезагружаем список
+        const data = await getMaskVersions(entityId);
+        setVersions(data.versions || []);
+      } else {
+        message.info('Все версии актуальны');
+      }
+    } catch (err) {
+      console.error('Ошибка синхронизации:', err);
+      message.error('Не удалось синхронизировать');
+    } finally {
+      setVersionsLoading(false);
+    }
+  };
+
   // === Рендер ===
 
   if (!entityId) return null;
@@ -494,7 +515,11 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         open={versionsModalOpen}
         onCancel={() => setVersionsModalOpen(false)}
         getContainer={document.body}
-        footer={null}
+        footer={
+          <Button size="small" onClick={handleSyncMasks} loading={versionsLoading}>
+            Синхронизировать с Каппой
+          </Button>
+        }
         width={500}
       >
         {versionsLoading ? (

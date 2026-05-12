@@ -259,6 +259,17 @@ export const getMaskVersions = async (entityId) => {
 };
 
 /**
+ * Синхронизировать версии масок с Каппой (удалить осиротевшие записи)
+ */
+export const syncMasks = async (entityId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.post(`/validation/sync-masks/${entityId}`, null, {
+    params: { session_id: sessionId },
+  });
+  return response.data;
+};
+
+/**
  * Получить URL файла маски конкретной версии (для NiiVue)
  */
 export const getMaskFileUrl = (entityId, version) => {
@@ -287,4 +298,5 @@ export default {
   uploadMask,
   getMaskVersions,
   getMaskFileUrl,
+  syncMasks,
 };
