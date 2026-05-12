@@ -1255,33 +1255,58 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
     segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
     nifti_dir = output_path / "nifti" / sub / ses / "anat"
 
-    # Preprocessed изображения
+    # Preprocessed изображения (атласное пространство)
     image_paths = sorted([str(p) for p in preprocessed_dir.glob("*.nii.gz")]) if preprocessed_dir.exists() else []
 
-    # Маска — берём последнюю версию (без _v{N} суффикса = оригинал, с _v{N} = правка)
-    mask_path = ""
-    if segmentation_dir.exists():
-        masks = sorted(segmentation_dir.glob("*_segmask*.nii.gz"))
-        if masks:
-            mask_path = str(masks[-1])  # Последняя по имени = последняя версия
-    
-    logger.info("Slicer open: patient=%s, mask_path=%s, masks_found=%s",
-                sub, mask_path, [m.name for m in masks] if segmentation_dir.exists() else [])
+    # Все маски из segmentation/
+    all_seg_masks = sorted(segmentation_dir.glob("*_segmask*.nii.gz")) if segmentation_dir.exists() else []
 
-    # Нативные изображения и маски
+    # Разделяем маски по категориям:
+    # - AI маска: *_segmask.nii.gz (без _v{N} и без _native_)
+    # - Экспертные маски: *_segmask_v{N}.nii.gz (без _native_)
+    # - Нативные маски: *_segmask_native_*.nii.gz
+    ai_masks = []
+    expert_masks = []
+    native_seg_masks = []
+    for m in all_seg_masks:
+        name = m.name
+        if "_native_" in name:
+            native_seg_masks.append(str(m))
+        elif "_segmask_v" in name:
+            expert_masks.append(str(m))
+        else:
+            ai_masks.append(str(m))
+
+    # Маска по умолчанию: последняя экспертная, или ИИ-маска
+    if expert_masks:
+        default_mask = expert_masks[-1]
+    elif ai_masks:
+        default_mask = ai_masks[-1]
+    else:
+        default_mask = ""
+
+    logger.info(
+        "Slicer open: patient=%s, default_mask=%s, ai=%s, expert=%s, native_seg=%s",
+        sub, Path(default_mask).name if default_mask else "none",
+        [Path(m).name for m in ai_masks],
+        [Path(m).name for m in expert_masks],
+        [Path(m).name for m in native_seg_masks],
+    )
+
+    # Нативные изображения (без масок)
     native_image_paths = sorted([str(p) for p in nifti_dir.glob("*.nii.gz") if "segmask" not in p.name]) if nifti_dir.exists() else []
-    native_mask_files = sorted([str(p) for p in nifti_dir.glob("*segmask*.nii.gz")]) if nifti_dir.exists() else []
-    native_mask_path = native_mask_files[-1] if native_mask_files else None
 
-    if not image_paths and not mask_path:
+    if not image_paths and not default_mask:
         raise HTTPException(status_code=404, detail="Файлы результатов не найдены")
 
     # Отправляем запрос агенту
     payload = {
         "image_paths": image_paths,
-        "mask_path": mask_path,
+        "mask_path": default_mask,
+        "ai_masks": ai_masks,
+        "expert_masks": expert_masks,
         "native_image_paths": native_image_paths,
-        "native_mask_path": native_mask_path,
+        "native_mask_paths": native_seg_masks,
         "patient_id": sub,
         "session_id": ses,
         # Контекст для обратной отправки маски

@@ -107,8 +107,10 @@ class SlicerOpenRequest(BaseModel):
     """Запрос на открытие данных в Slicer."""
     image_paths: list[str]
     mask_path: str
+    ai_masks: list[str] = []
+    expert_masks: list[str] = []
     native_image_paths: list[str] = []
-    native_mask_path: Optional[str] = None
+    native_mask_paths: list[str] = []
     patient_id: str = ""
     session_id: str = ""
     # Контекст для обратной отправки маски
@@ -117,8 +119,6 @@ class SlicerOpenRequest(BaseModel):
     run_id: str = ""
     segmentation_dir: str = ""
     kappa_session_id: str = ""
-    image_urls: list[str] = []
-    mask_url: str = ""
 
 
 class SlicerStatusResponse(BaseModel):
@@ -175,9 +175,10 @@ async def open_in_slicer(request: SlicerOpenRequest):
 
     # Проверяем, что файлы существуют (для локальных путей)
     all_paths = request.image_paths + [request.mask_path]
-    if request.native_mask_path:
-        all_paths.append(request.native_mask_path)
+    all_paths.extend(request.native_mask_paths)
     all_paths.extend(request.native_image_paths)
+    all_paths.extend(request.ai_masks)
+    all_paths.extend(request.expert_masks)
 
     missing = [p for p in all_paths if p and not Path(p).exists()]
     if missing:
@@ -190,8 +191,10 @@ async def open_in_slicer(request: SlicerOpenRequest):
     params = {
         "image_paths": request.image_paths,
         "mask_path": request.mask_path,
+        "ai_masks": request.ai_masks,
+        "expert_masks": request.expert_masks,
         "native_image_paths": request.native_image_paths,
-        "native_mask_path": request.native_mask_path,
+        "native_mask_paths": request.native_mask_paths,
         "patient_id": request.patient_id,
         "session_id": request.session_id,
         # Контекст для кнопки «Сохранить и отправить»
@@ -239,11 +242,16 @@ def _load_patient_data():
         
         image_paths = params.get("image_paths", [])
         mask_path = params.get("mask_path", "")
+        ai_masks = params.get("ai_masks", [])
+        expert_masks = params.get("expert_masks", [])
+        native_image_paths = params.get("native_image_paths", [])
+        native_mask_paths = params.get("native_mask_paths", [])
         patient_id = params.get("patient_id", "")
         
         print(f"Loading patient data: {{patient_id}}")
         
-        # Загружаем изображения
+        # === 1. Загружаем preprocessed изображения (атласное пространство) ===
+        preprocessed_nodes = []
         for img_path in image_paths:
             if os.path.exists(img_path):
                 node = slicer.util.loadVolume(img_path)
@@ -252,42 +260,147 @@ def _load_patient_data():
                     parts = basename.split("_")
                     modality = parts[-1] if parts else basename
                     node.SetName(f"{{patient_id}}_{{modality}}")
-                    print(f"  Loaded: {{img_path}}")
+                    preprocessed_nodes.append(node)
+                    print(f"  [preprocessed] {{img_path}}")
         
-        # Загружаем маску как сегментацию
-        seg_node = None
-        if mask_path and os.path.exists(mask_path):
-            print(f"  Loading mask: {{mask_path}}")
-            labelmap_node = slicer.util.loadLabelVolume(mask_path)
-            if labelmap_node:
-                seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-                seg_node.SetName(f"{{patient_id}}_segmentation")
-                slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                    labelmap_node, seg_node
+        # Определяем reference volume (первый preprocessed)
+        ref_volume = preprocessed_nodes[0] if preprocessed_nodes else None
+        
+        # === 2. Загружаем нативные изображения ===
+        native_nodes = []
+        for img_path in native_image_paths:
+            if os.path.exists(img_path):
+                node = slicer.util.loadVolume(img_path)
+                if node:
+                    basename = os.path.basename(img_path).replace(".nii.gz", "")
+                    parts = basename.split("_")
+                    modality = parts[-1] if parts else basename
+                    node.SetName(f"{{patient_id}}_{{modality}}_native")
+                    native_nodes.append(node)
+                    print(f"  [native] {{img_path}}")
+        
+        # === 3. Загружаем маску по умолчанию как сегментацию ===
+        def _load_mask_as_segmentation(mask_file, seg_name, ref_vol):
+            """Загрузить маску и привязать геометрию к reference volume."""
+            if not mask_file or not os.path.exists(mask_file):
+                return None
+            labelmap_node = slicer.util.loadLabelVolume(mask_file)
+            if not labelmap_node:
+                return None
+            seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+            seg_node.SetName(seg_name)
+            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                labelmap_node, seg_node
+            )
+            slicer.mrmlScene.RemoveNode(labelmap_node)
+            
+            # Привязываем геометрию к reference volume
+            if ref_vol:
+                seg_node.SetReferenceImageGeometryParameterFromVolumeNode(ref_vol)
+            
+            # Именуем сегменты
+            segment_names = {{1: "NCR", 2: "ED", 3: "NET", 4: "ET"}}
+            segmentation = seg_node.GetSegmentation()
+            for i in range(segmentation.GetNumberOfSegments()):
+                segment = segmentation.GetNthSegment(i)
+                if (i + 1) in segment_names:
+                    segment.SetName(segment_names[i + 1])
+            return seg_node
+        
+        # Основная маска (default: последняя экспертная или ИИ)
+        main_seg_node = None
+        if mask_path:
+            # Определяем имя сегментации
+            mask_basename = os.path.basename(mask_path).replace(".nii.gz", "")
+            if "_segmask_v" in mask_basename:
+                seg_label = "expert"
+            else:
+                seg_label = "ai"
+            main_seg_node = _load_mask_as_segmentation(
+                mask_path,
+                f"{{patient_id}}_segmentation ({{seg_label}})",
+                ref_volume,
+            )
+            if main_seg_node:
+                print(f"  [mask:default] {{mask_path}}")
+        
+        # === 4. Загружаем остальные маски (все, кроме default) ===
+        # ИИ маски
+        for m in ai_masks:
+            if m != mask_path and os.path.exists(m):
+                node = _load_mask_as_segmentation(
+                    m, f"{{patient_id}}_segmentation (ai)", ref_volume
                 )
-                slicer.mrmlScene.RemoveNode(labelmap_node)
+                if node:
+                    node.SetDisplayVisibility(False)
+                    print(f"  [mask:ai] {{m}} (hidden)")
+        
+        # Экспертные маски
+        for m in expert_masks:
+            if m != mask_path and os.path.exists(m):
+                ver = "expert"
+                # Извлекаем номер версии
+                bn = os.path.basename(m)
+                if "_segmask_v" in bn:
+                    ver = bn.split("_segmask_v")[1].replace(".nii.gz", "")
+                    ver = f"expert v{{ver}}"
+                node = _load_mask_as_segmentation(
+                    m, f"{{patient_id}}_segmentation ({{ver}})", ref_volume
+                )
+                if node:
+                    node.SetDisplayVisibility(False)
+                    print(f"  [mask:expert] {{m}} (hidden)")
+        
+        # Нативные маски
+        for m in native_mask_paths:
+            if os.path.exists(m):
+                bn = os.path.basename(m).replace(".nii.gz", "")
+                # Извлекаем модальность: ..._segmask_native_t2fl -> t2fl
+                mod = bn.split("_native_")[-1] if "_native_" in bn else "native"
+                # Reference: соответствующий нативный volume
+                native_ref = None
+                for nv in native_nodes:
+                    if mod in nv.GetName():
+                        native_ref = nv
+                        break
+                if not native_ref and native_nodes:
+                    native_ref = native_nodes[0]
                 
-                # Привязываем геометрию сегментации к первому загруженному тому
-                volume_nodes = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
-                if volume_nodes:
-                    seg_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_nodes[0])
-                
-                # Именуем сегменты
-                segment_names = {{1: "NCR", 2: "ED", 3: "NET", 4: "ET"}}
-                segmentation = seg_node.GetSegmentation()
-                for i in range(segmentation.GetNumberOfSegments()):
-                    segment = segmentation.GetNthSegment(i)
-                    if (i + 1) in segment_names:
-                        segment.SetName(segment_names[i + 1])
-                
-                # Открываем Segment Editor
-                slicer.util.selectModule("SegmentEditor")
-                print("  Segment Editor opened")
+                node = _load_mask_as_segmentation(
+                    m, f"{{patient_id}}_segmask_native_{{mod}}", native_ref
+                )
+                if node:
+                    node.SetDisplayVisibility(False)
+                    print(f"  [mask:native] {{m}} (hidden)")
+        
+        # === 5. Настраиваем визуализацию ===
+        if ref_volume:
+            layout_manager = slicer.app.layoutManager()
+            for view_name in ["Red", "Yellow", "Green"]:
+                slice_widget = layout_manager.sliceWidget(view_name)
+                if slice_widget:
+                    slice_logic = slice_widget.sliceLogic()
+                    composite = slice_logic.GetSliceCompositeNode()
+                    composite.SetBackgroundVolumeID(ref_volume.GetID())
+                    slice_logic.FitSliceToAll()
+        
+        # Открываем Segment Editor с основной маской
+        if main_seg_node and ref_volume:
+            slicer.util.selectModule("SegmentEditor")
+            editor_node = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSegmentEditorNode")
+            if not editor_node:
+                editor_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentEditorNode")
+            editor_node.SetAndObserveSegmentationNode(main_seg_node)
+            editor_node.SetAndObserveMasterVolumeNode(ref_volume)
+            print("  Segment Editor opened")
         
         print(f"Patient {{patient_id}} loaded successfully!")
+        print(f"  Preprocessed volumes: {{len(preprocessed_nodes)}}")
+        print(f"  Native volumes: {{len(native_nodes)}}")
+        print(f"  Default mask: {{'yes' if main_seg_node else 'no'}}")
         
         # === КНОПКА «СОХРАНИТЬ И ОТПРАВИТЬ» ===
-        _add_upload_button(params, seg_node)
+        _add_upload_button(params, main_seg_node)
         
         # Удаляем временный файл параметров
         try:
