@@ -1118,11 +1118,13 @@ async def get_mask_versions(entity_id: str, session_id: str):
     history = get_mask_history(entity_id)
     current = get_current_mask(entity_id)
 
-    # Помечаем доступность каждой версии
+    # Помечаем доступность и размер каждой версии
     for v in history:
         has_kappa = v.get("kappa_file_id") and v["kappa_file_id"] != "uploaded_no_file_id"
-        has_local = Path(v.get("file_path", "")).exists() if v.get("file_path") else False
+        local_path = Path(v.get("file_path", "")) if v.get("file_path") else None
+        has_local = local_path.exists() if local_path else False
         v["available"] = has_kappa or has_local
+        v["file_size"] = local_path.stat().st_size if has_local else None
 
     return {
         "entity_id": entity_id,

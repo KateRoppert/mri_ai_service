@@ -386,7 +386,29 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
 
       nv.drawScene();
       setShowMask(true);
-      setActiveMaskLabel(`v${versionInfo.version} (${versionInfo.source === 'ai' ? 'ИИ' : 'Эксперт'})`);
+
+      // Верификация: читаем статистику загруженной маски
+      let statsLabel = '';
+      if (nv.volumes && nv.volumes.length >= 2) {
+        const maskVol = nv.volumes[nv.volumes.length - 1];
+        if (maskVol && maskVol.img) {
+          const data = maskVol.img;
+          let nonZero = 0;
+          const classCounts = {};
+          for (let i = 0; i < data.length; i++) {
+            if (data[i] > 0) {
+              nonZero++;
+              classCounts[data[i]] = (classCounts[data[i]] || 0) + 1;
+            }
+          }
+          const classStr = Object.entries(classCounts)
+            .map(([k, v]) => `c${k}:${v}`)
+            .join(' ');
+          statsLabel = ` | ${nonZero} вокс. [${classStr}]`;
+        }
+      }
+
+      setActiveMaskLabel(`v${versionInfo.version} (${versionInfo.source === 'ai' ? 'ИИ' : 'Эксперт'})${statsLabel}`);
       message.success(`Маска переключена на версию ${versionInfo.version}`);
     } catch (err) {
       console.error('Ошибка загрузки версии маски:', err);

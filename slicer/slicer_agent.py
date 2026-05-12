@@ -264,6 +264,12 @@ def _load_patient_data():
             labelmap_node = slicer.util.loadLabelVolume(mask_file)
             if not labelmap_node:
                 return None
+            # Статистика для верификации переключения
+            import numpy
+            arr = slicer.util.arrayFromVolume(labelmap_node)
+            nonzero = int(numpy.count_nonzero(arr))
+            unique_vals = numpy.unique(arr[arr > 0]).tolist()
+            print("  [mask-stats] %s: nonzero=%d classes=%s" % (seg_name, nonzero, unique_vals))
             seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
             seg_node.SetName(seg_name)
             # Импортируем labelmap — передаём ref_volume для корректного ресэмплинга

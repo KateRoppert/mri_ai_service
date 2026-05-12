@@ -580,6 +580,9 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
                       <br />
                       <Text type="secondary" style={{ fontSize: 12 }}>
                         {v.file_name}
+                        {v.file_size != null && (
+                          <> · {(v.file_size / 1024).toFixed(1)} КБ</>
+                        )}
                       </Text>
                     </>
                   }
