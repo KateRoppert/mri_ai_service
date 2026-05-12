@@ -267,6 +267,11 @@ def _load_patient_data():
                 )
                 slicer.mrmlScene.RemoveNode(labelmap_node)
                 
+                # Привязываем геометрию сегментации к первому загруженному тому
+                volume_nodes = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+                if volume_nodes:
+                    seg_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_nodes[0])
+                
                 # Именуем сегменты
                 segment_names = {{1: "NCR", 2: "ED", 3: "NET", 4: "ET"}}
                 segmentation = seg_node.GetSegmentation()
