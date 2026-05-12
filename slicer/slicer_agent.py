@@ -273,12 +273,16 @@ def _load_patient_data():
             # Привязываем reference geometry ПОСЛЕ импорта
             if ref_volume:
                 seg_node.SetReferenceImageGeometryParameterFromVolumeNode(ref_volume)
+            # Именуем сегменты
             segment_names = {{1: "NCR", 2: "ED", 3: "NET", 4: "ET"}}
             segmentation = seg_node.GetSegmentation()
             for i in range(segmentation.GetNumberOfSegments()):
                 segment = segmentation.GetNthSegment(i)
                 if (i + 1) in segment_names:
                     segment.SetName(segment_names[i + 1])
+            # Пересоздаём closed surface для корректного 3D отображения
+            segmentation.RemoveRepresentation("Closed surface")
+            segmentation.CreateRepresentation("Closed surface")
             return seg_node
         
         # === 3. Загружаем маску по умолчанию (видимая) ===
