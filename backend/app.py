@@ -1253,7 +1253,6 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
     # Собираем пути к файлам
     preprocessed_dir = output_path / "preprocessed" / sub / ses / "anat"
     segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
-    nifti_dir = output_path / "nifti" / sub / ses / "anat"
 
     # Preprocessed изображения (атласное пространство)
     image_paths = sorted([str(p) for p in preprocessed_dir.glob("*.nii.gz")]) if preprocessed_dir.exists() else []
@@ -1282,21 +1281,11 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
     else:
         default_mask = ""
 
-    # Нативные маски — из директории segmentation (они не в mask_versions)
-    native_seg_masks = []
-    if segmentation_dir.exists():
-        native_seg_masks = sorted([
-            str(m) for m in segmentation_dir.glob("*_segmask_native_*.nii.gz")
-        ])
-
     logger.info(
-        "Slicer open: patient=%s, default_mask=%s, ai=%d, expert=%d, native_seg=%d",
+        "Slicer open: patient=%s, default_mask=%s, ai=%d, expert=%d",
         sub, Path(default_mask).name if default_mask else "none",
-        len(ai_masks), len(expert_masks), len(native_seg_masks),
+        len(ai_masks), len(expert_masks),
     )
-
-    # Нативные изображения (без масок)
-    native_image_paths = sorted([str(p) for p in nifti_dir.glob("*.nii.gz") if "segmask" not in p.name]) if nifti_dir.exists() else []
 
     if not image_paths and not default_mask:
         raise HTTPException(status_code=404, detail="Файлы результатов не найдены")
@@ -1307,8 +1296,6 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
         "mask_path": default_mask,
         "ai_masks": ai_masks,
         "expert_masks": expert_masks,
-        "native_image_paths": native_image_paths,
-        "native_mask_paths": native_seg_masks,
         "patient_id": sub,
         "session_id": ses,
         # Контекст для обратной отправки маски
