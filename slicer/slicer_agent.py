@@ -256,6 +256,15 @@ def _load_patient_data():
                     print(f"  [volume] {{modality}}")
         
         ref_volume = volume_nodes[0] if volume_nodes else None
+        if ref_volume:
+            import vtk as _vtk
+            _m = _vtk.vtkMatrix4x4()
+            ref_volume.GetIJKToRASMatrix(_m)
+            _ox = round(_m.GetElement(0,3),1)
+            _oy = round(_m.GetElement(1,3),1)
+            _oz = round(_m.GetElement(2,3),1)
+            _dims = ref_volume.GetImageData().GetDimensions()
+            print("  [ref_volume] origin=(%s, %s, %s) dims=%s" % (_ox, _oy, _oz, str(_dims)))
         
         # === 2. Вспомогательная функция загрузки маски ===
         def _load_mask(mask_file, seg_name):
@@ -264,15 +273,28 @@ def _load_patient_data():
             labelmap_node = slicer.util.loadLabelVolume(mask_file)
             if not labelmap_node:
                 return None
+            # Диагностика: проверяем геометрию labelmap
+            import vtk as _vtk
+            _lm = _vtk.vtkMatrix4x4()
+            labelmap_node.GetIJKToRASMatrix(_lm)
+            _lox = round(_lm.GetElement(0,3),1)
+            _loy = round(_lm.GetElement(1,3),1)
+            _loz = round(_lm.GetElement(2,3),1)
+            _ldims = labelmap_node.GetImageData().GetDimensions()
+            print("  [labelmap] %s: origin=(%s, %s, %s) dims=%s" % (seg_name, _lox, _loy, _loz, str(_ldims)))
             seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
             seg_node.SetName(seg_name)
-            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                labelmap_node, seg_node
-            )
-            slicer.mrmlScene.RemoveNode(labelmap_node)
-            # Привязываем reference geometry ПОСЛЕ импорта
+            # Импортируем labelmap — передаём ref_volume для корректного ресэмплинга
             if ref_volume:
                 seg_node.SetReferenceImageGeometryParameterFromVolumeNode(ref_volume)
+                slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                    labelmap_node, seg_node, ""
+                )
+            else:
+                slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                    labelmap_node, seg_node
+                )
+            slicer.mrmlScene.RemoveNode(labelmap_node)
             # Именуем сегменты
             segment_names = {{1: "NCR", 2: "ED", 3: "NET", 4: "ET"}}
             segmentation = seg_node.GetSegmentation()
@@ -280,9 +302,6 @@ def _load_patient_data():
                 segment = segmentation.GetNthSegment(i)
                 if (i + 1) in segment_names:
                     segment.SetName(segment_names[i + 1])
-            # Пересоздаём closed surface для корректного 3D отображения
-            segmentation.RemoveRepresentation("Closed surface")
-            segmentation.CreateRepresentation("Closed surface")
             return seg_node
         
         # === 3. Загружаем маску по умолчанию (видимая) ===
