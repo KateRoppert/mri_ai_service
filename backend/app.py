@@ -1258,24 +1258,21 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
     # Preprocessed изображения (атласное пространство)
     image_paths = sorted([str(p) for p in preprocessed_dir.glob("*.nii.gz")]) if preprocessed_dir.exists() else []
 
-    # Все маски из segmentation/
-    all_seg_masks = sorted(segmentation_dir.glob("*_segmask*.nii.gz")) if segmentation_dir.exists() else []
+    # Маски из БД (mask_versions) — единственный источник правды
+    from mask_service import get_mask_history
+    entity_id = record.get("kappa_entity_id", "")
+    mask_history = get_mask_history(entity_id) if entity_id else []
 
-    # Разделяем маски по категориям:
-    # - AI маска: *_segmask.nii.gz (без _v{N} и без _native_)
-    # - Экспертные маски: *_segmask_v{N}.nii.gz (без _native_)
-    # - Нативные маски: *_segmask_native_*.nii.gz
     ai_masks = []
     expert_masks = []
-    native_seg_masks = []
-    for m in all_seg_masks:
-        name = m.name
-        if "_native_" in name:
-            native_seg_masks.append(str(m))
-        elif "_segmask_v" in name:
-            expert_masks.append(str(m))
+    for mv in mask_history:
+        fp = mv.get("file_path", "")
+        if not fp or not Path(fp).exists():
+            continue
+        if mv["source"] == "ai":
+            ai_masks.append(fp)
         else:
-            ai_masks.append(str(m))
+            expert_masks.append(fp)
 
     # Маска по умолчанию: последняя экспертная, или ИИ-маска
     if expert_masks:
@@ -1285,12 +1282,17 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
     else:
         default_mask = ""
 
+    # Нативные маски — из директории segmentation (они не в mask_versions)
+    native_seg_masks = []
+    if segmentation_dir.exists():
+        native_seg_masks = sorted([
+            str(m) for m in segmentation_dir.glob("*_segmask_native_*.nii.gz")
+        ])
+
     logger.info(
-        "Slicer open: patient=%s, default_mask=%s, ai=%s, expert=%s, native_seg=%s",
+        "Slicer open: patient=%s, default_mask=%s, ai=%d, expert=%d, native_seg=%d",
         sub, Path(default_mask).name if default_mask else "none",
-        [Path(m).name for m in ai_masks],
-        [Path(m).name for m in expert_masks],
-        [Path(m).name for m in native_seg_masks],
+        len(ai_masks), len(expert_masks), len(native_seg_masks),
     )
 
     # Нативные изображения (без масок)
@@ -1310,7 +1312,7 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None):
         "patient_id": sub,
         "session_id": ses,
         # Контекст для обратной отправки маски
-        "entity_id": record.get("kappa_entity_id", ""),
+        "entity_id": entity_id,
         "dataset_id": record.get("kappa_dataset_id", 0),
         "run_id": run_id,
         "segmentation_dir": str(segmentation_dir),
