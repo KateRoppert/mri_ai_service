@@ -189,8 +189,6 @@ async def open_in_slicer(request: SlicerOpenRequest):
         "mask_path": request.mask_path,
         "ai_masks": request.ai_masks,
         "expert_masks": request.expert_masks,
-        "native_image_paths": request.native_image_paths,
-        "native_mask_paths": request.native_mask_paths,
         "patient_id": request.patient_id,
         "session_id": request.session_id,
         # Контекст для кнопки «Сохранить и отправить»
