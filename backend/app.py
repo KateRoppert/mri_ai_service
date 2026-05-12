@@ -1188,6 +1188,9 @@ async def sync_masks_with_kappa(entity_id: str, session_id: str):
         "removed": removed,
         "remaining": remaining,
     }
+
+
+@app.get("/api/validation/mask-file/{entity_id}/{version}")
 async def serve_mask_version(entity_id: str, version: int, session_id: str):
     """
     Отдать файл маски конкретной версии.
