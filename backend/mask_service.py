@@ -58,6 +58,38 @@ def register_ai_mask(
         db.close()
 
 
+def get_next_version(entity_id: str) -> int:
+    """Получить следующий номер версии маски (max + 1)."""
+    db = SessionLocal()
+    try:
+        last = db.query(MaskVersion).filter(
+            MaskVersion.entity_id == entity_id,
+        ).order_by(MaskVersion.version.desc()).first()
+
+        return (last.version + 1) if last else 1
+    finally:
+        db.close()
+
+
+def get_ai_mask_dir(entity_id: str) -> Optional[str]:
+    """
+    Получить директорию ИИ-маски (version 1) для данной сущности.
+    Все версии масок пациента должны храниться в этой директории.
+    """
+    db = SessionLocal()
+    try:
+        record = db.query(MaskVersion).filter(
+            MaskVersion.entity_id == entity_id,
+            MaskVersion.version == 1,
+        ).first()
+
+        if record and record.file_path:
+            return str(Path(record.file_path).parent)
+        return None
+    finally:
+        db.close()
+
+
 def register_expert_mask(
     entity_id: str,
     dataset_id: int,

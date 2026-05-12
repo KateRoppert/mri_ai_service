@@ -979,16 +979,15 @@ async def upload_edited_mask(
     
     Шаги:
     1. Валидация сессии и файла
-    2. Сохранение файла локально (в директорию segmentation)
-    3. Регистрация новой версии в mask_versions
-    4. Замена файла маски в Каппе
+    2. Сохранение файла локально (в директорию ИИ-маски пациента)
+    3. Загрузка в Каппу (получение kappa_file_id)
+    4. Регистрация новой версии в mask_versions
     5. Возврат информации о новой версии
     """
     import shutil
     from kappa_auth import get_session
     from kappa_client import replace_entity_file
-    from mask_service import register_expert_mask, get_mask_history
-    from patient_registry import find_by_run_id
+    from mask_service import register_expert_mask, get_next_version, get_ai_mask_dir
 
     # 1. Валидация сессии
     session = get_session(session_id)
@@ -1002,40 +1001,48 @@ async def upload_edited_mask(
             detail="Файл должен быть в формате NIfTI (.nii.gz или .nii)",
         )
 
-    # 2. Определяем путь для сохранения
-    from database import SessionLocal as DBSessionLocal, get_pipeline_run
-    db = DBSessionLocal()
-    try:
-        run = get_pipeline_run(db, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Запуск не найден")
-        output_path = Path(run.output_path)
-    finally:
-        db.close()
+    # 2. Определяем путь для сохранения — директория ИИ-маски пациента
+    ai_mask_dir = get_ai_mask_dir(entity_id)
+    if not ai_mask_dir:
+        # Fallback: берём из текущего run (для первого запуска)
+        from database import SessionLocal as DBSessionLocal, get_pipeline_run
+        from patient_registry import find_by_run_id
+        db = DBSessionLocal()
+        try:
+            run = get_pipeline_run(db, run_id)
+            if not run:
+                raise HTTPException(status_code=404, detail="Запуск не найден")
+            output_path = Path(run.output_path)
+        finally:
+            db.close()
 
-    # Находим bids_id через реестр
-    records = find_by_run_id(run_id)
-    if not records:
-        raise HTTPException(status_code=404, detail="Нет связанных сущностей")
+        records = find_by_run_id(run_id)
+        if not records:
+            raise HTTPException(status_code=404, detail="Нет связанных сущностей")
+        record = records[0]
+        bids_id = record.get("bids_id", "unknown")
+        sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+        segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
+    else:
+        segmentation_dir = Path(ai_mask_dir)
 
-    record = records[0]
-    bids_id = record.get("bids_id", "unknown")
-    sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
-
-    segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
     segmentation_dir.mkdir(parents=True, exist_ok=True)
 
-    # Определяем номер версии
-    history = get_mask_history(entity_id)
-    next_version = len(history) + 1
+    # Определяем номер версии — единый источник из БД
+    next_version = get_next_version(entity_id)
 
-    # Имя файла: оригинальное имя + _v{N}
-    # Находим оригинальное имя маски
+    # Имя файла: берём базу из ИИ-маски или формируем
     original_masks = list(segmentation_dir.glob("*_segmask.nii.gz"))
     if original_masks:
         base_name = original_masks[0].name.replace(".nii.gz", "")
     else:
-        base_name = f"{sub}_{ses}_segmask"
+        # Определяем bids_id для имени
+        from patient_registry import find_by_run_id
+        records = find_by_run_id(run_id) if not ai_mask_dir else []
+        if records:
+            bids_id = records[0].get("bids_id", "unknown")
+            sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+        base_name = f"{sub}_{ses}_segmask" if 'sub' in dir() else "segmask"
 
     versioned_name = f"{base_name}_v{next_version}.nii.gz"
     save_path = segmentation_dir / versioned_name

@@ -81,19 +81,9 @@ class KappaUploader:
                     session_key, study_hash, dataset_id,
                 )
 
-                # Обновляем pipeline_run_id в реестре, чтобы текущий запуск
-                # мог найти связку с Каппой
-                from patient_registry import find_by_study_hash, register_patient
-                existing_record = find_by_study_hash(study_hash)
-                if existing_record:
-                    register_patient(
-                        bids_id=session_key,
-                        study_hash=study_hash,
-                        original_patient_id=existing_record.get("original_patient_id", ""),
-                        kappa_entity_id=existing_record.get("kappa_entity_id"),
-                        kappa_dataset_id=existing_record.get("kappa_dataset_id"),
-                        pipeline_run_id=self.run_id,
-                    )
+                # НЕ обновляем pipeline_run_id — он должен указывать
+                # на запуск, который создал данные пациента.
+                # kappa_entity_id и kappa_dataset_id уже в реестре.
 
                 results.append({
                     "session": session_key,
