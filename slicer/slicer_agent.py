@@ -284,6 +284,8 @@ def _load_patient_data():
                 )
             slicer.mrmlScene.RemoveNode(labelmap_node)
             # Именуем сегменты и задаём цвета (согласованные с NiiVue colormap)
+            # Важно: если класс отсутствует в маске, Slicer пропускает его,
+            # поэтому нельзя использовать i+1 как label value.
             segment_config = {{
                 1: ("NCR", (1.0, 0.0, 0.0)),      # красный
                 2: ("ED",  (0.0, 0.8, 0.0)),       # зелёный
@@ -292,8 +294,14 @@ def _load_patient_data():
             }}
             segmentation = seg_node.GetSegmentation()
             for i in range(segmentation.GetNumberOfSegments()):
+                segment_id = segmentation.GetNthSegmentID(i)
                 segment = segmentation.GetNthSegment(i)
-                label_value = i + 1
+                # Определяем label value из segment ID
+                # Slicer назначает ID вида "1", "2", "3", "4" при импорте из labelmap
+                try:
+                    label_value = int(segment_id)
+                except (ValueError, TypeError):
+                    label_value = i + 1
                 if label_value in segment_config:
                     name, color = segment_config[label_value]
                     segment.SetName(name)
@@ -417,32 +425,31 @@ def _add_upload_button(params, seg_node):
                 )
             
             # Переназначаем label values по именам сегментов
-            # Slicer экспортирует labels по порядку (1,2,3,...),
+            # Slicer экспортирует labels по порядку (1,2,3,...) для каждого сегмент,
             # но нам нужно: NCR=1, ED=2, NET=3, ET=4
             import numpy
             name_to_label = {{"NCR": 1, "ED": 2, "NET": 3, "ET": 4}}
             segmentation = active_seg.GetSegmentation()
             
-            # Строим маппинг: slicer_label → correct_label
+            # Строим маппинг: exported_label → correct_label
+            # ExportVisibleSegments назначает labels 1,2,3,... по порядку сегментов
             remap = {{}}
             for i in range(segmentation.GetNumberOfSegments()):
                 segment = segmentation.GetNthSegment(i)
                 seg_name = segment.GetName()
-                slicer_label = i + 1  # Slicer назначает 1-based по порядку
-                correct_label = name_to_label.get(seg_name, slicer_label)
-                if slicer_label != correct_label:
-                    remap[slicer_label] = correct_label
+                exported_label = i + 1  # Slicer назначает 1-based по порядку
+                correct_label = name_to_label.get(seg_name, exported_label)
+                if exported_label != correct_label:
+                    remap[exported_label] = correct_label
             
             if remap:
                 arr = slicer.util.arrayFromVolume(labelmap)
                 new_arr = numpy.zeros_like(arr)
-                for old_val, new_val in remap.items():
-                    new_arr[arr == old_val] = new_val
-                # Скопировать неизменённые значения
+                # Сначала копируем все неизменённые значения
                 for i in range(segmentation.GetNumberOfSegments()):
-                    label = i + 1
-                    if label not in remap:
-                        new_arr[arr == label] = label
+                    exported_label = i + 1
+                    target = remap.get(exported_label, exported_label)
+                    new_arr[arr == exported_label] = target
                 slicer.util.updateVolumeFromArray(labelmap, new_arr)
                 print("  [export] Remapped labels: %s" % remap)
             
