@@ -58,7 +58,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
   const [versionsModalOpen, setVersionsModalOpen] = useState(false);
   const [versions, setVersions] = useState([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
-  const [activeVersion, setActiveVersion] = useState(null);
+  const [activeVersion, setActiveVersion] = useState(1); // v1 = ИИ маска, показывается по умолчанию
 
   // Polling для Slicer (автообновление после отправки маски из Slicer)
   const slicerPollRef = useRef(null);

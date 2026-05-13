@@ -307,7 +307,7 @@ def _load_patient_data():
                     segment.SetColor(*color)
             return seg_node
         
-        # === 3. Загружаем маску по умолчанию (видимая) ===
+        # === 3. Загружаем маску по умолчанию (единственная видимая) ===
         main_seg_node = None
         if mask_path:
             mask_bn = os.path.basename(mask_path).replace(".nii.gz", "")
@@ -318,26 +318,10 @@ def _load_patient_data():
                 label = "ai"
             main_seg_node = _load_mask(mask_path, f"{{patient_id}}_segmentation ({{label}})")
             if main_seg_node:
-                print(f"  [mask:default] {{label}}")
+                print(f"  [mask:loaded] {{label}}")
         
-        # === 4. Загружаем остальные маски (скрытые) ===
-        for m in ai_masks:
-            if m != mask_path and os.path.exists(m):
-                node = _load_mask(m, f"{{patient_id}}_segmentation (ai)")
-                if node:
-                    node.SetDisplayVisibility(False)
-                    print(f"  [mask:ai] hidden")
-        
-        for m in expert_masks:
-            if m != mask_path and os.path.exists(m):
-                bn = os.path.basename(m)
-                ver = "expert"
-                if "_segmask_v" in bn:
-                    ver = f"expert v{{bn.split('_segmask_v')[1].replace('.nii.gz', '')}}"
-                node = _load_mask(m, f"{{patient_id}}_segmentation ({{ver}})")
-                if node:
-                    node.SetDisplayVisibility(False)
-                    print(f"  [mask:{{ver}}] hidden")
+        # Остальные маски НЕ загружаем — для переключения версий
+        # эксперт выбирает нужную в сервисе и открывает Slicer заново
         
         # === 5. Настраиваем визуализацию ===
         if ref_volume:
