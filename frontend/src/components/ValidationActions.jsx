@@ -7,23 +7,18 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Button, Space, Tag, Tooltip, message, Popconfirm,
-  Modal, Steps, Typography, Alert, Spin, List,
+  Modal, Typography, Alert, Spin, List,
 } from 'antd';
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   EditOutlined,
   UndoOutlined,
-  DownloadOutlined,
-  UploadOutlined,
   HistoryOutlined,
-  DesktopOutlined,
 } from '@ant-design/icons';
 import {
   validationAction,
   getEntityValidation,
-  getSlicerPackageUrl,
-  uploadMask,
   getMaskVersions,
   getMaskFileUrl,
   syncMasks,
@@ -43,11 +38,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
   const [loading, setLoading] = useState(false);
   const [votes, setVotes] = useState(null);
   const [myVote, setMyVote] = useState(null);
-
-  // Состояние модалки редактирования
-  const [editModalOpen, setEditModalOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState(null);
 
   // Slicer Agent
   const [slicerStatus, setSlicerStatus] = useState(null); // null | 'checking' | 'available' | 'unavailable'
@@ -107,85 +97,26 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
   // === Редактирование ===
 
-  const handleDownloadPackage = () => {
+  const handleEditClick = async () => {
     if (!runId) {
-      message.warning('Не удалось определить ID запуска для скачивания пакета');
+      message.warning('Не удалось определить ID запуска');
       return;
     }
-    const url = getSlicerPackageUrl(runId);
-    window.open(url, '_blank');
-  };
-
-  const fileInputRef = useRef(null);
-
-  const handleFileSelected = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Валидация
-    if (!file.name.endsWith('.nii.gz') && !file.name.endsWith('.nii')) {
-      message.error('Файл должен быть в формате NIfTI (.nii.gz или .nii)');
-      e.target.value = '';
-      return;
-    }
-
-    // КРИТИЧНО: читаем файл в память ДО любого setState/ре-рендера.
-    // После ре-рендера браузер может отозвать доступ к File объекту
-    // (ERR_ACCESS_DENIED в Chrome, NS_BINDING_ABORTED в Firefox).
-    const fileName = file.name;
-    const fileSize = file.size;
-
-    let blob;
-    try {
-      const buffer = await file.arrayBuffer();
-      blob = new Blob([buffer], { type: 'application/gzip' });
-    } catch (readErr) {
-      console.error('[UPLOAD] Failed to read file:', readErr);
-      message.error('Не удалось прочитать файл');
-      e.target.value = '';
-      return;
-    }
-
-    // Сбрасываем input
-    e.target.value = '';
-
-    // Теперь можно безопасно обновлять state — файл уже в памяти
-    setUploading(true);
-    setUploadResult(null);
-
-    try {
-      // Создаём новый File из Blob с оригинальным именем
-      const safeFile = new File([blob], fileName, { type: 'application/gzip' });
-      const result = await uploadMask(entityId, datasetId, runId, safeFile);
-      setUploadResult(result);
-      message.success(result.message || 'Маска загружена');
-
-      if (onMaskUploaded) {
-        onMaskUploaded(result);
-      }
-    } catch (err) {
-      console.error('Upload error:', err);
-      const detail = err.response?.data?.detail || 'Не удалось загрузить маску';
-      message.error(detail);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const openEditModal = () => {
-    setUploadResult(null);
-    setSlicerResult(null);
-    setEditModalOpen(true);
 
     // Проверяем доступность Slicer Agent
-    setSlicerStatus('checking');
-    checkSlicerAgent()
-      .then((data) => {
-        setSlicerStatus(data.slicer_found ? 'available' : 'unavailable');
-      })
-      .catch(() => {
-        setSlicerStatus('unavailable');
-      });
+    try {
+      const agentStatus = await checkSlicerAgent();
+      if (!agentStatus.slicer_found) {
+        message.error('3D Slicer Agent не запущен. Запустите slicer_agent.py на хост-машине.');
+        return;
+      }
+    } catch {
+      message.error('Не удалось проверить доступность 3D Slicer');
+      return;
+    }
+
+    // Открываем Slicer с выбранной маской
+    await handleOpenInSlicer();
   };
 
   const handleOpenInSlicer = async () => {
@@ -375,8 +306,9 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
 
         <Button
           icon={<EditOutlined />}
-          onClick={openEditModal}
+          onClick={handleEditClick}
           disabled={!runId}
+          loading={slicerOpening}
         >
           Редактировать
         </Button>
@@ -389,125 +321,6 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
           />
         </Tooltip>
       </Space>
-
-      {/* Модалка редактирования — рендерится на document.body,
-          чтобы не конфликтовать с модалкой NIfTIViewer */}
-      <Modal
-        title="Редактирование сегментации в 3D Slicer"
-        open={editModalOpen}
-        onCancel={() => {
-          setEditModalOpen(false);
-          stopSlicerPoll();
-        }}
-        getContainer={document.body}
-        footer={[
-          <Button key="close" onClick={() => { setEditModalOpen(false); stopSlicerPoll(); }}>
-            Закрыть
-          </Button>,
-        ]}
-        width={600}
-      >
-        <Steps
-          direction="vertical"
-          size="small"
-          current={uploadResult ? 3 : (slicerResult?.success ? 2 : 0)}
-          items={[
-            {
-              title: 'Откройте данные в 3D Slicer',
-              description: (
-                <Space direction="vertical" size="small" style={{ marginTop: 8 }}>
-                  {slicerStatus === 'checking' && (
-                    <Text type="secondary">
-                      <Spin size="small" /> Проверка Slicer Agent...
-                    </Text>
-                  )}
-                  {slicerStatus === 'available' && (
-                    <>
-                      <Button
-                        type="primary"
-                        icon={<DesktopOutlined />}
-                        onClick={handleOpenInSlicer}
-                        loading={slicerOpening}
-                      >
-                        Открыть в 3D Slicer
-                      </Button>
-                      {slicerResult?.success && (
-                        <Alert type="success" message="Slicer запущен, данные загружены" showIcon />
-                      )}
-                      {slicerResult && !slicerResult.success && (
-                        <Alert type="error" message={slicerResult.message} showIcon />
-                      )}
-                    </>
-                  )}
-                  {slicerStatus === 'unavailable' && (
-                    <>
-                      <Alert
-                        type="warning"
-                        message="Slicer Agent не запущен"
-                        description="Запустите slicer_agent.py на этом компьютере или скачайте пакет вручную."
-                        showIcon
-                      />
-                      <Button
-                        icon={<DownloadOutlined />}
-                        onClick={handleDownloadPackage}
-                      >
-                        Скачать пакет вручную
-                      </Button>
-                    </>
-                  )}
-                </Space>
-              ),
-            },
-            {
-              title: 'Отредактируйте маску в Segment Editor',
-              description: (
-                <Text type="secondary">
-                  Используйте инструменты Segment Editor для правки сегментации,
-                  затем сохраните маску: File → Save → выберите формат NIfTI (.nii.gz).
-                </Text>
-              ),
-            },
-            {
-              title: 'Загрузите отредактированную маску',
-              description: (
-                <Space direction="vertical" size="small" style={{ marginTop: 8 }}>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".nii.gz,.nii"
-                    style={{ display: 'none' }}
-                    onChange={handleFileSelected}
-                  />
-                  <Button
-                    icon={<UploadOutlined />}
-                    loading={uploading}
-                    type={uploadResult ? 'default' : 'primary'}
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                  >
-                    {uploading ? 'Загрузка...' : 'Выбрать файл маски (.nii.gz)'}
-                  </Button>
-
-                  {uploadResult && (
-                    <Alert
-                      type={uploadResult.kappa_uploaded ? 'success' : 'warning'}
-                      message={uploadResult.message}
-                      description={
-                        <>
-                          <Text>Версия: {uploadResult.mask_version?.version}</Text>
-                          <br />
-                          <Text>Файл: {uploadResult.file_name}</Text>
-                        </>
-                      }
-                      showIcon
-                    />
-                  )}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      </Modal>
 
       {/* Модалка истории версий */}
       <Modal
