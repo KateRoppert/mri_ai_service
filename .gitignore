@@ -40,3 +40,7 @@ segmentation/nnUNetv1_data/
 segmentation/nnUNetv2_data/
 *.pth
 *.pt
+
+# Базы данных
+*.db
+backend/brain_lesion.db
