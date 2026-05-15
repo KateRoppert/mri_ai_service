@@ -23,23 +23,21 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 RUN python3 -m pip install --upgrade pip
 
 WORKDIR /app
-
-# Копируем и устанавливаем зависимости
-COPY requirements.txt .
-# Используем python3 -m pip для уверенности, что ставим в 3.11
+COPY gbm-seg/requirements.txt .
 RUN python3 -m pip install --no-cache-dir --ignore-installed -r requirements.txt
 
-# Копируем код сегментации
-COPY *.py .
-COPY src/ ./src/
-COPY nnUNet/ ./nnUNet/
+# Common shared code (used by all services)
+COPY common/ ./common/
+
+# GBM-specific code and resources
+COPY gbm-seg/*.py .
+COPY gbm-seg/src/ ./src/
+COPY gbm-seg/nnUNet/ ./nnUNet/
 ENV SKLEARN_ALLOW_DEPRECATED_SKLEARN_PACKAGE_INSTALL=True
 RUN cd nnUNet && pip install .
-COPY nnUNetv1_data/ ./nnUNetv1_data/
-COPY nnUNetv2_data/ ./nnUNetv2_data/
 
 RUN mkdir -p /app/data/input /app/data/tmp /app/data/output
-
+ENV PYTHONPATH=/app:$PYTHONPATH
 EXPOSE 5000
 
 # Запускаем сервер

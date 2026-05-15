@@ -26,8 +26,8 @@ services:
   # GBM segmentation service (nnUNet v1, Task115)
   service-gbm-seg:
     build:
-      context: ./services/gbm-seg
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: gbm-seg/Dockerfile
     image: brain-lesion-gbm-seg:demo
     ports:
       - "5000:5000"
@@ -36,6 +36,8 @@ services:
       - DEVICE=cuda
     volumes:
       - ./demo_workspace:/workspace:rw
+      - ./services/gbm-seg/nnUNetv1_data:/app/nnUNetv1_data:ro
+      - ./services/gbm-seg/nnUNetv2_data:/app/nnUNetv2_data:ro
     deploy:
       resources:
         reservations:
