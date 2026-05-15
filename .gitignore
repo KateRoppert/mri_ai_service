@@ -1,16 +1,16 @@
-# Папка виртуального окружения Python
-venv/
+# Python virtual environments
 venv/
 
-# Кэш Python
+# Python cache
 __pycache__/
 *.pyc
-.pytest_cache
-# Лог-файлы
+.pytest_cache/
+
+# Logs
 *.log
 logs/
 
-# Данные и результаты обработки
+# Data and processing results
 runs_data/
 tests/
 libs/
@@ -29,18 +29,32 @@ runtime_configs/
 test_benchmark_results/
 demo_workspace/
 
-# Шаблоны для предобработки
+# Preprocessing templates
 mni_templates/
 
-# Файлы операционной системы / редакторов
+# OS / editor files
 .DS_Store
 *.swp
+.vscode/
+.idea/
 
+# Model weights
 segmentation/nnUNetv1_data/
 segmentation/nnUNetv2_data/
+services/*/weights/
 *.pth
 *.pt
 
-# Базы данных
+# Databases
 *.db
-backend/brain_lesion.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Secrets and environment
+.env
+.env.local
+*.pem
+*.key
