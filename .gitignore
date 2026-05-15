@@ -5,6 +5,7 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+*.backup
 
 # Logs
 *.log
@@ -39,8 +40,11 @@ mni_templates/
 .idea/
 
 # Model weights
-segmentation/nnUNetv1_data/
-segmentation/nnUNetv2_data/
+services/gbm-seg/nnUNetv1_data/
+services/gbm-seg/nnUNetv2_data/
+services/*/nnUNetv1_data/
+services/*/nnUNetv2_data/
+services/*/nnUNet_results/
 services/*/weights/
 *.pth
 *.pt

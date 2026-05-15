@@ -43,4 +43,4 @@ RUN mkdir -p /app/data/input /app/data/tmp /app/data/output
 EXPOSE 5000
 
 # Запускаем сервер
-CMD ["python3", "src/simple_server.py"]
+CMD ["python3", "src/service_server.py"]

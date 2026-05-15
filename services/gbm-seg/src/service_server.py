@@ -446,7 +446,7 @@ async def upload_file():
                 in_path, out_path = await prepare_files_for_unet(files, prefix)
                 
                 try:
-                    import nnUNet_inference
+                    import inference as nnUNet_inference
                     print("DEBUG: nnUNet_inference imported successfully")
                 except Exception as e:
                     print(f"ERROR: Failed to import nnUNet_inference: {e}")
@@ -558,7 +558,7 @@ async def autosegmentation():
             }
             in_path, out_path = await prepare_files_for_unet(files_with_dir, prefix)
             
-            import nnUNet_inference
+            import inference as nnUNet_inference
             task_name = "Task115_AllData5foldsMeta"
             
             if model_desc.name.startswith("Unet+Folds+TTA"):
@@ -927,7 +927,7 @@ async def async_segmentation_with_progress(task_id, model_desc, files_dict, pref
         gpu_monitor.start()
         print(f"   GPU monitoring started for GPU {gpu_id}")
         
-        import nnUNet_inference
+        import inference as nnUNet_inference
         
         task_name = server_config.get('task_name', 'Task115_AllData5foldsMeta')
         
@@ -940,7 +940,7 @@ async def async_segmentation_with_progress(task_id, model_desc, files_dict, pref
             import torch
             torch.cuda.set_device(gpu_id)
             print(f"Worker thread: using GPU {torch.cuda.current_device()}")
-            import nnUNet_inference
+            import inference as nnUNet_inference
             return nnUNet_inference.predict_for_api(in_path, out_path, use_tta, folds, task_name)
 
         # Для вызова:

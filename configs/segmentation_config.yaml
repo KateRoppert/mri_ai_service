@@ -23,7 +23,7 @@ segmentation:
     # ==========================================
     local:
       connection_type: "direct"
-      server_url: "http://segmentation:5000" # "http://localhost:5000" - для запуска на тунке
+      server_url: "http://service-gbm-seg:5000" # "http://localhost:5000" - для запуска на тунке
       timeout: 1200
       description: "Local server on this machine"
     
@@ -42,7 +42,7 @@ segmentation:
         # For non-interactive: use key_file instead
         key_file: "~/.ssh/id_cube"
       
-      remote_port: 5001  # Port where simple_server.py runs on remote
+      remote_port: 5001  # Port where service_server.py runs on remote
       local_tunnel_port: 15001  # Local port for tunnel
       server_url: "http://localhost:15001"
       timeout: 1800
