@@ -610,7 +610,8 @@ def inverse_transform_subject_masks(
     subject_id: str,
     session_id: str,
     reference_modality: str = "t1",
-    modalities: list = None
+    modalities: list = None,
+    lesion_type: Optional[str] = None,
 ) -> dict:
     """
     Inverse-transform segmentation mask to native space of each modality.
@@ -642,7 +643,11 @@ def inverse_transform_subject_masks(
     # Paths to transforms
     transform_subdir = transform_dir / subject_id / session_id / "anat"
     nifti_subdir = nifti_dir / subject_id / session_id / "anat"
+    # If lesion_type is given, native masks go into that subfolder
+    # (Stage 2 contract — keeps multi-model outputs from colliding)
     output_subdir = output_dir / subject_id / session_id / "anat"
+    if lesion_type:
+        output_subdir = output_subdir / lesion_type
     
     # Atlas transform (always needed)
     atlas_transform = transform_subdir / f"{subject_id}_{session_id}_{reference_modality}_to_atlas.mat"

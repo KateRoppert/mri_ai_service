@@ -38,6 +38,10 @@ from pipeline_validator import InputOutputValidator
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
 
+# Hardcoded for now — gbm-seg only handles glioblastoma. Will be parameterized
+# in Stage 4 (orchestrator-driven service registry).
+LESION_TYPE = "glioblastoma"
+
 def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
     """Configures the main application logger."""
     if logger.hasHandlers():
@@ -537,7 +541,12 @@ class BIDSScanner:
             # Fallback if pattern not found
             output_name = f"{self.modality_map['t1']}_segmask.nii.gz"
         
-        output_mask_path = output_anat_dir / f"{base_filename}_{output_name}"
+        # Output organized by lesion_type subfolder (Stage 2 contract).
+        # Existing pipeline conventions are preserved: filename still ends
+        # with _segmask.nii.gz, only the parent directory adds a lesion_type
+        # level. This keeps backend mask_versions, Kappa upload and Slicer
+        # integration working unchanged.
+        output_mask_path = output_anat_dir / LESION_TYPE / f"{base_filename}_{output_name}"
         
         logger.debug(f"✓ {identifier}: All modalities found")
         
@@ -1281,23 +1290,47 @@ class SegmentationRunner:
                 logger.info(f"[{idx}/{self.stats.total}] Processing: {identifier}")
                 
                 try:
+                    # Validate input modalities exist (no actual upload — files
+                    # are read by the service via shared volume in the new contract)
                     seg_input = SegmentationInput(
                         t1=session.modality_files["t1"],
                         t1c=session.modality_files["t1c"],
                         t2=session.modality_files["t2"],
                         flair=session.modality_files["t2fl"]
                     )
-                    
-                    files_to_send = seg_input.prepare_for_server()
-                    client_id = f"{identifier}_{idx}"
-                    
-                    # Get task status after processing
-                    success, task_status = await client.segment_async_with_status(
-                        files_to_send=files_to_send,
-                        model_name=model_name,
-                        client_id=client_id,
-                        output_path=session.output_mask_path
+                    if not seg_input.validate():
+                        raise FileNotFoundError(
+                            f"Modality file validation failed for {identifier}"
+                        )
+
+                    # Derive input_dir and output_dir from session paths
+                    input_dir = session.modality_files["t1"].parent
+                    output_dir = session.output_mask_path.parent
+                    output_dir.mkdir(parents=True, exist_ok=True)
+
+                    success, task_status = await client.segment_by_path_async(
+                        case_id=identifier,
+                        input_dir=input_dir,
+                        output_dir=output_dir,
+                        lesion_type=LESION_TYPE,
+                        options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
                     )
+
+                    # Service writes mask.nii.gz; rename to the expected
+                    # *_segmask.nii.gz filename to keep BIDS pipeline conventions
+                    if success and task_status.get("mask_path"):
+                        produced = Path(task_status["mask_path"])
+                        if produced.resolve() != session.output_mask_path.resolve():
+                            if produced.exists():
+                                shutil.move(str(produced), str(session.output_mask_path))
+                                logger.debug(
+                                    f"Renamed {produced.name} → {session.output_mask_path.name}"
+                                )
+                            else:
+                                logger.error(
+                                    f"Service reported mask_path {produced} but file is missing"
+                                )
+                                success = False
                     
                     if success:
                         self.stats.successful += 1

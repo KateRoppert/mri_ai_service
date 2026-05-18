@@ -27,6 +27,10 @@ from preprocessing_steps.registration import inverse_transform_subject_masks
 
 logger = logging.getLogger(__name__)
 
+# Hardcoded for now — gbm-seg only handles glioblastoma. Will be parameterized
+# in Stage 4 (orchestrator-driven service registry).
+LESION_TYPE = "glioblastoma"
+
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     """Setup logging configuration."""
@@ -101,7 +105,7 @@ def process_one_mask(
     transform_dir: Path,
     output_dir: Path,
     reference_modality: str,
-    modalities: List[str]
+    modalities: List[str],
 ) -> Dict:
     """Process a single mask — wrapper for parallel execution."""
     try:
@@ -113,7 +117,8 @@ def process_one_mask(
             subject_id=subject_id,
             session_id=session_id,
             reference_modality=reference_modality,
-            modalities=modalities
+            modalities=modalities,
+            lesion_type=LESION_TYPE,
         )
 
         # Early error return (no per-modality results)
@@ -232,7 +237,10 @@ def main():
         filtered = []
         for mask_path, subj, sess in masks:
             mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-            out_subdir = args.output_dir / subj / sess / "anat"
+            # Native masks go into the same lesion_type subfolder as the source mask
+            # (Stage 2 contract — keeps multi-model outputs from colliding)
+            # Skip-existing check: look in the lesion_type subfolder
+            out_subdir = args.output_dir / subj / sess / "anat" / LESION_TYPE
             existing = list(out_subdir.glob(f"{mask_stem}_segmask_native_*.nii.gz"))
             if existing:
                 logger.info(f"  Skipping {subj}/{sess}: {len(existing)} native masks exist")

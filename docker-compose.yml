@@ -36,6 +36,7 @@ services:
       - DEVICE=cuda
     volumes:
       - ./demo_workspace:/workspace:rw
+      - /home:/home:rw
       - ./services/gbm-seg/nnUNetv1_data:/app/nnUNetv1_data:ro
       - ./services/gbm-seg/nnUNetv2_data:/app/nnUNetv2_data:ro
     deploy:

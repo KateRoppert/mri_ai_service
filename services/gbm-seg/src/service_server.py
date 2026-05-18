@@ -307,17 +307,59 @@ class GbmSegService(ServiceBase):
           3. *_T1.nii.gz, *_T1c.nii.gz, *_T2.nii.gz, *_FLAIR.nii.gz
         """
         # Try strategy 1
+        # Modality file matching supports several conventions:
+        #   - lower-case short:  *_t1.nii.gz, *_t1c.nii.gz, ...
+        #   - upper-case short:  *_T1.nii.gz, *_T1c.nii.gz, ...
+        #   - BIDS:              *_T1w.nii.gz, *_ce-gd_T1w.nii.gz, *_T2w.nii.gz, *_FLAIR.nii.gz
+        # `case_id` is the case identifier, files may or may not be prefixed with it.
+        # We exclude T1c matches from T1 results by checking that 'c' or 'ce-' does
+        # not follow T1/T1w (since glob is too coarse for this).
+
+        def find(patterns: list[str]) -> list[Path]:
+            results: list[Path] = []
+            for p in patterns:
+                results.extend(input_dir.glob(p))
+            # Deduplicate while preserving order
+            seen: set[Path] = set()
+            deduped = []
+            for path in results:
+                if path not in seen:
+                    seen.add(path)
+                    deduped.append(path)
+            return deduped
+
+        # Find T1c first — we'll use it to exclude from T1 results
+        t1c_matches = find([
+            f"*{case_id}*t1c.nii.gz",
+            f"*{case_id}*T1c.nii.gz",
+            f"*{case_id}*T1ce.nii.gz",
+            f"*{case_id}*ce-gd_T1w.nii.gz",
+            f"*{case_id}*ce-*T1w.nii.gz",
+        ])
+        t1c_set = set(t1c_matches)
+
+        t1_matches = [
+            p for p in find([
+                f"*{case_id}*t1.nii.gz",
+                f"*{case_id}*T1.nii.gz",
+                f"*{case_id}*T1w.nii.gz",
+            ])
+            if p not in t1c_set  # exclude contrast-enhanced T1
+        ]
+
         candidates = {
-            "t1":   list(input_dir.glob(f"{case_id}*t1.nii.gz")) +
-                    list(input_dir.glob(f"{case_id}*T1.nii.gz")),
-            "t1c":  list(input_dir.glob(f"{case_id}*t1c.nii.gz")) +
-                    list(input_dir.glob(f"{case_id}*T1c.nii.gz")) +
-                    list(input_dir.glob(f"{case_id}*T1ce.nii.gz")),
-            "t2":   list(input_dir.glob(f"{case_id}*t2.nii.gz")) +
-                    list(input_dir.glob(f"{case_id}*T2.nii.gz")),
-            "t2fl": list(input_dir.glob(f"{case_id}*t2fl.nii.gz")) +
-                    list(input_dir.glob(f"{case_id}*FLAIR.nii.gz")) +
-                    list(input_dir.glob(f"{case_id}*flair.nii.gz")),
+            "t1":   t1_matches,
+            "t1c":  t1c_matches,
+            "t2":   find([
+                f"*{case_id}*t2.nii.gz",
+                f"*{case_id}*T2.nii.gz",
+                f"*{case_id}*T2w.nii.gz",
+            ]),
+            "t2fl": find([
+                f"*{case_id}*t2fl.nii.gz",
+                f"*{case_id}*FLAIR.nii.gz",
+                f"*{case_id}*flair.nii.gz",
+            ]),
         }
         result = {}
         for key, matches in candidates.items():
