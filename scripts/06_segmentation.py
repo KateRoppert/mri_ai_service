@@ -71,25 +71,20 @@ def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
 def check_server_availability(server_url: str, timeout: int = 5) -> bool:
     """
     Checks if the segmentation server is accessible.
-    
-    Args:
-        server_url: URL of the server to check
-        timeout: Request timeout in seconds
-    
-    Returns:
-        True if server responds, False otherwise
+
+    Tries the new /health endpoint first, falls back to /v1/models for
+    backward compatibility with services that haven't migrated yet.
     """
-    try:
-        response = requests.get(f"{server_url}/v1/models", timeout=timeout)
-        if response.status_code == 200:
-            logger.debug(f"Server is accessible at {server_url}")
-            return True
-        else:
-            logger.debug(f"Server returned status {response.status_code}")
-            return False
-    except requests.exceptions.RequestException as e:
-        logger.debug(f"Server not accessible at {server_url}: {e}")
-        return False
+    for endpoint in ("/health", "/v1/models"):
+        try:
+            response = requests.get(f"{server_url}{endpoint}", timeout=timeout)
+            if response.status_code == 200:
+                logger.debug(f"Server is accessible at {server_url}{endpoint}")
+                return True
+            logger.debug(f"Server returned status {response.status_code} for {endpoint}")
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"Server not accessible at {server_url}{endpoint}: {e}")
+    return False
 
 def create_ssh_tunnel(
     ssh_host: str,
@@ -939,6 +934,137 @@ class AsyncSegmentationClient:
         except Exception as e:
             logger.error(f"Download error: {e}")
             return False
+
+    # ========================================================================
+    # New /predict contract methods (added in Stage 2)
+    # ========================================================================
+
+    async def segment_by_path_async(
+        self,
+        case_id: str,
+        input_dir: Path,
+        output_dir: Path,
+        lesion_type: str,
+        options: Optional[dict] = None,
+    ) -> tuple[bool, dict]:
+        """
+        Run segmentation via the new /predict contract.
+
+        Files are NOT uploaded over HTTP — the service reads them from
+        input_dir directly (via shared volume mount). Result is left in
+        output_dir; this method returns the path inside task_status.
+
+        Args:
+            case_id: Identifier used in logs and synthesized filenames.
+            input_dir: Directory containing modality NIfTI files (BIDS-style).
+            output_dir: Directory where the service should write the mask.
+            lesion_type: e.g. "glioblastoma", "multiple_sclerosis".
+            options: Optional inference options (use_tta, folds, ...).
+
+        Returns:
+            (success, task_status) — same shape as segment_async_with_status,
+            with task_status['mask_path'] pointing to the produced file.
+        """
+        payload = {
+            "case_id": case_id,
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+            "lesion_type": lesion_type,
+            "options": options or {},
+        }
+
+        try:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.server_url}/predict", json=payload
+                ) as response:
+                    if response.status not in (200, 202):
+                        error_text = await response.text()
+                        logger.error(f"/predict returned {response.status}: {error_text[:300]}")
+                        return False, {}
+
+                    submit_result = await response.json()
+                    job_id = submit_result.get("job_id")
+                    if not job_id:
+                        logger.error(f"/predict response missing job_id: {submit_result}")
+                        return False, {}
+
+                    logger.debug(f"Submitted job {job_id} for case {case_id}")
+
+                    success, final_status = await self._wait_for_completion_v2(
+                        session, job_id
+                    )
+                    return success, final_status
+
+        except Exception as e:
+            logger.error(f"segment_by_path_async error for case {case_id}: {e}")
+            logger.exception("Full traceback:")
+            return False, {}
+
+    async def _wait_for_completion_v2(
+        self,
+        session: aiohttp.ClientSession,
+        job_id: str,
+        poll_interval: float = 2.0,
+    ) -> tuple[bool, dict]:
+        """
+        Poll /predict/{job_id}/status until terminal state, then fetch result.
+        Returns the combined status + result dict, normalized to the same
+        keys the legacy /get_status used (so downstream code doesn't change).
+        """
+        status_url = f"{self.server_url}/predict/{job_id}/status"
+        result_url = f"{self.server_url}/predict/{job_id}/result"
+
+        while True:
+            try:
+                async with session.get(status_url) as response:
+                    if response.status != 200:
+                        await asyncio.sleep(poll_interval)
+                        continue
+
+                    status_data = await response.json()
+                    current = status_data.get("status")
+
+                    if current == "succeeded":
+                        async with session.get(result_url) as r2:
+                            if r2.status != 200:
+                                logger.error(f"/result returned {r2.status} for job {job_id}")
+                                return False, status_data
+                            result_data = await r2.json()
+
+                        # Compose a status dict compatible with the legacy shape
+                        # so SegmentationRunner._save_benchmark_metrics keeps working.
+                        merged = {
+                            "status": "completed",
+                            "progress": 100,
+                            "job_id": job_id,
+                            "gpu_id": status_data.get("gpu_id"),
+                            "mask_path": result_data.get("mask_path"),
+                            "output_classes": result_data.get("output_classes"),
+                            "lesion_type": result_data.get("lesion_type"),
+                            "model": result_data.get("model"),
+                        }
+                        metrics = result_data.get("metrics") or {}
+                        if metrics:
+                            merged["gpu_metrics"] = {
+                                k: v for k, v in metrics.items()
+                                if k != "inference_time_sec"
+                            }
+                            if "inference_time_sec" in metrics:
+                                merged["inference_time"] = metrics["inference_time_sec"]
+                        return True, merged
+
+                    if current == "failed":
+                        error = status_data.get("error", "Unknown error")
+                        logger.error(f"Job {job_id} failed: {error}")
+                        return False, status_data
+
+                    # queued or running — keep polling
+                    await asyncio.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error polling job {job_id}: {e}")
+                await asyncio.sleep(poll_interval)
 
 @dataclass
 class ProcessingStats:
