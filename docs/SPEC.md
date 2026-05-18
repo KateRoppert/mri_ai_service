@@ -1,7 +1,7 @@
 # Техническое задание: рефакторинг под мульти-агентную систему
 
 **Проект:** Web-сервис AI-сегментации поражений головного мозга по МРТ
-**Версия ТЗ:** 0.1
+**Версия ТЗ:** 0.2 (после завершения Этапа 1)
 **Дата:** 14 мая 2026
 **Ветка:** `feat/mas` (от `main`)
 **Автор:** Kate Roppert (НГУ, AI Research Center)
@@ -351,68 +351,77 @@ Orchestrator при старте:
 
 ---
 
-### Этап 1 — Перенос gbm-seg в новую структуру
+### Этап 1 — Перенос gbm-seg в новую структуру ✅ ЗАВЕРШЁН
 
 **Цель:** переместить существующий segmentation-сервис в `services/gbm-seg/` и адаптировать под единый базовый класс. Функционал глио должен работать идентично до и после этапа.
 
-**Задачи:**
+**Фактически выполненные сабшаги:**
 
-- Создать `services/common/` с базовым классом `ServiceBase` (на основе скетча из чата).
-- Создать `services/common/gpu_monitor.py` — вынести `GPUMonitor` из `simple_server.py`.
-- Создать `services/common/contracts.py` — dataclasses для request/response.
-- Создать `services/gbm-seg/` через `git mv segmentation/* services/gbm-seg/`.
-- Переименовать `simple_server.py` → `service_server.py`.
-- Переименовать `nnUNet_inference.py` → `inference.py`.
-- Переписать `service_server.py` как наследника `ServiceBase`, удалив:
-  - Хардкод-список `MODELS` (оставить только нужные параметры в манифесте)
-  - Дублирующие эндпоинты `/v1/inference` (sync) и `/upload_file` (HTML-форма)
-  - Глобальный флаг `is_processing` (дублирует очередь)
-- **Исправить баг порядка аргументов** в `predict_for_api`: согласовать сигнатуру с вызовами.
-- Параметризовать `predict_for_api`: trainer, plans_identifier, model_config как аргументы, а не хардкод.
-- Создать `services/gbm-seg/manifest.yaml`.
-- Адаптировать `Dockerfile` к новой структуре (контекст сборки, COPY-пути).
-- Обновить `docker-compose.yml`: переименовать сервис `segmentation` → `service-gbm-seg`, добавить mount `demo_workspace`.
+**Сабшаг 1.1+1.2** (объединены) — Перенос и переименование файлов
+- `mv segmentation/ → services/gbm-seg/` (как обычный mv; git трекнул как delete+add)
+- `simple_server.py` → `service_server.py`
+- `nnUNet_inference.py` → `inference.py`
+- Обновлены `docker-compose.yml`, `Dockerfile`, `configs/segmentation_config.yaml`
+- Коммит: `refactor(services/gbm-seg): migrate from segmentation/ to new structure`
 
-**Коммиты:**
+**Сабшаг 1.3** — Вынос GPUMonitor в services/common/
+- Создан `services/common/` как Python-пакет
+- `GPUMonitor` вынесен в `services/common/gpu_monitor.py` с улучшениями: type hints, logging, graceful pynvml fallback
+- Build context Docker расширен с `./services/gbm-seg` до `./services` (Вариант A: расширенный контекст)
+- Веса переведены с `COPY` внутрь образа на `volume mount` (read-only) — критическое архитектурное решение, упрощает все будущие сервисы
+- Добавлен `services/.dockerignore`
+- Добавлен `ENV PYTHONPATH=/app` для обнаружения common/
+- Коммит: `refactor(services/common): extract GPUMonitor into reusable module`
 
-1. `refactor(infra): move segmentation/ to services/gbm-seg/`
-2. `feat(services/common): add base service class`
-3. `refactor(services/common): extract GPUMonitor into reusable module`
-4. `feat(services/common): define request/response contracts`
-5. `refactor(services/gbm-seg): rewrite server on top of common base`
-6. `fix(services/gbm-seg): correct argument order in predict_for_api`
-7. `refactor(services/gbm-seg): drop unused models registry and legacy endpoints`
-8. `feat(services/gbm-seg): add manifest`
-9. `build(services/gbm-seg): adapt Dockerfile to new structure`
-10. `build(infra): rename segmentation service in docker-compose`
+**Сабшаг 1.4** — ServiceBase и contracts
+- Создан `services/common/contracts.py` — dataclasses `Job`, `JobStatus`
+- Создан `services/common/service_base.py` — абстрактный класс с HTTP-сервером (Quart), очередью задач, GPU pool, GPUMonitor lifecycle
+- Контракт согласован с SPEC.md §3
+- Коммит: `feat(services/common): add abstract ServiceBase and Job contracts`
 
-**Критерии приёмки:**
+**Сабшаг 1.5** — Перепись gbm-seg на ServiceBase (включает manifest)
+- `GbmSegService(ServiceBase)` реализует `load_model()` и `run_inference()`
+- Создан `services/gbm-seg/manifest.yaml` (изначально планировался отдельным сабшагом 1.6)
+- Удалено legacy: HTML-форма `/`, sync `/v1/inference`, `/test_task`, `/test_async_simple`, `MODELS` dict, глобальный `is_processing`
+- Сохранено как тонкие обёртки для совместимости с текущим web: `/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status` (Опция Y из обсуждения)
+- Объём кода: ~900 строк → ~320 строк
+- Коммит: `refactor(services/gbm-seg): rewrite server on top of common ServiceBase`
 
-- `docker compose up service-gbm-seg` поднимает контейнер без ошибок.
-- `curl http://localhost:5000/health` возвращает `{"status": "ready"}`.
-- `curl http://localhost:5000/manifest` возвращает корректный YAML/JSON манифест.
-- Прогон end-to-end pipeline с тестовым кейсом глиобластомы (на твоих данных) даёт ту же маску, что и до рефакторинга (попиксельное сравнение или Dice ≥ 0.999).
+**Что НЕ было сделано (отложено):**
+- Исправление бага порядка аргументов в `predict_for_api` — отмечено в коде, не критично для функционирования, фикс перенесён на удобный момент
+- Параметризация `predict_for_api` через config — функция остаётся как есть, новый ServiceBase оборачивает её
+
+**Критерии приёмки — выполнены:**
+
+- ✅ `docker compose up service-gbm-seg` поднимает контейнер без ошибок
+- ✅ `curl /health` возвращает `{"status": "ready"}`
+- ✅ `curl /manifest` возвращает корректный JSON манифест
+- ✅ End-to-end pipeline с тестовым кейсом глиобластомы — маска идентична доэтапной
+- ✅ Web-контейнер работает без изменений благодаря legacy wrappers
 
 ---
 
 ### Этап 2 — Контракт по путям + обновление orchestrator
 
-**Цель:** перейти с multipart upload на передачу файловых путей через shared volume. Обновить pipeline в orchestrator.
+**Цель:** перейти с multipart upload на передачу файловых путей через shared volume. Обновить pipeline в orchestrator. Удалить legacy wrappers из gbm-seg после миграции.
+
+**Контекст:** в Этапе 1 в gbm-seg оставлены legacy-эндпоинты (`/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status`) как обёртки над новым контрактом. Это сделано, чтобы не трогать web-контейнер во время рефакторинга сервиса. Этап 2 завершает миграцию: переводит web на новый контракт и удаляет обёртки.
 
 **Задачи:**
 
-- В `services/gbm-seg/service_server.py` заменить multipart-обработку на чтение из `input_dir`.
-- В `backend/pipeline.py` (или соответствующем stage 05): сформировать `input_dir` и `output_dir` в структуре `demo_workspace`, передать их в HTTP-запрос вместо multipart upload.
-- Реализовать клиентскую сторону: orchestrator опрашивает `/predict/{job_id}/status` и забирает результат через `/predict/{job_id}/result`.
-- Добавить подпапки `segmentation/{lesion_type}/` в выходную структуру workspace.
+- В `services/gbm-seg/service_server.py` (новый код) — `run_inference` уже принимает `input_dir`/`output_dir` и работает по путям. Дополнительной работы в сервисе нет.
+- В `backend/pipeline.py` (или соответствующем stage 05): сформировать `input_dir` и `output_dir` в структуре `demo_workspace`, передать их в HTTP-запрос как JSON, а не multipart.
+- Реализовать клиентскую сторону: orchestrator вызывает `POST /predict`, опрашивает `GET /predict/{job_id}/status` до `succeeded`, забирает данные через `GET /predict/{job_id}/result`.
+- Добавить подпапки `segmentation/{lesion_type}/` в выходную структуру workspace (для глио — `segmentation/glioblastoma/mask.nii.gz`).
 - Удалить из orchestrator зависимости от `aiohttp.MultipartWriter` для сегментации (если есть).
+- После того как web переключён и работает — **удалить legacy-эндпоинты** из `service_server.py`: `/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status`. Также удалить из gbm-seg директории `_INPUT_DIR`/`_OUTPUT_DIR`/`_TMP_DIR`, которые были нужны только для legacy multipart upload.
 
 **Коммиты:**
 
-1. `feat(services/gbm-seg): switch /predict to file-path contract`
-2. `refactor(backend/pipeline): send paths instead of multipart to segmentation service`
-3. `feat(backend/pipeline): poll job status and fetch result via REST`
-4. `feat(workspace): organize segmentation output by lesion_type subfolder`
+1. `refactor(backend/pipeline): send paths instead of multipart to segmentation service`
+2. `feat(backend/pipeline): poll job status and fetch result via REST`
+3. `feat(workspace): organize segmentation output by lesion_type subfolder`
+4. `refactor(services/gbm-seg): drop legacy multipart and download endpoints`
 
 **Критерии приёмки:**
 
@@ -566,6 +575,7 @@ Orchestrator при старте:
 - Сервис сегментации метастазов (`services/mets-seg/`).
 - Сервис классификации MGMT-статуса (`services/mgmt-classify/`).
 - Распределённое развёртывание сервисов на разных машинах (S3/MinIO для shared storage).
+- **HTTP file transfer mode** (`POST /predict` multipart + `GET /files/{id}`) для распределённых развёртываний без shared storage. Текущая архитектура предполагает доступ к shared volume; HTTP-передача файлов будет добавлена как опциональный режим при необходимости работы с удалёнными inference-серверами (cube/barguzin на bigdata.nsu.ru). Профили подключения уже описаны в `configs/segmentation_config.yaml`.
 - Аутентификация и версионирование API.
 - CI/CD pipeline.
 
