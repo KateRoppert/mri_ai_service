@@ -8,10 +8,7 @@ from common.service_base.ServiceBase and implements only:
 
     load_model()         — verifies weights are mounted and accessible
     run_inference()      — runs nnUNet v1 inference on requested files
-
-Legacy endpoints (/v1/inference_async, /v1/info, /v1/models) are kept
-as thin wrappers over the new /predict contract so that the existing
-web service continues to work during the migration.
+    
 """
 
 from __future__ import annotations
@@ -114,21 +111,10 @@ os.environ["nnUNet_raw_data_base"] = os.path.join(_nnunet_v1_base, "nnUNet_raw")
 os.environ["nnUNet_preprocessed"] = os.path.join(_nnunet_v1_base, "nnUNet_preprocessed")
 os.environ["RESULTS_FOLDER"] = _nnunet_v1_base
 
-
-# ============================================================================
-# Directories for legacy upload path
-# ============================================================================
-# /v1/inference_async wrapper still receives multipart uploads from the web
-# service. Those files are saved here, then handed to nnUNet via the same
-# in_path/out_path mechanism as before.
-
+# TMP directory used by run_inference for nnUNet-convention staging
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_INPUT_DIR = os.path.join(_BASE_DIR, _server_config.get("input_dir", "data/input"))
-_OUTPUT_DIR = os.path.join(_BASE_DIR, _server_config.get("output_dir", "data/output"))
 _TMP_DIR = os.path.join(_BASE_DIR, _server_config.get("tmp_dir", "data/tmp"))
-
-for _d in (_INPUT_DIR, _OUTPUT_DIR, _TMP_DIR):
-    os.makedirs(_d, exist_ok=True)
+os.makedirs(_TMP_DIR, exist_ok=True)
 
 
 # ============================================================================
@@ -198,7 +184,6 @@ class GbmSegService(ServiceBase):
         gpu_ids = _server_config.get("gpu_ids", [0])
         super().__init__(gpu_ids=gpu_ids)
         self._task_name = _server_config.get("task_name", "Task115_AllData5foldsMeta")
-        self._register_legacy_routes()
 
     # -----------------------------------------------------------------------
     # Abstract methods from ServiceBase
@@ -378,148 +363,6 @@ class GbmSegService(ServiceBase):
         staged = Path(tmp_dir) / f"{uuid.uuid4().hex[:8]}_{src_path.name}"
         shutil.copy2(src_path, staged)
         return staged
-
-    # -----------------------------------------------------------------------
-    # Legacy routes (kept for backward compatibility with current web service)
-    # -----------------------------------------------------------------------
-
-    def _register_legacy_routes(self) -> None:
-        """
-        Register /v1/inference_async, /v1/info, /v1/models as thin wrappers
-        around the new ServiceBase contract. Web service will be migrated to
-        /predict in a later subshag; until then these keep the existing flow
-        working.
-        """
-        app = self.app
-
-        @app.route("/v1/info", methods=["GET"])
-        async def legacy_info() -> Any:
-            return jsonify(
-                {
-                    "status": "ready" if self._model_ready else "loading",
-                    "version": "1.0",
-                    "models_location": os.environ.get("RESULTS_FOLDER"),
-                    "task_name": self._task_name,
-                    "gpu_ids": self.gpu_ids,
-                    "available_models": ["Unet+Folds+TTA"],
-                    "max_parallel_tasks": 1,
-                }
-            )
-
-        @app.route("/v1/models", methods=["GET"])
-        async def legacy_models() -> Any:
-            return jsonify(
-                [
-                    {
-                        "type": "segmentation",
-                        "version": "1",
-                        "description": "NSU Unet model (glioblastoma)",
-                        "name": "Unet+Folds+TTA",
-                        "path": "n/a",
-                        "labels": ["ed", "net", "et", "ncr"],
-                    }
-                ]
-            )
-
-        @app.route("/uploads/<name>", methods=["GET"])
-        async def legacy_download(name: str) -> Any:
-            return await send_from_directory(_OUTPUT_DIR, name)
-
-        @app.route("/get_status/<task_id>", methods=["GET"])
-        async def legacy_get_status(task_id: str) -> Any:
-            """Legacy alias for /predict/{job_id}/status with adapted response shape."""
-            job = self._jobs.get(task_id)
-            if not job:
-                return jsonify({"error": "Task not found"}), 404
-            # Old shape expected by the web service
-            status_payload: dict[str, Any] = {
-                "status": "completed" if job.status.value == "succeeded"
-                          else "failed" if job.status.value == "failed"
-                          else "processing",
-                "progress": job.progress,
-                "message": job.message,
-            }
-            if job.error:
-                status_payload["error"] = job.error
-            if job.result:
-                # The web service looks for download_url + result_file
-                mask_path = job.result.get("mask_path")
-                if mask_path:
-                    fname = os.path.basename(mask_path)
-                    # Maintain the legacy "/uploads/<file>" shape
-                    legacy_copy = os.path.join(_OUTPUT_DIR, fname)
-                    if not os.path.exists(legacy_copy):
-                        shutil.copy2(mask_path, legacy_copy)
-                    status_payload["result_file"] = fname
-                    status_payload["download_url"] = f"/uploads/{fname}"
-                if "metrics" in job.result:
-                    status_payload["gpu_metrics"] = {
-                        k: v for k, v in job.result["metrics"].items()
-                        if k != "inference_time_sec"
-                    }
-                    if "inference_time_sec" in job.result["metrics"]:
-                        status_payload["inference_time"] = \
-                            job.result["metrics"]["inference_time_sec"]
-                status_payload["gpu_id"] = job.gpu_id
-            return jsonify(status_payload)
-
-        @app.route("/v1/inference_async", methods=["POST"])
-        async def legacy_inference_async() -> Any:
-            """
-            Legacy multipart-upload endpoint. Translates the old call into
-            a new /predict-shaped payload by:
-              1. saving uploaded files to TMP_DIR
-              2. building a synthetic input_dir/output_dir
-              3. delegating to the same ServiceBase job queue
-            """
-            try:
-                req_files = await request.files
-                client_id = request.args.get("client_id", "unknown")
-                case_id = f"legacy-{client_id}-{uuid.uuid4().hex[:6]}"
-
-                # Save uploaded files into a synthetic input_dir
-                synthetic_input = os.path.join(_TMP_DIR, f"{case_id}_input")
-                synthetic_output = os.path.join(_TMP_DIR, f"{case_id}_output")
-                os.makedirs(synthetic_input, exist_ok=True)
-                os.makedirs(synthetic_output, exist_ok=True)
-
-                async def _save(file_obj: Any, fname: str) -> None:
-                    full_path = os.path.join(synthetic_input, fname)
-                    async with aiofiles.open(full_path, "wb") as f:
-                        content = file_obj.read()
-                        if asyncio.iscoroutine(content):
-                            content = await content
-                        await f.write(content)
-
-                modality_map = {"t1": "_t1", "t1c": "_t1c", "t2": "_t2", "t2fl": "_t2fl"}
-                for file_key in req_files:
-                    file_obj = req_files[file_key]
-                    if not file_obj.filename:
-                        continue
-                    ftype = file_key.split("_", 1)[1] if "_" in file_key else file_key
-                    if ftype not in modality_map:
-                        continue
-                    target_name = f"{case_id}{modality_map[ftype]}.nii.gz"
-                    await _save(file_obj, target_name)
-
-                # Submit to ServiceBase machinery via /predict-style payload
-                from common.contracts import Job
-                payload = {
-                    "case_id": case_id,
-                    "input_dir": synthetic_input,
-                    "output_dir": synthetic_output,
-                    "lesion_type": "glioblastoma",
-                    "options": {"use_tta": True, "folds": [0, 1, 2, 3, 4]},
-                }
-                job = Job(payload=payload)
-                self._jobs[job.job_id] = job
-                await self._job_queue.put(job.job_id)
-                return jsonify({"task_id": job.job_id, "status": "processing"})
-
-            except Exception as e:
-                traceback.print_exc()
-                return jsonify({"error": str(e)}), 500
-
 
 # ============================================================================
 # Entry point
