@@ -1,8 +1,8 @@
 # Техническое задание: рефакторинг под мульти-агентную систему
 
 **Проект:** Web-сервис AI-сегментации поражений головного мозга по МРТ
-**Версия ТЗ:** 0.2 (после завершения Этапа 1)
-**Дата:** 14 мая 2026
+**Версия ТЗ:** 0.3 (после завершения Этапа 2)
+**Дата:** 18 мая 2026
 **Ветка:** `feat/mas` (от `main`)
 **Автор:** Kate Roppert (НГУ, AI Research Center)
 
@@ -401,33 +401,54 @@ Orchestrator при старте:
 
 ---
 
-### Этап 2 — Контракт по путям + обновление orchestrator
+### Этап 2 — Контракт по путям + обновление orchestrator ✅ ЗАВЕРШЁН
 
 **Цель:** перейти с multipart upload на передачу файловых путей через shared volume. Обновить pipeline в orchestrator. Удалить legacy wrappers из gbm-seg после миграции.
 
-**Контекст:** в Этапе 1 в gbm-seg оставлены legacy-эндпоинты (`/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status`) как обёртки над новым контрактом. Это сделано, чтобы не трогать web-контейнер во время рефакторинга сервиса. Этап 2 завершает миграцию: переводит web на новый контракт и удаляет обёртки.
+**Контекст:** в Этапе 1 в gbm-seg оставлены legacy-эндпоинты (`/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status`) как обёртки над новым контрактом. Этап 2 завершает миграцию: переводит pipeline на новый контракт и удаляет обёртки.
 
-**Задачи:**
+**Фактически выполненные сабшаги:**
 
-- В `services/gbm-seg/service_server.py` (новый код) — `run_inference` уже принимает `input_dir`/`output_dir` и работает по путям. Дополнительной работы в сервисе нет.
-- В `backend/pipeline.py` (или соответствующем stage 05): сформировать `input_dir` и `output_dir` в структуре `demo_workspace`, передать их в HTTP-запрос как JSON, а не multipart.
-- Реализовать клиентскую сторону: orchestrator вызывает `POST /predict`, опрашивает `GET /predict/{job_id}/status` до `succeeded`, забирает данные через `GET /predict/{job_id}/result`.
-- Добавить подпапки `segmentation/{lesion_type}/` в выходную структуру workspace (для глио — `segmentation/glioblastoma/mask.nii.gz`).
-- Удалить из orchestrator зависимости от `aiohttp.MultipartWriter` для сегментации (если есть).
-- После того как web переключён и работает — **удалить legacy-эндпоинты** из `service_server.py`: `/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status`. Также удалить из gbm-seg директории `_INPUT_DIR`/`_OUTPUT_DIR`/`_TMP_DIR`, которые были нужны только для legacy multipart upload.
+**Сабшаг 2.1** — Новый клиент в скрипте сегментации
+- В `scripts/06_segmentation.py` добавлен метод `AsyncSegmentationClient.segment_by_path_async` — реализует контракт SPEC.md §3 (`POST /predict` с JSON, polling `/predict/{id}/status`, чтение `/predict/{id}/result`)
+- Добавлен helper `_wait_for_completion_v2`
+- `check_server_availability` расширен — пробует `/health` и `/v1/models` (fallback)
+- Существующий старый клиент сохранён нетронутым (миграция через сосуществование)
+- Коммит: `feat(scripts/06_segmentation): add path-based async client method`
 
-**Коммиты:**
+**Сабшаг 2.3** — Переключение pipeline на новый контракт
+- `BIDSScanner._create_session`: output mask path теперь в подпапке `{lesion_type}/`, имя файла `*_segmask.nii.gz` сохранено
+- `SegmentationRunner._process_sessions_async`: использует `segment_by_path_async` вместо старого метода; маска переименовывается с `mask.nii.gz` на `*_segmask.nii.gz` для совместимости с backend mask_versions, Kappa upload, Slicer integration
+- Stage 07 (`07_inverse_transform.py`) и Stage 08 (`08_lobar_localization.py`) обновлены — все производные файлы (4 native masks, lobar_report) также пишутся в `{lesion_type}/`
+- В `scripts/preprocessing_steps/registration.py` функция `inverse_transform_subject_masks` получила optional параметр `lesion_type`
+- В `service_server.py`: метод `_resolve_modalities` расширен под BIDS-конвенцию (`T1w`, `T2w`, `ce-gd_T1w`, `FLAIR`); исправлен pre-existing баг с T1 vs T1c глобом
+- В `docker-compose.yml`: добавлен mount `/home:/home:rw` для service-gbm-seg (симметрия с web — для host-style путей)
+- Введена константа `LESION_TYPE = "glioblastoma"` в трёх скриптах (хардкод до Этапа 4)
+- Коммит: `refactor(pipeline): switch segmentation flow to /predict contract`
 
-1. `refactor(backend/pipeline): send paths instead of multipart to segmentation service`
-2. `feat(backend/pipeline): poll job status and fetch result via REST`
-3. `feat(workspace): organize segmentation output by lesion_type subfolder`
-4. `refactor(services/gbm-seg): drop legacy multipart and download endpoints`
+**Сабшаг 2.5** — Удаление legacy
+- Из `service_server.py` удалён метод `_register_legacy_routes` (5 эндпоинтов: `/v1/inference_async`, `/v1/info`, `/v1/models`, `/uploads/<file>`, `/get_status`)
+- Удалены глобальные `_INPUT_DIR`, `_OUTPUT_DIR` (использовались только в legacy)
+- Удалены неиспользуемые импорты: `send_file`, `send_from_directory`, `secure_filename`, `aiofiles`
+- В `06_segmentation.py` удалены: класс `SegmentationClient` (sync), методы `segment_async`, `segment_async_with_status`, `_wait_for_completion_with_status`, `_wait_for_completion`, `_download_result`, `SegmentationInput.prepare_for_server`
+- `check_server_availability` упрощён до проверки только `/health`
+- Объём изменений: **+14 строк, −503 строки** в одном коммите
+- Коммит: `refactor: drop legacy multipart segmentation contract`
 
-**Критерии приёмки:**
+**Архитектурные решения, принятые по ходу:**
 
-- Прогон end-to-end на тестовом кейсе глио даёт ту же маску.
-- В логах orchestrator виден polling `/status` и финальный `/result`.
-- Маска оказывается в `demo_workspace/input/{case}/segmentation/glioblastoma/mask.nii.gz`.
+- Имя файла маски сохранено как `*_segmask.nii.gz` — это критично для совместимости с backend (mask_versions, Slicer integration, Kappa upload). Сервис пишет `mask.nii.gz`, pipeline после получения переименовывает.
+- Контракт `/predict` использует абсолютные host-style пути (типа `/home/ubuntu/mri_ai_service/demo_workspace/...`). Это работает потому что и web, и gbm-seg монтируют `/home`. Это **известный технический долг** — в распределённой архитектуре потребуется переход на контейнерные пути или URI-адресацию (см. §6).
+- HTTP file transfer mode (multipart upload + download) явно вынесен в §6 как not-in-scope — потребуется для cube/barguzin профилей в будущем.
+- Сабшаг 2.2 и 2.4 объединены с 2.3 в один коммит, так как разделение усложняло бы тестирование.
+
+**Критерии приёмки — выполнены:**
+
+- ✅ End-to-end на 3+ тестовых кейсах глио даёт идентичные маски
+- ✅ В логах service-gbm-seg виден `/predict` (не `/v1/inference_async`)
+- ✅ Маска в `demo_workspace/input/{case}/segmentation/sub-XXX/ses-YYY/anat/glioblastoma/sub-XXX_ses-YYY_T1w_segmask.nii.gz`
+- ✅ Native-маски и lobar_report также в подпапке `glioblastoma/`
+- ✅ Backend (Slicer integration, Kappa upload, mask versioning) работает без изменений
 
 ---
 
@@ -576,6 +597,7 @@ Orchestrator при старте:
 - Сервис классификации MGMT-статуса (`services/mgmt-classify/`).
 - Распределённое развёртывание сервисов на разных машинах (S3/MinIO для shared storage).
 - **HTTP file transfer mode** (`POST /predict` multipart + `GET /files/{id}`) для распределённых развёртываний без shared storage. Текущая архитектура предполагает доступ к shared volume; HTTP-передача файлов будет добавлена как опциональный режим при необходимости работы с удалёнными inference-серверами (cube/barguzin на bigdata.nsu.ru). Профили подключения уже описаны в `configs/segmentation_config.yaml`.
+- **Унификация путей host vs container.** Текущий pipeline передаёт абсолютные host-style пути (`/home/ubuntu/mri_ai_service/demo_workspace/...`), которые работают только потому, что web и gbm-seg оба монтируют `/home`. В долгосрочной перспективе следует перейти на контейнерные пути (`/workspace/...`) или абстрактные URI. Это связанная задача с HTTP file transfer mode выше — обе нужны для распределённого развёртывания.
 - Аутентификация и версионирование API.
 - CI/CD pipeline.
 
