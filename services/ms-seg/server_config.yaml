@@ -1,0 +1,22 @@
+server:
+  # nnUNet v2 results root — contains Dataset333_MSLesSeg/
+  # Mounted as volume from services/ms-seg/nnUNet_results/
+  nnunet_results: /app/nnUNet_results
+
+  # Dataset and trainer defaults (overridable via /predict options.trainer)
+  dataset_name: "Dataset333_MSLesSeg"
+  trainer: "nnUNetTrainerCATMIL"
+  plans_identifier: "nnUNetPlans"
+  configuration: "3d_fullres"
+
+  # GPU pool — single GPU shared with gbm-seg, see SPEC.md §6
+  gpu_ids: [0]
+  max_parallel_tasks: 1
+
+  # HTTP
+  host: "0.0.0.0"
+  port: 5001
+  debug: false
+
+  # Staging dir for nnUNet-convention input files (inside container)
+  tmp_dir: "data/tmp"

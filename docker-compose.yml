@@ -47,3 +47,25 @@ services:
               count: 1
               capabilities: [gpu]
     profiles: ["full", "gpu"]
+  # MS lesion segmentation service (nnUNet v2 + CATMIL trainer from luumsk/SmallLesionMRI)
+  service-ms-seg:
+    build:
+      context: ./services
+      dockerfile: ms-seg/Dockerfile
+    image: brain-lesion-ms-seg:demo
+    ports:
+      - "5001:5001"
+    environment:
+      - DEVICE=cuda
+    volumes:
+      - ./demo_workspace:/workspace:rw
+      - /home:/home:rw                                              # match other services
+      - ./services/ms-seg/nnUNet_results:/app/nnUNet_results:ro     # CATMIL weights (read-only)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["full", "gpu"]
