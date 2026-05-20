@@ -26,13 +26,18 @@ After Stage 3.1:
 
 from __future__ import annotations
 
+import asyncio
+import glob
 import os
+import shutil
 import sys
+import uuid
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+import torch
 import yaml
-
 
 def _load_server_config() -> dict[str, Any]:
     """Load server_config.yaml from the script directory or SERVER_CONFIG env var."""
@@ -71,6 +76,35 @@ os.environ["nnUNet_results"] = _server_config.get("nnunet_results", "/app/nnUNet
 os.environ.setdefault("nnUNet_raw", "/app/nnUNet_raw")
 os.environ.setdefault("nnUNet_preprocessed", "/app/nnUNet_preprocessed")
 
+# ============================================================================
+# Torch optimizations (Ampere / Tensor cores)
+# ============================================================================
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+
+# ============================================================================
+# Patch torch.load to support legacy checkpoints (CATMIL weights pre-date
+# PyTorch 2.6's default weights_only=True). Same patch as in gbm-seg.
+# ============================================================================
+try:
+    import numpy
+    if hasattr(torch.serialization, "add_safe_globals"):
+        torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
+
+    _original_torch_load = torch.load
+
+    def _patched_torch_load(*args: Any, **kwargs: Any) -> Any:
+        kwargs["weights_only"] = False
+        return _original_torch_load(*args, **kwargs)
+
+    torch.load = _patched_torch_load  # type: ignore[assignment]
+except Exception as e:
+    print(f"WARNING: could not patch torch.load: {e}")
+
 
 # Make services/common/ visible (PYTHONPATH=/app set in Dockerfile)
 from common.service_base import ServiceBase
@@ -101,6 +135,14 @@ class MsSegService(ServiceBase):
         self._default_trainer = _server_config.get("trainer", "nnUNetTrainerCATMIL")
         self._plans_identifier = _server_config.get("plans_identifier", "nnUNetPlans")
         self._configuration = _server_config.get("configuration", "3d_fullres")
+
+        # Staging directory for nnUNet-convention temporary files during inference.
+        # Each request creates a unique sub-directory here.
+        self._tmp_dir = Path("/app/data/tmp")
+        self._tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Predictor instance, populated by load_model() on startup
+        self._predictor: Any = None  # nnUNetPredictor — type-imported lazily
 
     async def load_model(self) -> None:
         """
@@ -171,15 +213,199 @@ class MsSegService(ServiceBase):
         )
         self.log.info("Default trainer %s has folds: %s", default_folder_name, folds)
 
+        # 7. Instantiate predictor — loads weights to GPU once, reused across requests
+        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+
+        # Use the first GPU from our pool. nnUNet v2 picks device at init,
+        # so for multi-GPU we'd need one predictor per GPU. Single-GPU here.
+        device = torch.device("cuda", self.gpu_ids[0]) if torch.cuda.is_available() else torch.device("cpu")
+        self.log.info("Initializing nnUNetPredictor on device %s", device)
+
+        self._predictor = nnUNetPredictor(
+            tile_step_size=0.5,
+            use_gaussian=True,
+            use_mirroring=True,
+            perform_everything_on_device=True,  # do preprocessing + postprocessing on GPU
+            device=device,
+            verbose=False,
+            verbose_preprocessing=False,
+            allow_tqdm=False,
+        )
+
+        self._predictor.initialize_from_trained_model_folder(
+            model_training_output_dir=str(default_folder),
+            use_folds=tuple(_server_config.get("folds", [0, 1, 2, 3, 4])),
+            checkpoint_name="checkpoint_final.pth",
+        )
+
+        self.log.info("Predictor initialized; %s ready on %s",
+                      self._default_trainer, device)
+
     async def run_inference(self, payload: dict[str, Any], gpu_id: int) -> dict[str, Any]:
         """
-        STAGE 3.1 SKELETON: not implemented.
-        Filled in by Stage 3.2 with the actual nnUNet v2 predictor pipeline.
+        Run nnUNet v2 inference (CATMIL) for one MS case.
+
+        Expects payload per SPEC.md §3.1:
+            case_id, input_dir, output_dir, lesion_type, options.
+
+        Reads three modality files (T1, T2, FLAIR) from input_dir,
+        writes a binary lesion mask to output_dir/mask.nii.gz.
         """
-        raise NotImplementedError(
-            "ms-seg run_inference is not implemented yet (Stage 3.1 skeleton). "
-            "Will be added in Stage 3.2."
+        case_id = payload["case_id"]
+        input_dir = Path(payload["input_dir"])
+        output_dir = Path(payload["output_dir"])
+        options = payload.get("options", {}) or {}
+
+        # Only CATMIL is wired up for now; explicit error if someone asks for another
+        requested_trainer = options.get("trainer", self._default_trainer)
+        if requested_trainer != self._default_trainer:
+            raise NotImplementedError(
+                f"Only {self._default_trainer} is supported in this version. "
+                f"Requested: {requested_trainer}. Multi-trainer dispatch is planned."
+            )
+
+        if not input_dir.is_dir():
+            raise FileNotFoundError(f"input_dir not found: {input_dir}")
+
+        # Find three modality files (T1, T2, FLAIR)
+        modality_paths = self._resolve_modalities(input_dir, case_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Stage files with nnUNet v2 channel-suffix convention
+        # nnUNet v2 expects: case_identifier_0000.nii.gz, _0001.nii.gz, _0002.nii.gz
+        # Channels per manifest.yaml: T1=0, T2=1, FLAIR=2
+        staging_root = self._tmp_dir / f"req_{uuid.uuid4().hex[:8]}"
+        staging_in = staging_root / "in"
+        staging_out = staging_root / "out"
+        staging_in.mkdir(parents=True, exist_ok=True)
+        staging_out.mkdir(parents=True, exist_ok=True)
+
+        # Use a simple stable identifier inside staging so we know what to look for
+        stage_id = "case"
+        shutil.copy2(modality_paths["t1"],    staging_in / f"{stage_id}_0000.nii.gz")
+        shutil.copy2(modality_paths["t2"],    staging_in / f"{stage_id}_0001.nii.gz")
+        shutil.copy2(modality_paths["flair"], staging_in / f"{stage_id}_0002.nii.gz")
+
+        # Run predictor in a thread executor (it's a sync blocking call internally)
+        loop = asyncio.get_running_loop()
+        func = partial(self._predict_sync, gpu_id, staging_in, staging_out)
+        try:
+            await loop.run_in_executor(None, func)
+
+            # Predictor writes case.nii.gz in staging_out
+            result_files = glob.glob(str(staging_out / "*.nii.gz"))
+            if not result_files:
+                raise RuntimeError(f"nnUNetPredictor produced no .nii.gz in {staging_out}")
+
+            mask_path = output_dir / "mask.nii.gz"
+            shutil.move(result_files[0], mask_path)
+
+        finally:
+            # Always clean up staging — even on error
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+        return {
+            "mask_path": str(mask_path),
+            "output_classes": {
+                "0": "background",
+                "1": "lesion",
+            },
+            "lesion_type": "multiple_sclerosis",
+            "model": {
+                "framework": "nnunetv2",
+                "framework_source": "luumsk/SmallLesionMRI",
+                "dataset_name": self._dataset_name,
+                "trainer": self._default_trainer,
+                "plans": self._plans_identifier,
+                "configuration": self._configuration,
+                "folds_used": _server_config.get("folds", [0, 1, 2, 3, 4]),
+            },
+        }
+
+    def _predict_sync(self, gpu_id: int, input_folder: Path, output_folder: Path) -> None:
+        """
+        Synchronous predictor invocation — runs inside a thread executor.
+        Sets CUDA device for the calling thread before launching inference.
+        """
+        if torch.cuda.is_available():
+            torch.cuda.set_device(gpu_id)
+        self._predictor.predict_from_files(
+            list_of_lists_or_source_folder=str(input_folder),
+            output_folder_or_list_of_truncated_output_files=str(output_folder),
+            save_probabilities=False,
+            overwrite=True,
+            num_processes_preprocessing=2,
+            num_processes_segmentation_export=2,
+            folder_with_segs_from_prev_stage=None,
+            num_parts=1,
+            part_id=0,
         )
+
+    def _resolve_modalities(self, input_dir: Path, case_id: str) -> dict[str, Path]:
+        """
+        Locate three modality files in input_dir.
+
+        Supports several naming conventions:
+            - lower-case short:  *_t1.nii.gz, *_t2.nii.gz, *_flair.nii.gz, *_t2fl.nii.gz
+            - upper-case short:  *_T1.nii.gz, *_T2.nii.gz, *_FLAIR.nii.gz
+            - BIDS:              *_T1w.nii.gz, *_T2w.nii.gz, *_FLAIR.nii.gz
+
+        Returns dict {modality_key: path}, where modality_key is t1/t2/flair.
+        Raises FileNotFoundError if any modality is missing.
+        """
+        def find(patterns: list[str]) -> list[Path]:
+            results: list[Path] = []
+            for p in patterns:
+                results.extend(input_dir.glob(p))
+            seen: set[Path] = set()
+            deduped: list[Path] = []
+            for path in results:
+                if path not in seen:
+                    seen.add(path)
+                    deduped.append(path)
+            return deduped
+
+        # Find T1c first to exclude from T1 — some pipelines include contrast T1 alongside T1
+        t1c_matches = find([
+            f"*{case_id}*t1c.nii.gz",
+            f"*{case_id}*T1c.nii.gz",
+            f"*{case_id}*T1ce.nii.gz",
+            f"*{case_id}*ce-gd_T1w.nii.gz",
+            f"*{case_id}*ce-*T1w.nii.gz",
+        ])
+        t1c_set = set(t1c_matches)
+
+        t1_matches = [
+            p for p in find([
+                f"*{case_id}*t1.nii.gz",
+                f"*{case_id}*T1.nii.gz",
+                f"*{case_id}*T1w.nii.gz",
+            ])
+            if p not in t1c_set
+        ]
+
+        candidates = {
+            "t1": t1_matches,
+            "t2": find([
+                f"*{case_id}*t2.nii.gz",
+                f"*{case_id}*T2.nii.gz",
+                f"*{case_id}*T2w.nii.gz",
+            ]),
+            "flair": find([
+                f"*{case_id}*t2fl.nii.gz",
+                f"*{case_id}*FLAIR.nii.gz",
+                f"*{case_id}*flair.nii.gz",
+            ]),
+        }
+
+        result = {}
+        for key, matches in candidates.items():
+            if not matches:
+                raise FileNotFoundError(
+                    f"No {key} modality found in {input_dir} (case_id={case_id})"
+                )
+            result[key] = matches[0]
+        return result
 
 
 # ============================================================================
