@@ -384,6 +384,68 @@ class Config:
         profile = self.get_active_profile()
         return profile.get('description', 'No description')
 
+class ServicesRegistry:
+    """
+    Maps lesion_type to inference service endpoint URL.
+
+    Reads configs/services.yaml — a flat lookup table separating WHAT
+    (which lesion_type → which service) from HOW (connection profile,
+    SSH tunnel, timeout — those live in segmentation_config.yaml).
+
+    This is the seed of the MAS service registry; in Stage 4+ this
+    expands to include capability matching, resource hints, priorities.
+    """
+
+    def __init__(self, registry_path: Path):
+        self._registry_path = registry_path
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                self._data = yaml.safe_load(f) or {}
+            logger.info(f"Services registry loaded from {registry_path}")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Services registry not found: {registry_path}")
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in services registry: {e}")
+
+        services = self._data.get("services", {})
+        if not services:
+            raise ValueError(f"No 'services' section in {registry_path}")
+        self._services = services
+        logger.info(f"Available lesion types: {sorted(self._services.keys())}")
+
+    def get_url_for(self, lesion_type: str) -> str:
+        """
+        Return inference service URL for a given lesion_type.
+
+        Raises:
+            KeyError if lesion_type is not in registry.
+            ValueError if the entry is disabled or missing url.
+        """
+        if lesion_type not in self._services:
+            raise KeyError(
+                f"Lesion type '{lesion_type}' not in services registry. "
+                f"Available: {sorted(self._services.keys())}"
+            )
+        entry = self._services[lesion_type]
+        if not entry.get("enabled", True):
+            raise ValueError(f"Service for {lesion_type} is disabled in registry")
+        url = entry.get("url")
+        if not url:
+            raise ValueError(f"No URL defined for {lesion_type} in registry")
+        return url
+
+    def get_service_id(self, lesion_type: str) -> str:
+        """Return service identifier (e.g. 'gbm-seg', 'ms-seg')."""
+        if lesion_type not in self._services:
+            raise KeyError(f"Lesion type '{lesion_type}' not in services registry")
+        return self._services[lesion_type].get("service_id", "unknown")
+
+    def lesion_types(self) -> list[str]:
+        """Return all enabled lesion types in the registry."""
+        return sorted(
+            lt for lt, entry in self._services.items()
+            if entry.get("enabled", True)
+        )
 
 @dataclass
 class SubjectSession:
@@ -767,7 +829,7 @@ class ProcessingStats:
 class SegmentationRunner:
     """Orchestrates the batch processing of multiple subjects/sessions."""
     
-    def __init__(self, config: 'Config', args):
+    def __init__(self, config: 'Config', registry: 'ServicesRegistry', args):
         """
         Initialize the runner.
         
@@ -777,6 +839,7 @@ class SegmentationRunner:
         """
         self.config = config
         self.args = args
+        self.registry = registry
         self.stats = ProcessingStats()
         
         # Benchmark components
@@ -945,7 +1008,13 @@ class SegmentationRunner:
         logger.info("PROCESSING SESSIONS")
         logger.info("=" * 60)
         
-        client = AsyncSegmentationClient(server_url=self.config.get_server_url())
+        # Resolve service URL via the registry. LESION_TYPE is currently
+        # a module-level constant (hardcoded to "glioblastoma"); it will
+        # become a CLI argument in Stage 3.4.
+        service_url = self.registry.get_url_for(LESION_TYPE)
+        service_id = self.registry.get_service_id(LESION_TYPE)
+        logger.info(f"Dispatching {LESION_TYPE} to service {service_id} at {service_url}")
+        client = AsyncSegmentationClient(server_url=service_url)
         model_name = self.config.get_model_name()
         
         # Семафор для ограничения параллелизма
@@ -1379,7 +1448,11 @@ if __name__ == "__main__":
 
     try:
         app_config = Config(args.config)
-        runner = SegmentationRunner(config=app_config, args=args)
+        # Services registry lives in the same configs/ directory as the
+        # main segmentation config — derive its path from args.config.
+        registry_path = args.config.parent / "services.yaml"
+        registry = ServicesRegistry(registry_path)
+        runner = SegmentationRunner(config=app_config, registry=registry, args=args)
         is_successful = runner.run()
         sys.exit(0 if is_successful else 1)
         

@@ -1,0 +1,27 @@
+# Service registry for MAS inference dispatch.
+#
+# Maps each supported lesion_type to its inference service endpoint.
+# Read by pipeline scripts (currently 06_segmentation.py) to choose
+# which service to dispatch a request to.
+#
+# Hosts use Docker Compose service names — these resolve to the
+# corresponding container on the default bridge network. They only
+# work when the caller is inside the same docker-compose project
+# (e.g. orchestrator running inside the web container).
+#
+# Future expansion: this file will also carry priority hints, resource
+# requirements, and capability flags consumed by the MAS coordinator
+# agent (planned for Stage 4+).
+
+services:
+  glioblastoma:
+    service_id: gbm-seg
+    url: http://service-gbm-seg:5000
+    description: "Glioblastoma multi-class segmentation (nnUNet v1, Task115)"
+    enabled: true
+
+  multiple_sclerosis:
+    service_id: ms-seg
+    url: http://service-ms-seg:5001
+    description: "MS lesion binary segmentation (nnUNet v2 + CATMIL fork)"
+    enabled: true
