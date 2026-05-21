@@ -54,6 +54,15 @@ def build_command(
     max_subjects = config['general'].get('max_subjects')
     if max_subjects is not None:
         cmd.extend(['--max-subjects', str(max_subjects)])
+
+    # Lesion type — global per-run, only injected into segmentation-related stages
+    if stage_name in (
+        'stage_06_segmentation',
+        'stage_07_inverse_transform',
+        'stage_08_lobar_localization',
+    ):
+        lesion_type = config['general'].get('lesion_type', 'glioblastoma')
+        cmd.extend(['--lesion-type', lesion_type])
     
     # Опциональные аргументы - БЕЗ replace()
     for arg_name, arg_value in stage_config['args'].items():

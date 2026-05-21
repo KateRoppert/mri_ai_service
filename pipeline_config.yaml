@@ -6,9 +6,10 @@
 general:
   root_input_dir: /mnt/datastorage/nbia/nbia/manifest-1669766397961/UPENN-GBM
   root_output_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_5
-  max_subjects: 1                    # null = все субъекты, или число для теста
+  max_subjects: 3                    # null = все субъекты, или число для теста
   skip_existing: true                   # Глобальное возобновление прерванной работы
   benchmark_results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_5/benchmark_results
+  lesion_type: glioblastoma             # default for manual runs (web overrides this per-request)
 
 # Структура поддиректорий внутри root_output_dir
 output_structure:

@@ -25,11 +25,6 @@ from lobar_analysis import LobarAnalyzer
 
 logger = logging.getLogger(__name__)
 
-# Hardcoded for now — gbm-seg only handles glioblastoma. Will be parameterized
-# in Stage 4 (orchestrator-driven service registry).
-LESION_TYPE = "glioblastoma"
-
-
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     """Setup logging configuration."""
     root_logger = logging.getLogger()
@@ -133,7 +128,8 @@ def process_one_mask(
     output_dir: Path,
     atlas_path: Path,
     mapping_path: Path,
-    seg_classes: Dict
+    seg_classes: Dict,
+    lesion_type: str
 ) -> Dict:
     """Process a single mask — wrapper for parallel execution."""
     try:
@@ -152,7 +148,7 @@ def process_one_mask(
         mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
         report_name = f"{mask_stem}_lobar_report.json"
         # Lobar report goes into the same lesion_type subfolder as the source mask
-        report_path = (output_dir / subject_id / session_id / "anat" / LESION_TYPE / report_name)
+        report_path = (output_dir / subject_id / session_id / "anat" / lesion_type / report_name)
 
         # Add patient/session info to report
         report["patient_id"] = subject_id
@@ -203,6 +199,13 @@ def main():
                         help="Path to lobar_atlas_config.yaml")
     parser.add_argument("--preprocessing-config", type=Path, required=True,
                         help="Path to preprocessing_config.yaml (to read atlas.name)")
+    parser.add_argument(
+        "--lesion-type",
+        type=str,
+        default="glioblastoma",
+        choices=["glioblastoma", "multiple_sclerosis"],
+        help="Lesion type to process (determines output subfolder and inference service)"
+    )
 
     args = parser.parse_args()
 
@@ -268,7 +271,7 @@ def main():
         filtered = []
         for mask_path, subj, sess in masks:
             mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-            report_path = args.output_dir / subj / sess / "anat" / LESION_TYPE / f"{mask_stem}_lobar_report.json"
+            report_path = args.output_dir / subj / sess / "anat" / args.lesion_type / f"{mask_stem}_lobar_report.json"
             if report_path.exists():
                 logger.info(f"  Skipping {subj}/{sess}: report exists")
             else:
@@ -295,7 +298,8 @@ def main():
             logger.info(f"\n[{idx}/{len(masks)}] {subj}/{sess}")
             result = process_one_mask(
                 mask_path, subj, sess, args.output_dir,
-                atlas_path, mapping_path, seg_classes
+                atlas_path, mapping_path, seg_classes,
+                args.lesion_type,
             )
             if result["success"]:
                 successful += 1
@@ -309,7 +313,8 @@ def main():
                 executor.submit(
                     process_one_mask,
                     mask_path, subj, sess, args.output_dir,
-                    atlas_path, mapping_path, seg_classes
+                    atlas_path, mapping_path, seg_classes,
+                    args.lesion_type,
                 ): (subj, sess)
                 for mask_path, subj, sess in masks
             }

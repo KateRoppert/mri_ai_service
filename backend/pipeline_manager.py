@@ -28,7 +28,8 @@ class PipelineManager:
         self,
         run_id: str,
         input_path: str,
-        output_path: str
+        output_path: str,
+        lesion_type: str = "glioblastoma",
     ) -> Path:
         """
         Создаёт runtime конфигурацию для запуска pipeline
@@ -54,6 +55,10 @@ class PipelineManager:
         # Перезаписываем пути
         config['general']['root_input_dir'] = input_path
         config['general']['root_output_dir'] = output_path
+        
+        # Пробрасываем lesion_type — для stages 06/07/08 (диспетчеризация сервиса +
+        # подпапка выхода). Дефолт — glioblastoma для обратной совместимости.
+        config['general']['lesion_type'] = lesion_type
         
         # ВАЖНО: Преобразуем относительные пути к скриптам в абсолютные
         # Иначе они будут искаться относительно runtime_configs директории
@@ -130,7 +135,8 @@ class PipelineManager:
         self,
         run_id: str,
         input_path: str,
-        output_path: str
+        output_path: str,
+        lesion_type: str = "glioblastoma",
     ) -> Optional[subprocess.Popen]:
         """
         Запускает pipeline как subprocess
@@ -155,7 +161,9 @@ class PipelineManager:
         
         try:
             # Создаём runtime конфиг
-            config_path = self.create_runtime_config(run_id, input_path, output_path)
+            config_path = self.create_runtime_config(
+                run_id, input_path, output_path, lesion_type=lesion_type
+            )
             
             # Формируем команду запуска
             cmd = [

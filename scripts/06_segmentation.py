@@ -37,10 +37,6 @@ from pipeline_validator import InputOutputValidator
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
 
-# Hardcoded for now — gbm-seg only handles glioblastoma. Will be parameterized
-# in Stage 4 (orchestrator-driven service registry).
-LESION_TYPE = "glioblastoma"
-
 def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
     """Configures the main application logger."""
     if logger.hasHandlers():
@@ -604,7 +600,7 @@ class BIDSScanner:
         # with _segmask.nii.gz, only the parent directory adds a lesion_type
         # level. This keeps backend mask_versions, Kappa upload and Slicer
         # integration working unchanged.
-        output_mask_path = output_anat_dir / LESION_TYPE / f"{base_filename}_{output_name}"
+        output_mask_path = output_anat_dir / args.lesion_type / f"{base_filename}_{output_name}"
         
         logger.debug(f"✓ {identifier}: All modalities found")
         
@@ -1008,12 +1004,10 @@ class SegmentationRunner:
         logger.info("PROCESSING SESSIONS")
         logger.info("=" * 60)
         
-        # Resolve service URL via the registry. LESION_TYPE is currently
-        # a module-level constant (hardcoded to "glioblastoma"); it will
-        # become a CLI argument in Stage 3.4.
-        service_url = self.registry.get_url_for(LESION_TYPE)
-        service_id = self.registry.get_service_id(LESION_TYPE)
-        logger.info(f"Dispatching {LESION_TYPE} to service {service_id} at {service_url}")
+        # Resolve service URL via the registry.
+        service_url = self.registry.get_url_for(args.lesion_type)
+        service_id = self.registry.get_service_id(args.lesion_type)
+        logger.info(f"Dispatching {args.lesion_type} to service {service_id} at {service_url}")
         client = AsyncSegmentationClient(server_url=service_url)
         model_name = self.config.get_model_name()
         
@@ -1049,7 +1043,7 @@ class SegmentationRunner:
                         case_id=identifier,
                         input_dir=input_dir,
                         output_dir=output_dir,
-                        lesion_type=LESION_TYPE,
+                        lesion_type=args.lesion_type,
                         options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
                     )
 
@@ -1434,6 +1428,13 @@ if __name__ == "__main__":
         "--validate",
         action="store_true",
         help="Validate input-output correspondence after processing"
+    )
+    parser.add_argument(
+        "--lesion-type",
+        type=str,
+        default="glioblastoma",
+        choices=["glioblastoma", "multiple_sclerosis"],
+        help="Lesion type to process (determines output subfolder and inference service)"
     )
     
     args = parser.parse_args()
