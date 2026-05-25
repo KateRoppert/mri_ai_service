@@ -330,7 +330,7 @@ class IDMapper:
 
 
 class DatasetScanner:
-    """Scan UPENN-GBM dataset structure."""
+    """Scan dataset structure (UPENN-GBM, MS archives, etc.)."""
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -340,7 +340,7 @@ class DatasetScanner:
         Scan for patient directories.
 
         Args:
-            input_dir: Root directory of UPENN-GBM dataset
+            input_dir: Root directory of the source dataset
 
         Returns:
             List of patient directory paths
@@ -348,7 +348,10 @@ class DatasetScanner:
         patient_dirs = []
 
         for patient_dir in sorted(input_dir.iterdir()):
-            if patient_dir.is_dir() and patient_dir.name.startswith('UPENN-GBM-'):
+            # Accept any non-hidden subdirectory as a patient. Different
+            # source datasets use different naming (UPENN-GBM-XXX, P000XXX,
+            # sub-XXX); the pipeline now supports multiple lesion types.
+            if patient_dir.is_dir() and not patient_dir.name.startswith('.'):
                 patient_dirs.append(patient_dir)
 
         self.logger.info(f"Found {len(patient_dirs)} patients")
@@ -396,20 +399,35 @@ class DatasetScanner:
     @staticmethod
     def parse_date_from_series_name(series_name: str) -> Optional[str]:
         """
-        Extract date from series folder name.
+        Extract date from series/session folder name.
 
-        Example: '03-08-2012-NA-BrainTumor-13096' -> '20120308'
+        Supports two formats:
+          - US-style MM-DD-YYYY (UPENN-GBM):
+              '03-08-2012-NA-BrainTumor-13096' -> '20120308'
+          - ISO-style YYYY-MM-DD (clinical archives):
+              '2023-03-25' -> '20230325'
 
         Args:
-            series_name: Series folder name
+            series_name: Series or session folder name
 
         Returns:
             Date in YYYYMMDD format or None
         """
-        match = re.match(r'(\d{2})-(\d{2})-(\d{4})', series_name)
-        if match:
-            month, day, year = match.groups()
-            return f"{year}{month}{day}"
+        # ISO format YYYY-MM-DD (check first — more specific year prefix)
+        m = re.match(r'(\d{4})-(\d{2})-(\d{2})', series_name)
+        if m:
+            year, month, day = m.groups()
+            # Basic sanity: year 1900-2099, valid month/day
+            if 1900 <= int(year) <= 2099 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+                return f"{year}{month}{day}"
+
+        # US format MM-DD-YYYY (UPENN-GBM)
+        m = re.match(r'(\d{2})-(\d{2})-(\d{4})', series_name)
+        if m:
+            month, day, year = m.groups()
+            if 1900 <= int(year) <= 2099 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+                return f"{year}{month}{day}"
+
         return None
 
 
@@ -509,12 +527,25 @@ class SeriesDeduplicator:
 
 
 class CompletenessChecker:
-    """Check if patients/sessions have all 4 modalities."""
+    """Check if patients/sessions have all required modalities for the lesion type."""
 
-    REQUIRED_MODALITIES = {'t1', 't1c', 't2', 't2fl'}
+    DEFAULT_REQUIRED_MODALITIES = {'t1', 't1c', 't2', 't2fl'}  # glioma case
 
-    def __init__(self, logger: logging.Logger):
+    # Per-lesion-type modality requirements (extended over time)
+    LESION_TYPE_MODALITIES = {
+        'glioblastoma': {'t1', 't1c', 't2', 't2fl'},
+        'multiple_sclerosis': {'t1', 't2', 't2fl'},
+    }
+
+    def __init__(self, logger: logging.Logger, lesion_type: str = 'glioblastoma'):
         self.logger = logger
+        self.required_modalities = self.LESION_TYPE_MODALITIES.get(
+            lesion_type, self.DEFAULT_REQUIRED_MODALITIES
+        )
+        self.logger.info(
+            f"CompletenessChecker initialized for lesion_type={lesion_type}; "
+            f"required modalities: {sorted(self.required_modalities)}"
+        )
 
     def check_session(self, session: SessionInfo) -> Tuple[bool, Set[str]]:
         """
@@ -524,7 +555,7 @@ class CompletenessChecker:
             (is_complete, missing_modalities)
         """
         available = set(session.series.keys())
-        missing = self.REQUIRED_MODALITIES - available
+        missing = self.required_modalities - available
         is_complete = len(missing) == 0
 
         return is_complete, missing
@@ -542,7 +573,7 @@ class CompletenessChecker:
             for session_id, session_data in patient_data['sessions'].items():
                 total_session_count += 1
                 available = set(session_data['series'].keys())
-                missing = self.REQUIRED_MODALITIES - available
+                missing = self.required_modalities - available
 
                 if missing:
                     patient_incomplete_sessions.append({
@@ -1250,7 +1281,8 @@ def run_sequential(
     dry_run: bool = False,
     id_mapper: Optional[IDMapper] = None,
     tags_config: Optional[Dict] = None,
-    metadata_dir: Optional[Path] = None 
+    metadata_dir: Optional[Path] = None,
+    lesion_type: str = 'glioblastoma',
 ) -> Tuple[Dict, Dict, SeriesDeduplicator, FileOrganizer]:
     """
     Run sequential processing (baseline).
@@ -1266,7 +1298,7 @@ def run_sequential(
     scanner = DatasetScanner(logger)
     grouper = SessionGrouper(logger)
     deduplicator = SeriesDeduplicator(logger)
-    completeness_checker = CompletenessChecker(logger)
+    completeness_checker = CompletenessChecker(logger, lesion_type=lesion_type)
     # Create metadata extractor if config provided
     _metadata_extractor = None
     if tags_config:
@@ -1457,7 +1489,8 @@ def run_parallel(
     dry_run: bool = False,
     id_mapper: Optional[IDMapper] = None,
     tags_config: Optional[Dict] = None,        
-    metadata_dir: Optional[Path] = None 
+    metadata_dir: Optional[Path] = None,
+    lesion_type: str = 'glioblastoma'
 ) -> Tuple[Dict, Dict, int, FileOrganizer, Optional[Dict]]:
     """
     Run parallel processing using multiprocessing.
@@ -1477,7 +1510,7 @@ def run_parallel(
     # Use provided id_mapper or create new one
     if id_mapper is None:
         id_mapper = IDMapper()
-    completeness_checker = CompletenessChecker(logger)
+    completeness_checker = CompletenessChecker(logger, lesion_type=lesion_type)
     
     # Scan dataset
     logger.info("Scanning input directory...")
@@ -1574,7 +1607,7 @@ def run_parallel(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Reorganize UPENN-GBM dataset to BIDS format (nested folders aware)'
+        description='Reorganize source dataset (UPENN-GBM, MS-clinical, etc.) to BIDS format'
     )
     parser.add_argument(
         'input_dir',
@@ -1649,6 +1682,16 @@ def main():
         default=None,
         help='Output directory for extracted metadata JSON files'
     )
+    parser.add_argument(
+        '--lesion-type',
+        type=str,
+        default='glioblastoma',
+        choices=['glioblastoma', 'multiple_sclerosis'],
+        help='Lesion type — affects which modalities are considered required '
+             '(glio: T1+T1c+T2+FLAIR; MS: T1+T2+FLAIR).'
+    )
+
+    args = parser.parse_args()
 
 
     args = parser.parse_args()
@@ -1764,7 +1807,8 @@ def main():
                 dry_run=args.dry_run,
                 id_mapper=id_mapper,
                 tags_config=tags_config,
-                metadata_dir=metadata_dir
+                metadata_dir=metadata_dir,
+                lesion_type=args.lesion_type
             )
             all_deduplicators.append(deduplicator)
             all_file_organizers.append(file_organizer)
@@ -1785,7 +1829,8 @@ def main():
                 dry_run=args.dry_run,
                 id_mapper=id_mapper,
                 tags_config=tags_config,
-                metadata_dir=metadata_dir
+                metadata_dir=metadata_dir,
+                lesion_type=args.lesion_type
             )
             # Create mock deduplicator for consistency
             class DeduplicatorStats:
@@ -1949,7 +1994,7 @@ def main():
 
     # Generate final completeness report for ALL patients in mapping
     logger.info("Generating final completeness report for all patients...")
-    completeness_checker = CompletenessChecker(logger)
+    completeness_checker = CompletenessChecker(logger, lesion_type=args.lesion_type)
     completeness_data = completeness_checker.generate_completeness_report(mapping_data)
     
     # Save final reports

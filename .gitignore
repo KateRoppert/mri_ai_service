@@ -62,3 +62,6 @@ services/*/weights/
 .env.local
 *.pem
 *.key
+# Test/development data — kept locally, never committed
+data/MS_5/
+data/UPENN-GBM/

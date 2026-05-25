@@ -1,18 +1,11 @@
-# Маппинг: тип поражения + preprocessing_id → dataset_id в Каппе.
-#
-# Технический эксперт создаёт датасет в Каппе вручную,
-# затем добавляет запись сюда.
-#
-# Если для текущей комбинации (lesion_type + preprocessing_id)
-# датасета нет — бэкенд создаст его автоматически в Каппе.
-
-# Типы поражений, доступные пользователю
-lesion_types:
-  - id: "glioblastoma"
-    name: "Глиобластома"
-    name_en: "Glioblastoma"
-
-# Маппинг на датасеты Каппы
-# Ключ: "{lesion_type}:{preprocessing_id}"
 datasets:
-  "glioblastoma:current": 133
+  glioblastoma:current: 133
+  multiple_sclerosis:1e2b93ad: 158
+  multiple_sclerosis:current: 158
+lesion_types:
+- id: glioblastoma
+  name: Глиобластома
+  name_en: Glioblastoma
+- id: multiple_sclerosis
+  name: Рассеянный склероз
+  name_en: Multiple Sclerosis
