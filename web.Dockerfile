@@ -1,6 +1,10 @@
 # 1. Берем старый образ как фундамент (там уже есть рабочие FSL и ANTs)
 FROM kateroppert/mri-ai-service:latest
 
+# Отключаем кэш .pyc и буферизацию stdout/stderr для предсказуемых логов
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 # 2. Переключаемся под пользователя root, чтобы иметь права на очистку
 USER root
 

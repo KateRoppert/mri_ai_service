@@ -3,6 +3,10 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 # Отключаем интерактивные диалоги во время установки
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Отключаем кэш .pyc и буферизацию stdout/stderr для предсказуемых логов
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 # Устанавливаем Python 3.11 через репозиторий deadsnakes
 RUN apt-get update && apt-get install -y \
     software-properties-common && \
