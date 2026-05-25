@@ -107,7 +107,8 @@ def run_pipeline_background(
     run_id: str,
     input_path: str,
     output_path: str,
-    db: Session
+    db: Session,
+    lesion_type: str = "glioblastoma",
 ):
     """
     Фоновая задача для запуска pipeline
@@ -124,7 +125,10 @@ def run_pipeline_background(
     update_pipeline_run(db, run_id, status="running", started_at=datetime.now(timezone.utc))
     
     # Запускаем pipeline
-    process = pipeline_manager.start_pipeline(run_id, input_path, output_path)
+    process = pipeline_manager.start_pipeline(
+        run_id, input_path, output_path,
+        lesion_type=lesion_type,
+    )
     
     if not process:
         # Ошибка запуска
@@ -284,7 +288,8 @@ async def start_pipeline(
         run.run_id,
         run.input_path,
         run.output_path,
-        db
+        db,
+        lesion_type=(request.lesion_type or "glioblastoma"),
     )
 
     # Запускаем мониторинг (из асинхронного контекста)

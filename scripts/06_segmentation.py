@@ -10,7 +10,6 @@ Key components:
 - SubjectSession: Data structure for a single subject/session
 - BIDSScanner: Discovers and validates subjects in BIDS directories
 - SegmentationInput: Validates complete modality sets
-- SegmentationClient: Handles HTTP communication with segmentation server
 - SegmentationRunner: Orchestrates batch processing workflow
 """
 import argparse
@@ -70,25 +69,17 @@ def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
 
 def check_server_availability(server_url: str, timeout: int = 5) -> bool:
     """
-    Checks if the segmentation server is accessible.
-    
-    Args:
-        server_url: URL of the server to check
-        timeout: Request timeout in seconds
-    
-    Returns:
-        True if server responds, False otherwise
+    Checks if the segmentation server is accessible via the /health endpoint.
     """
     try:
-        response = requests.get(f"{server_url}/v1/models", timeout=timeout)
+        response = requests.get(f"{server_url}/health", timeout=timeout)
         if response.status_code == 200:
-            logger.debug(f"Server is accessible at {server_url}")
+            logger.debug(f"Server is accessible at {server_url}/health")
             return True
-        else:
-            logger.debug(f"Server returned status {response.status_code}")
-            return False
+        logger.debug(f"Server returned status {response.status_code} for /health")
+        return False
     except requests.exceptions.RequestException as e:
-        logger.debug(f"Server not accessible at {server_url}: {e}")
+        logger.debug(f"Server not accessible at {server_url}/health: {e}")
         return False
 
 def create_ssh_tunnel(
@@ -389,6 +380,68 @@ class Config:
         profile = self.get_active_profile()
         return profile.get('description', 'No description')
 
+class ServicesRegistry:
+    """
+    Maps lesion_type to inference service endpoint URL.
+
+    Reads configs/services.yaml — a flat lookup table separating WHAT
+    (which lesion_type → which service) from HOW (connection profile,
+    SSH tunnel, timeout — those live in segmentation_config.yaml).
+
+    This is the seed of the MAS service registry; in Stage 4+ this
+    expands to include capability matching, resource hints, priorities.
+    """
+
+    def __init__(self, registry_path: Path):
+        self._registry_path = registry_path
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                self._data = yaml.safe_load(f) or {}
+            logger.info(f"Services registry loaded from {registry_path}")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Services registry not found: {registry_path}")
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in services registry: {e}")
+
+        services = self._data.get("services", {})
+        if not services:
+            raise ValueError(f"No 'services' section in {registry_path}")
+        self._services = services
+        logger.info(f"Available lesion types: {sorted(self._services.keys())}")
+
+    def get_url_for(self, lesion_type: str) -> str:
+        """
+        Return inference service URL for a given lesion_type.
+
+        Raises:
+            KeyError if lesion_type is not in registry.
+            ValueError if the entry is disabled or missing url.
+        """
+        if lesion_type not in self._services:
+            raise KeyError(
+                f"Lesion type '{lesion_type}' not in services registry. "
+                f"Available: {sorted(self._services.keys())}"
+            )
+        entry = self._services[lesion_type]
+        if not entry.get("enabled", True):
+            raise ValueError(f"Service for {lesion_type} is disabled in registry")
+        url = entry.get("url")
+        if not url:
+            raise ValueError(f"No URL defined for {lesion_type} in registry")
+        return url
+
+    def get_service_id(self, lesion_type: str) -> str:
+        """Return service identifier (e.g. 'gbm-seg', 'ms-seg')."""
+        if lesion_type not in self._services:
+            raise KeyError(f"Lesion type '{lesion_type}' not in services registry")
+        return self._services[lesion_type].get("service_id", "unknown")
+
+    def lesion_types(self) -> list[str]:
+        """Return all enabled lesion types in the registry."""
+        return sorted(
+            lt for lt, entry in self._services.items()
+            if entry.get("enabled", True)
+        )
 
 @dataclass
 class SubjectSession:
@@ -542,7 +595,12 @@ class BIDSScanner:
             # Fallback if pattern not found
             output_name = f"{self.modality_map['t1']}_segmask.nii.gz"
         
-        output_mask_path = output_anat_dir / f"{base_filename}_{output_name}"
+        # Output organized by lesion_type subfolder (Stage 2 contract).
+        # Existing pipeline conventions are preserved: filename still ends
+        # with _segmask.nii.gz, only the parent directory adds a lesion_type
+        # level. This keeps backend mask_versions, Kappa upload and Slicer
+        # integration working unchanged.
+        output_mask_path = output_anat_dir / args.lesion_type / f"{base_filename}_{output_name}"
         
         logger.debug(f"✓ {identifier}: All modalities found")
         
@@ -604,102 +662,6 @@ class SegmentationInput:
                 return False
         
         return True
-    
-    def prepare_for_server(self) -> dict[str, Path]:
-        """Returns a dictionary ready for server submission."""
-        if not self.validate():
-            raise FileNotFoundError("Cannot prepare files for server: validation failed")
-        
-        files = {
-            "t1": self.t1,
-            "t1c": self.t1c,
-            "t2": self.t2,
-            "t2fl": self.flair,
-        }
-        
-        logger.debug("Files prepared for server:")
-        for mod, path in files.items():
-            logger.debug(f"  - {mod.upper()}: {path.name}")
-        
-        return files
-
-
-class SegmentationClient:
-    """Handles all HTTP communication with the segmentation server."""
-    def __init__(self, server_url: str, timeout: int = 1200):
-        self.server_url = server_url
-        self.timeout = timeout
-
-    def segment(
-        self,
-        files_to_send: dict[str, Path],
-        model_name: str,
-        client_id: str,
-        output_path: Path
-    ) -> bool:
-        """
-        Sends files to the server for segmentation and saves the resulting mask.
-        
-        Returns:
-            True on success, False on failure.
-        """
-        # Use query parameters for net and client_id (more reliable with multipart)
-        inference_url = f"{self.server_url}/v1/inference?net={model_name}&client_id={client_id}"
-        logger.debug(f"Sending request to: {inference_url}")
-
-        try:
-            # ExitStack cleanly manages opening multiple files
-            with ExitStack() as stack:
-                # Server expects field names: file_t1, file_t1c, file_t2, file_t2fl
-                files_multipart = {
-                    'file_t1': (
-                        files_to_send["t1"].name, 
-                        stack.enter_context(open(files_to_send["t1"], 'rb'))
-                    ),
-                    'file_t1c': (
-                        files_to_send["t1c"].name,
-                        stack.enter_context(open(files_to_send["t1c"], 'rb'))
-                    ),
-                    'file_t2': (
-                        files_to_send["t2"].name,
-                        stack.enter_context(open(files_to_send["t2"], 'rb'))
-                    ),
-                    'file_t2fl': (
-                        files_to_send["t2fl"].name,
-                        stack.enter_context(open(files_to_send["t2fl"], 'rb'))
-                    ),
-                }
-
-                logger.info("  → Uploading files to server...")
-                response = requests.post(
-                    inference_url,
-                    files=files_multipart,  # Note: no data parameter
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-
-                logger.info("  → Saving segmentation mask...")
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, 'wb') as f_mask:
-                    f_mask.write(response.content)
-                
-                logger.info(f"  ✓ Success: {output_path}")
-                return True
-
-        except requests.exceptions.Timeout:
-            logger.error(f"  ✗ Request timed out after {self.timeout} seconds")
-            return False
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"  ✗ Connection error: {e}")
-            return False
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"  ✗ HTTP Error {e.response.status_code}: {e.response.reason}")
-            if hasattr(e.response, 'text'):
-                logger.error(f"  Server response: {e.response.text[:500]}")
-            return False
-        except Exception as e:
-            logger.exception(f"  ✗ Unexpected error during segmentation: {e}")
-            return False
 
 class AsyncSegmentationClient:
     """Асинхронный клиент для параллельной отправки запросов на сегментацию"""
@@ -707,238 +669,137 @@ class AsyncSegmentationClient:
     def __init__(self, server_url: str, timeout: int = 1800):
         self.server_url = server_url
         self.timeout = aiohttp.ClientTimeout(total=timeout)
-    
-    async def segment_async(
+
+    # ========================================================================
+    # New /predict contract methods (added in Stage 2)
+    # ========================================================================
+
+    async def segment_by_path_async(
         self,
-        files_to_send: dict,
-        model_name: str,
-        client_id: str,
-        output_path: Path
-    ) -> bool:
-        """Асинхронная отправка запроса на сегментацию"""
-        try:
-            # Формируем multipart данные
-            data = aiohttp.FormData()
-            data.add_field('model', model_name)
-            data.add_field('client_id', client_id)
-            
-            # Открываем файлы
-            files_handles = []
-            for key, filepath in files_to_send.items():
-                f = open(filepath, 'rb')
-                files_handles.append(f)
-                data.add_field(f'file_{key}', f, filename=filepath.name)
-            
-            # Отправляем запрос
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    f"{self.server_url}/v1/inference_async",
-                    data=data
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Server error: {error_text}")
-                        return False
-                    
-                    result = await response.json()
-                    task_id = result.get('task_id')
-                    
-                    if not task_id:
-                        logger.error("No task_id in response")
-                        return False
-                    
-                    # Закрываем файлы
-                    for f in files_handles:
-                        f.close()
-                    
-                    # Ожидаем завершения
-                    success = await self._wait_for_completion(session, task_id, output_path)
-                    return success
-        
-        except Exception as e:
-            logger.error(f"Async segmentation error: {e}")
-            return False
-        
-    async def segment_async_with_status(
-        self,
-        files_to_send: dict,
-        model_name: str,
-        client_id: str,
-        output_path: Path
+        case_id: str,
+        input_dir: Path,
+        output_dir: Path,
+        lesion_type: str,
+        options: Optional[dict] = None,
     ) -> tuple[bool, dict]:
         """
-        Асинхронная отправка запроса на сегментацию с возвратом финального статуса.
-        
+        Run segmentation via the new /predict contract.
+
+        Files are NOT uploaded over HTTP — the service reads them from
+        input_dir directly (via shared volume mount). Result is left in
+        output_dir; this method returns the path inside task_status.
+
+        Args:
+            case_id: Identifier used in logs and synthesized filenames.
+            input_dir: Directory containing modality NIfTI files (BIDS-style).
+            output_dir: Directory where the service should write the mask.
+            lesion_type: e.g. "glioblastoma", "multiple_sclerosis".
+            options: Optional inference options (use_tta, folds, ...).
+
         Returns:
-            Tuple of (success: bool, final_task_status: dict)
+            (success, task_status) — same shape as segment_async_with_status,
+            with task_status['mask_path'] pointing to the produced file.
         """
+        payload = {
+            "case_id": case_id,
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+            "lesion_type": lesion_type,
+            "options": options or {},
+        }
+
         try:
-            # Формируем multipart данные
-            data = aiohttp.FormData()
-            data.add_field('model', model_name)
-            data.add_field('client_id', client_id)
-            
-            # Открываем файлы
-            files_handles = []
-            for key, filepath in files_to_send.items():
-                f = open(filepath, 'rb')
-                files_handles.append(f)
-                data.add_field(f'file_{key}', f, filename=filepath.name)
-            
-            # Отправляем запрос
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(
-                    f"{self.server_url}/v1/inference_async",
-                    data=data
+                    f"{self.server_url}/predict", json=payload
                 ) as response:
-                    if response.status != 200:
+                    if response.status not in (200, 202):
                         error_text = await response.text()
-                        logger.error(f"Server error: {error_text}")
+                        logger.error(f"/predict returned {response.status}: {error_text[:300]}")
                         return False, {}
-                    
-                    result = await response.json()
-                    task_id = result.get('task_id')
-                    
-                    if not task_id:
-                        logger.error("No task_id in response")
+
+                    submit_result = await response.json()
+                    job_id = submit_result.get("job_id")
+                    if not job_id:
+                        logger.error(f"/predict response missing job_id: {submit_result}")
                         return False, {}
-                    
-                    # Закрываем файлы
-                    for f in files_handles:
-                        f.close()
-                    
-                    # Ожидаем завершения и получаем финальный статус
-                    success, final_status = await self._wait_for_completion_with_status(
-                        session, task_id, output_path
+
+                    logger.debug(f"Submitted job {job_id} for case {case_id}")
+
+                    success, final_status = await self._wait_for_completion_v2(
+                        session, job_id
                     )
                     return success, final_status
-        
+
         except Exception as e:
-            logger.error(f"Async segmentation error: {e}")
+            logger.error(f"segment_by_path_async error for case {case_id}: {e}")
+            logger.exception("Full traceback:")
             return False, {}
-    
-    async def _wait_for_completion_with_status(
+
+    async def _wait_for_completion_v2(
         self,
         session: aiohttp.ClientSession,
-        task_id: str,
-        output_path: Path,
-        poll_interval: float = 2.0
+        job_id: str,
+        poll_interval: float = 2.0,
     ) -> tuple[bool, dict]:
         """
-        Ожидание завершения задачи с опросом статуса и возвратом финального статуса.
-        
-        Returns:
-            Tuple of (success: bool, final_status: dict)
+        Poll /predict/{job_id}/status until terminal state, then fetch result.
+        Returns the combined status + result dict, normalized to the same
+        keys the legacy /get_status used (so downstream code doesn't change).
         """
-        status_url = f"{self.server_url}/get_status/{task_id}"
-        final_status = {}
-        
+        status_url = f"{self.server_url}/predict/{job_id}/status"
+        result_url = f"{self.server_url}/predict/{job_id}/result"
+
         while True:
             try:
                 async with session.get(status_url) as response:
                     if response.status != 200:
                         await asyncio.sleep(poll_interval)
                         continue
-                    
+
                     status_data = await response.json()
-                    current_status = status_data.get('status')
-                    
-                    if current_status == 'completed':
-                        # Сохраняем финальный статус
-                        final_status = status_data
-                        
-                        # Скачиваем результат
-                        download_url = status_data.get('download_url')
-                        if download_url:
-                            success = await self._download_result(
-                                session,
-                                f"{self.server_url}{download_url}",
-                                output_path
-                            )
-                            return success, final_status
-                        else:
-                            logger.error(f"No download_url for task {task_id}")
-                            return False, final_status
-                    
-                    elif current_status == 'failed':
-                        error = status_data.get('error', 'Unknown error')
-                        logger.error(f"Task {task_id} failed: {error}")
+                    current = status_data.get("status")
+
+                    if current == "succeeded":
+                        async with session.get(result_url) as r2:
+                            if r2.status != 200:
+                                logger.error(f"/result returned {r2.status} for job {job_id}")
+                                return False, status_data
+                            result_data = await r2.json()
+
+                        # Compose a status dict compatible with the legacy shape
+                        # so SegmentationRunner._save_benchmark_metrics keeps working.
+                        merged = {
+                            "status": "completed",
+                            "progress": 100,
+                            "job_id": job_id,
+                            "gpu_id": status_data.get("gpu_id"),
+                            "mask_path": result_data.get("mask_path"),
+                            "output_classes": result_data.get("output_classes"),
+                            "lesion_type": result_data.get("lesion_type"),
+                            "model": result_data.get("model"),
+                        }
+                        metrics = result_data.get("metrics") or {}
+                        if metrics:
+                            merged["gpu_metrics"] = {
+                                k: v for k, v in metrics.items()
+                                if k != "inference_time_sec"
+                            }
+                            if "inference_time_sec" in metrics:
+                                merged["inference_time"] = metrics["inference_time_sec"]
+                        return True, merged
+
+                    if current == "failed":
+                        error = status_data.get("error", "Unknown error")
+                        logger.error(f"Job {job_id} failed: {error}")
                         return False, status_data
-                    
+
+                    # queued or running — keep polling
                     await asyncio.sleep(poll_interval)
-            
+
             except Exception as e:
-                logger.error(f"Error polling status: {e}")
+                logger.error(f"Error polling job {job_id}: {e}")
                 await asyncio.sleep(poll_interval)
-    
-    async def _wait_for_completion(
-        self,
-        session: aiohttp.ClientSession,
-        task_id: str,
-        output_path: Path,
-        poll_interval: float = 2.0
-    ) -> bool:
-        """Ожидание завершения задачи с опросом статуса"""
-        status_url = f"{self.server_url}/get_status/{task_id}"
-        
-        while True:
-            try:
-                async with session.get(status_url) as response:
-                    if response.status != 200:
-                        await asyncio.sleep(poll_interval)
-                        continue
-                    
-                    status_data = await response.json()
-                    current_status = status_data.get('status')
-                    
-                    if current_status == 'completed':
-                        # Скачиваем результат
-                        download_url = status_data.get('download_url')
-                        if download_url:
-                            return await self._download_result(
-                                session,
-                                f"{self.server_url}{download_url}",
-                                output_path
-                            )
-                        else:
-                            logger.error(f"No download_url for task {task_id}")
-                            return False
-                    
-                    elif current_status == 'failed':
-                        error = status_data.get('error', 'Unknown error')
-                        logger.error(f"Task {task_id} failed: {error}")
-                        return False
-                    
-                    await asyncio.sleep(poll_interval)
-            
-            except Exception as e:
-                logger.error(f"Error polling status: {e}")
-                await asyncio.sleep(poll_interval)
-    
-    async def _download_result(
-        self,
-        session: aiohttp.ClientSession,
-        url: str,
-        output_path: Path
-    ) -> bool:
-        """Скачивание результата"""
-        try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logger.error(f"Download failed: {response.status}")
-                    return False
-                
-                with open(output_path, 'wb') as f:
-                    f.write(await response.read())
-                
-                logger.info(f"  ✓ Saved: {output_path}")
-                return True
-        
-        except Exception as e:
-            logger.error(f"Download error: {e}")
-            return False
 
 @dataclass
 class ProcessingStats:
@@ -964,7 +825,7 @@ class ProcessingStats:
 class SegmentationRunner:
     """Orchestrates the batch processing of multiple subjects/sessions."""
     
-    def __init__(self, config: 'Config', args):
+    def __init__(self, config: 'Config', registry: 'ServicesRegistry', args):
         """
         Initialize the runner.
         
@@ -974,6 +835,7 @@ class SegmentationRunner:
         """
         self.config = config
         self.args = args
+        self.registry = registry
         self.stats = ProcessingStats()
         
         # Benchmark components
@@ -1142,7 +1004,11 @@ class SegmentationRunner:
         logger.info("PROCESSING SESSIONS")
         logger.info("=" * 60)
         
-        client = AsyncSegmentationClient(server_url=self.config.get_server_url())
+        # Resolve service URL via the registry.
+        service_url = self.registry.get_url_for(args.lesion_type)
+        service_id = self.registry.get_service_id(args.lesion_type)
+        logger.info(f"Dispatching {args.lesion_type} to service {service_id} at {service_url}")
+        client = AsyncSegmentationClient(server_url=service_url)
         model_name = self.config.get_model_name()
         
         # Семафор для ограничения параллелизма
@@ -1155,23 +1021,47 @@ class SegmentationRunner:
                 logger.info(f"[{idx}/{self.stats.total}] Processing: {identifier}")
                 
                 try:
+                    # Validate input modalities exist (no actual upload — files
+                    # are read by the service via shared volume in the new contract)
                     seg_input = SegmentationInput(
                         t1=session.modality_files["t1"],
                         t1c=session.modality_files["t1c"],
                         t2=session.modality_files["t2"],
                         flair=session.modality_files["t2fl"]
                     )
-                    
-                    files_to_send = seg_input.prepare_for_server()
-                    client_id = f"{identifier}_{idx}"
-                    
-                    # Get task status after processing
-                    success, task_status = await client.segment_async_with_status(
-                        files_to_send=files_to_send,
-                        model_name=model_name,
-                        client_id=client_id,
-                        output_path=session.output_mask_path
+                    if not seg_input.validate():
+                        raise FileNotFoundError(
+                            f"Modality file validation failed for {identifier}"
+                        )
+
+                    # Derive input_dir and output_dir from session paths
+                    input_dir = session.modality_files["t1"].parent
+                    output_dir = session.output_mask_path.parent
+                    output_dir.mkdir(parents=True, exist_ok=True)
+
+                    success, task_status = await client.segment_by_path_async(
+                        case_id=identifier,
+                        input_dir=input_dir,
+                        output_dir=output_dir,
+                        lesion_type=args.lesion_type,
+                        options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
                     )
+
+                    # Service writes mask.nii.gz; rename to the expected
+                    # *_segmask.nii.gz filename to keep BIDS pipeline conventions
+                    if success and task_status.get("mask_path"):
+                        produced = Path(task_status["mask_path"])
+                        if produced.resolve() != session.output_mask_path.resolve():
+                            if produced.exists():
+                                shutil.move(str(produced), str(session.output_mask_path))
+                                logger.debug(
+                                    f"Renamed {produced.name} → {session.output_mask_path.name}"
+                                )
+                            else:
+                                logger.error(
+                                    f"Service reported mask_path {produced} but file is missing"
+                                )
+                                success = False
                     
                     if success:
                         self.stats.successful += 1
@@ -1539,6 +1429,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Validate input-output correspondence after processing"
     )
+    parser.add_argument(
+        "--lesion-type",
+        type=str,
+        default="glioblastoma",
+        choices=["glioblastoma", "multiple_sclerosis"],
+        help="Lesion type to process (determines output subfolder and inference service)"
+    )
     
     args = parser.parse_args()
 
@@ -1552,7 +1449,11 @@ if __name__ == "__main__":
 
     try:
         app_config = Config(args.config)
-        runner = SegmentationRunner(config=app_config, args=args)
+        # Services registry lives in the same configs/ directory as the
+        # main segmentation config — derive its path from args.config.
+        registry_path = args.config.parent / "services.yaml"
+        registry = ServicesRegistry(registry_path)
+        runner = SegmentationRunner(config=app_config, registry=registry, args=args)
         is_successful = runner.run()
         sys.exit(0 if is_successful else 1)
         

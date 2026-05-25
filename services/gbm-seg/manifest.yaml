@@ -1,0 +1,43 @@
+# Service manifest for gbm-seg (glioblastoma segmentation)
+# Served at GET /manifest, read by orchestrator to discover capabilities.
+
+service:
+  id: gbm-seg
+  type: segmentation
+  version: "0.2.0"
+  description: "Glioblastoma segmentation using nnUNet v1, Task115_AllData5foldsMeta"
+
+capabilities:
+  lesion_types: [glioblastoma]
+  modalities_required: [T1, T1c, T2, FLAIR]
+  modality_channels:
+    T1: 0
+    T1c: 1
+    T2: 2
+    FLAIR: 3
+  output:
+    kind: multi_class_mask
+    classes:
+      0: background
+      1: ed     # edema
+      2: net    # non-enhancing tumor
+      3: et     # enhancing tumor
+      4: ncr    # necrotic core
+
+resources:
+  gpu_memory_gb: 4
+  estimated_runtime_sec: 90
+  needs_gpu: true
+
+model:
+  framework: nnunetv1
+  task_name: "Task115_AllData5foldsMeta"
+  trainer: "nnUNetTrainerV2"
+  plans: "nnUNetPlansv2.1"
+  configuration: "3d_fullres"
+  folds: [0, 1, 2, 3, 4]
+  checkpoint: "model_final_checkpoint"
+
+provenance:
+  training_dataset: "BraTS-derived (internal NSU AIRC dataset)"
+  trainer_notes: "5-fold cross-validation, TTA available via options"

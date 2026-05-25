@@ -1,0 +1,51 @@
+# Service manifest for ms-seg (multiple sclerosis lesion segmentation)
+# Served at GET /manifest, read by orchestrator to discover capabilities.
+
+service:
+  id: ms-seg
+  type: segmentation
+  version: "0.1.0"
+  description: "Multiple sclerosis lesion segmentation using nnUNet v2 with CATMIL trainer (Luu's SmallLesionMRI fork)"
+
+capabilities:
+  lesion_types: [multiple_sclerosis]
+  modalities_required: [T1, T2, FLAIR]
+  modality_channels:
+    T1: 0
+    T2: 1
+    FLAIR: 2
+  output:
+    kind: binary_mask
+    classes:
+      0: background
+      1: lesion
+
+resources:
+  gpu_memory_gb: 8
+  estimated_runtime_sec: 120
+  needs_gpu: true
+
+model:
+  framework: nnunetv2
+  framework_source: "luumsk/SmallLesionMRI"  # see SMALLLESIONMRI_COMMIT.txt
+  dataset_name: "Dataset333_MSLesSeg"
+  default_trainer: "nnUNetTrainerCATMIL"
+  available_trainers:
+    - "nnUNetTrainerCATMIL"      # CAT + MIL (default, recommended)
+    - "nnUNetTrainerCAT"
+    - "nnUNetTrainerMIL"
+    - "nnUNetTrainer"            # baseline
+    - "nnUNetTrainerFocalTversky"
+    - "nnUNetTrainerTversky"
+    - "nnUNetTrainerSegResNet"
+    - "nnUNetTrainerSwinUNETR"
+    - "nnUNetTrainerUMambaBot"
+    - "nnUNetTrainerUMambaEnc"
+    - "nnUNetTrainerUNETR"
+  plans: "nnUNetPlans"
+  configuration: "3d_fullres"
+  folds: [0, 1, 2, 3, 4]
+
+provenance:
+  training_dataset: "MSLesSeg public dataset"
+  trainer_notes: "Fork developed by Khoa Luu (NSU) for small lesion-aware segmentation"

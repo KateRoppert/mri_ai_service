@@ -27,7 +27,6 @@ from preprocessing_steps.registration import inverse_transform_subject_masks
 
 logger = logging.getLogger(__name__)
 
-
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     """Setup logging configuration."""
     root_logger = logging.getLogger()
@@ -101,7 +100,8 @@ def process_one_mask(
     transform_dir: Path,
     output_dir: Path,
     reference_modality: str,
-    modalities: List[str]
+    modalities: List[str],
+    lesion_type: str,
 ) -> Dict:
     """Process a single mask — wrapper for parallel execution."""
     try:
@@ -113,7 +113,8 @@ def process_one_mask(
             subject_id=subject_id,
             session_id=session_id,
             reference_modality=reference_modality,
-            modalities=modalities
+            modalities=modalities,
+            lesion_type=lesion_type,
         )
 
         # Early error return (no per-modality results)
@@ -175,6 +176,13 @@ def main():
                         help="Transformations directory (default: sibling of input)")
     parser.add_argument("--reference-modality", type=str, default="t1",
                         help="Modality registered directly to atlas (default: t1)")
+    parser.add_argument(
+        "--lesion-type",
+        type=str,
+        default="glioblastoma",
+        choices=["glioblastoma", "multiple_sclerosis"],
+        help="Lesion type to process (determines output subfolder and inference service)"
+    )
 
     args = parser.parse_args()
 
@@ -232,7 +240,10 @@ def main():
         filtered = []
         for mask_path, subj, sess in masks:
             mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-            out_subdir = args.output_dir / subj / sess / "anat"
+            # Native masks go into the same lesion_type subfolder as the source mask
+            # (Stage 2 contract — keeps multi-model outputs from colliding)
+            # Skip-existing check: look in the lesion_type subfolder
+            out_subdir = args.output_dir / subj / sess / "anat" / args.lesion_type
             existing = list(out_subdir.glob(f"{mask_stem}_segmask_native_*.nii.gz"))
             if existing:
                 logger.info(f"  Skipping {subj}/{sess}: {len(existing)} native masks exist")
@@ -262,7 +273,8 @@ def main():
             result = process_one_mask(
                 mask_path, subj, sess,
                 nifti_dir, transform_dir, args.output_dir,
-                args.reference_modality, modalities
+                args.reference_modality, modalities,
+                args.lesion_type,
             )
             all_results.append(result)
             if result["success"]:
@@ -278,7 +290,8 @@ def main():
                     process_one_mask,
                     mask_path, subj, sess,
                     nifti_dir, transform_dir, args.output_dir,
-                    args.reference_modality, modalities
+                    args.reference_modality, modalities,
+                    args.lesion_type,
                 ): (subj, sess)
                 for mask_path, subj, sess in masks
             }

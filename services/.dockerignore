@@ -1,0 +1,14 @@
+# Per-service data and weights (should never go into build context)
+*/nnUNetv1_data/
+*/nnUNetv2_data/
+*/nnUNet_results/
+*/weights/
+*/data/
+
+# Python cache
+*/__pycache__/
+*/**/__pycache__/
+*.pyc
+
+# Backup files
+*.backup

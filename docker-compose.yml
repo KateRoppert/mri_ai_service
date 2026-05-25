@@ -1,38 +1,66 @@
 services:
-  # Сервис 1: веб-интерфейс + бэкенд + препроцессинг
+
+  # Web frontend + backend + preprocessing pipeline
   web:
     build:
       context: .
       dockerfile: web.Dockerfile
     image: brain-lesion-web:demo
     ports:
-      - "8000:8000"  # Только один порт - фронтенд и API на 8000
+      - "8000:8000"
     environment:
-      - SEGMENTATION_URL=http://segmentation:5000  # ← Исправлено с :8080 на :5000
-      - FSLDIR=${FSLDIR:-/usr/local/fsl}  # Путь к FSL в образе
+      - SEGMENTATION_URL=http://service-gbm-seg:5000
+      - FSLDIR=${FSLDIR:-/usr/local/fsl}
     volumes:
-        - /home:/home:rw              # Вся домашняя директория
-        - ./demo_workspace:/workspace:rw  # Локальная папка
-        - ./scripts:/app/scripts:ro
-        - ./configs:/app/configs:rw
-        - ./backend/brain_lesion.db:/app/backend/brain_lesion.db:rw
+      - /home:/home:rw
+      - ./demo_workspace:/workspace:rw
+      - ./scripts:/app/scripts:ro
+      - ./configs:/app/configs:rw
+      - ./backend/brain_lesion.db:/app/backend/brain_lesion.db:rw
     depends_on:
-      - segmentation
+      - service-gbm-seg
     extra_hosts:
       - "host.docker.internal:host-gateway"
     profiles: ["full"]
-  
-  # Сервис 2: сегментация на GPU
-  segmentation:
+
+  # GBM segmentation service (nnUNet v1, Task115)
+  service-gbm-seg:
     build:
-      context: ./segmentation
-      dockerfile: Dockerfile
-    image: brain-lesion-segmentation:demo
+      context: ./services
+      dockerfile: gbm-seg/Dockerfile
+    image: brain-lesion-gbm-seg:demo
     ports:
-      - "5000:5000"  # ← Исправлено с 8080 на 5000
+      - "5000:5000"
     environment:
       - WEIGHTS_PATH=/app/weights
       - DEVICE=cuda
+    volumes:
+      - ./demo_workspace:/workspace:rw
+      - /home:/home:rw
+      - ./services/gbm-seg/nnUNetv1_data:/app/nnUNetv1_data:ro
+      - ./services/gbm-seg/nnUNetv2_data:/app/nnUNetv2_data:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["full", "gpu"]
+  # MS lesion segmentation service (nnUNet v2 + CATMIL trainer from luumsk/SmallLesionMRI)
+  service-ms-seg:
+    build:
+      context: ./services
+      dockerfile: ms-seg/Dockerfile
+    image: brain-lesion-ms-seg:demo
+    ports:
+      - "5001:5001"
+    environment:
+      - DEVICE=cuda
+    volumes:
+      - ./demo_workspace:/workspace:rw
+      - /home:/home:rw                                              # match other services
+      - ./services/ms-seg/nnUNet_results:/app/nnUNet_results:ro     # CATMIL weights (read-only)
     deploy:
       resources:
         reservations:
