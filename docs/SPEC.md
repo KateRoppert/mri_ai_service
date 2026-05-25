@@ -1,8 +1,8 @@
 # Техническое задание: рефакторинг под мульти-агентную систему
 
 **Проект:** Web-сервис AI-сегментации поражений головного мозга по МРТ
-**Версия ТЗ:** 0.3 (после завершения Этапа 2)
-**Дата:** 18 мая 2026
+**Версия ТЗ:** 0.4 (после завершения Этапа 3, перед merge в main)
+**Дата:** 25 мая 2026
 **Ветка:** `feat/mas` (от `main`)
 **Автор:** Kate Roppert (НГУ, AI Research Center)
 
@@ -452,49 +452,90 @@ Orchestrator при старте:
 
 ---
 
-### Этап 3 — Добавление ms-seg сервиса
+### Этап 3 — Добавление ms-seg сервиса ✅ ЗАВЕРШЁН
 
-**Цель:** новый сервис РС с моделью CATMIL, веса с `bigdata.nsu.ru`. Полное прохождение end-to-end на одном тестовом кейсе РС из SibBMS.
+**Цель:** новый сервис РС с моделью CATMIL, веса с `bigdata.nsu.ru`. Полное прохождение end-to-end на одном тестовом кейсе РС из клинического архива.
 
-**Задачи:**
+**Фактически выполненные сабшаги:**
 
-- Скопировать веса CATMIL с `bigdata.nsu.ru:8833`:
-  - Папка: `/media/storage/luu/nnUNet_results/Dataset333_MSLesSegnnUNetTrainerCATMIL__nnUNetPlans__3d_fullres`
-  - Целевая локация: `services/ms-seg/weights/` (не коммитим в git — добавляем в `.gitignore`)
-- Создать `services/ms-seg/Dockerfile`:
-  - base: `nvcr.io/nvidia/pytorch:24.10-py3` или подобный
-  - `git clone https://github.com/luumsk/SmallLesionMRI.git /opt/SmallLesionMRI`
-  - `pip install -e /opt/SmallLesionMRI/slsseg` (заменит стандартный nnunetv2 на форк)
-  - `pip install -r requirements.txt` для самого сервиса
-- Создать `services/ms-seg/service_server.py` на основе общего базового класса:
-  - принудительный импорт `nnunetv2.training.nnUNetTrainer.nnUNetTrainerCATMIL` при старте
-  - использование `nnUNetPredictor` из v2 (а не `predict_from_folder` из v1)
-- Создать `services/ms-seg/manifest.yaml`:
-  - modalities: T1, T2, FLAIR (3 канала)
-  - output: binary mask (0=background, 1=ms_lesion)
-- Создать `services/ms-seg/requirements.txt`.
-- Добавить `service-ms-seg` в `docker-compose.yml`.
-- Расширить `configs/kappa_datasets.yaml`: добавить `multiple_sclerosis` как тип поражения.
-- Расширить `configs/services.yaml`: добавить регистрацию ms-seg.
+**Сабшаг 3.1** — Каркас ms-seg сервиса
+- Создан `services/ms-seg/` с Dockerfile, requirements.txt, server_config.yaml, manifest.yaml, src/service_server.py
+- Базовый образ `nvidia/cuda:12.8.0-runtime-ubuntu22.04` + Python 3.11
+- Форк `luumsk/SmallLesionMRI` (commit `4a9021e2`) скопирован в `services/ms-seg/SmallLesionMRI/` (4.7 MB), его `slsseg/setup.py` устанавливает пакет как `nnunetv2` — замещая stock версию в этом контейнере
+- `service_server.py` — скелет: `MsSegService(ServiceBase)`, `load_model()` проверяет импортируемость и наличие весов, `run_inference()` пока NotImplementedError
+- Manifest перечисляет 11 доступных trainer'ов (CATMIL — default)
+- Зарегистрирован в `docker-compose.yml` на порту 5001
+- Решена проблема с PyPI: версии `Quart==0.20.0, Hypercorn==0.18.0, Flask==3.1.2` синхронизированы с gbm-seg
+- Решена numpy/scipy ABI несовместимость: после установки форка делается `pip install --force-reinstall numpy>=2.3 scipy>=1.13` (форк жёстко пинит устаревшие версии, несовместимые с современными scikit-image и batchgenerators)
+- Коммит: `feat(services/ms-seg): scaffold MS segmentation service`
 
-**Коммиты:**
+**Сабшаг 3.2** — Реальный nnUNet v2 + CATMIL inference
+- `load_model()` теперь eager-инстанциирует `nnUNetPredictor` со всеми 5 folds CATMIL (веса остаются в VRAM между запросами)
+- `run_inference()`: resolve T1/T2/FLAIR (исключая T1c), staging files под nnUNet v2 channel-suffix convention (`_0000/_0001/_0002`), запуск `predict_from_files` в thread executor, перемещение mask.nii.gz в output_dir
+- `_resolve_modalities` для ms-seg — 3 модальности (vs 4 у gbm-seg), явно исключает контрастный T1
+- torch.load monkey-patch для legacy checkpoints (PyTorch 2.6+ default `weights_only=True`)
+- Multi-trainer dispatch отложен (NotImplementedError если запрошен не-CATMIL)
+- Verified curl-тестом: 16.14s, 5137MB VRAM peak, 74% GPU utilization, валидная маска
+- Коммит: `feat(services/ms-seg): implement run_inference via nnUNet v2 predictor`
 
-1. `chore(services/ms-seg): add weights to gitignore`
-2. `feat(services/ms-seg): scaffold service on common base`
-3. `feat(services/ms-seg): integrate CATMIL trainer via slsseg fork`
-4. `feat(services/ms-seg): add inference logic via nnUNetPredictor`
-5. `feat(services/ms-seg): add manifest`
-6. `build(services/ms-seg): Dockerfile with slsseg fork installation`
-7. `build(infra): register service-ms-seg in docker-compose`
-8. `feat(configs): register ms-seg in services.yaml`
-9. `feat(configs/kappa_datasets): add multiple_sclerosis lesion type`
+**Сабшаг 3.3** — Реестр сервисов для диспетчеризации
+- Создан `configs/services.yaml` — flat lookup table `lesion_type → (service_id, url, enabled)`
+- В `scripts/06_segmentation.py` добавлен класс `ServicesRegistry`, читающий `services.yaml`
+- `SegmentationRunner` принимает реестр и резолвит URL через `registry.get_url_for(LESION_TYPE)` вместо хардкода
+- В логе: `Dispatching glioblastoma to service gbm-seg at http://service-gbm-seg:5000`
+- `services.yaml` структурно готов к расширению для MAS-координатора (Этап 7+)
+- Коммит: `feat(scripts/06_segmentation): introduce services registry for dispatch`
 
-**Критерии приёмки:**
+**Сабшаг 3.4** — Параметризация `lesion_type` end-to-end
+- Цепочка: frontend dropdown → `request.lesion_type` → `BackgroundTasks.add_task(..., lesion_type=...)` → `run_pipeline_background(lesion_type=)` → `pipeline_manager.start_pipeline(lesion_type=)` → `create_runtime_config(lesion_type=)` → `runtime_config.yaml` → orchestrator → `--lesion-type` CLI args в stages 06/07/08
+- Хардкод `LESION_TYPE = "glioblastoma"` удалён из трёх скриптов, заменён на `argparse --lesion-type`
+- `process_one_mask` в Stages 07 и 08 теперь принимает `lesion_type` как явный параметр (ProcessPoolExecutor workers не имеют доступа к `args` родителя)
+- `pipeline_config.yaml`: добавлено поле `general.lesion_type: glioblastoma` (дефолт для CLI-запусков)
+- `orchestrator.build_command`: condition по `stage_name in {01, 06, 07, 08}` для пробрасывания `--lesion-type`
+- Каждое звено имеет default `'glioblastoma'` для обратной совместимости
+- Коммит: `feat(pipeline): parameterize lesion_type end-to-end`
 
-- `docker compose up service-ms-seg` поднимается без ошибок, модель грузится в GPU.
-- `curl http://localhost:5001/manifest` возвращает корректный манифест с 3 модальностями.
-- Прогон с одним тестовым кейсом из SibBMS (DICOM → весь pipeline) даёт непустую маску в `segmentation/multiple_sclerosis/mask.nii.gz`.
-- Визуальная проверка маски в NiiVue — лезии находятся в FLAIR-гиперинтенсивных областях.
+**Сабшаг 3.5+3.6** (объединены) — End-to-end на МС + Kappa registration
+- Stage 01 адаптирован под не-глио датасеты:
+  - `scan_dataset`: убран хардкодный фильтр `UPENN-GBM-`
+  - `parse_date_from_series_name`: поддержка ISO `YYYY-MM-DD` (клинические архивы) в дополнение к US `MM-DD-YYYY` (UPENN-GBM)
+  - `CompletenessChecker`: lesion-type-aware required modalities (glio: 4, MS: 3)
+  - argparse `--lesion-type` добавлен в Stage 01 (orchestrator пробрасывает)
+- `configs/kappa_datasets.yaml`: добавлен `multiple_sclerosis` lesion_type entry
+- Verified end-to-end на реальном МС-кейсе (P000915):
+  - 17 series в архиве (включая C-spine, 2.5mm reformats)
+  - ModalityDetector корректно распознал по DICOM-тэгам, deduplicator выбрал лучшие (t1c 6→1, t2fl 3→1 и т.д.)
+  - 2 сессии разделены по датам (20220118, 20230325)
+  - BIDS-структура сформирована, anonymization применена
+  - Stage 06 диспетчеризован на ms-seg, маска получена
+  - Kappa автоматически создала dataset для multiple_sclerosis при первом upload
+- Коммит: `feat(pipeline): adapt Stage 01 to non-glioma datasets`
+
+**Архитектурные решения, принятые по ходу:**
+
+- **Сервис = транспорт, агент = роль** в логике решений. ms-seg остаётся одним контейнером с доступом к 11 trainer'ам; multi-trainer dispatch и cascade/fallback/ensemble режимы — задачи будущего MAS-этапа (см. ROADMAP.md).
+- **Eager loading predictor'а** в `load_model()` (vs lazy) — оправдано тем, что nnUNet v2 init дороже nnUNet v1, и повторные запросы должны быть быстрыми.
+- **Только CATMIL trainer сейчас**, остальные 10 — через `NotImplementedError`. Явный reject лучше тихого молчания.
+- **numpy 2.x + scipy 1.13+** в ms-seg вместо устаревших пинов форка — даёт ABI-совместимость с scikit-image/batchgenerators wheels.
+- **Реестр сервисов как отдельный файл** (`services.yaml`), а не расширение `segmentation_config.yaml`. Чёткое разделение WHAT (lesion → service) от HOW (connection profile).
+
+**Критерии приёмки — выполнены:**
+
+- ✅ `docker compose up service-ms-seg` поднимается, CATMIL весят в VRAM
+- ✅ `curl http://localhost:5001/manifest` возвращает корректный манифест с 3 модальностями
+- ✅ End-to-end прогон с реальным МС-DICOM (P000915, 2 сессии) даёт валидную маску в `segmentation/.../multiple_sclerosis/mask.nii.gz`
+- ✅ Pipeline-логи показывают `Dispatching multiple_sclerosis to service ms-seg at http://service-ms-seg:5001`
+- ✅ Kappa автоматически создала dataset для MS и приняла upload
+
+**Известные ограничения после Этапа 3** (зафиксированы в `KNOWN_ISSUES.md`):
+
+- История запусков в UI не отображает МС-кейсы (KI-013)
+- 3D Slicer integration сломан после смены контракта (KI-014)
+- Stage 04 (QA) и Stage 05 (preprocessing) не валидированы на МС — могут содержать хардкоды модальностей (KI-004, KI-005)
+- Клинический отчёт глио-специфичен, нужна адаптация под МС (KI-019)
+- Ряд косметических багов (дубликаты логов, summary, и т.д.)
+
+Эти пункты адресованы в последующих этапах развития (см. `ROADMAP.md`).
 
 ---
 
