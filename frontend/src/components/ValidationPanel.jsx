@@ -2,7 +2,7 @@
  * Панель валидации — список сессий, доступных для проверки врачом-экспертом
  */
 import { useState, useEffect } from 'react';
-import { Card, Table, Tag, Button, Alert, Spin, Space, Typography } from 'antd';
+import { Card, Table, Tag, Button, Alert, Spin, Space, Typography, Select } from 'antd';
 import { CheckCircleOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import {
   getValidationEntities,
@@ -214,13 +214,27 @@ const ValidationPanel = () => {
           </Space>
         }
         extra={
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => selectedDatasetId && loadEntities(selectedDatasetId)}
-            loading={loading}
-          >
-            Обновить
-          </Button>
+          <Space>
+            <Select
+              value={selectedDatasetId}
+              onChange={setSelectedDatasetId}
+              placeholder="Тип поражения"
+              style={{ minWidth: 220 }}
+              options={lesionTypes
+                .filter((t) => t.dataset_id)
+                .map((t) => ({
+                  value: t.dataset_id,
+                  label: `${t.name} (dataset ${t.dataset_id})`,
+                }))}
+            />
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => selectedDatasetId && loadEntities(selectedDatasetId)}
+              loading={loading}
+            >
+              Обновить
+            </Button>
+          </Space>
         }
       >
         {error && (
