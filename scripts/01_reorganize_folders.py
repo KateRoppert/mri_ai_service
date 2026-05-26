@@ -916,6 +916,9 @@ def print_summary(
         print(f"  • Total files that would be copied: {total_files:,}")
     else:
         print(f"  • Total files copied: {file_organizer.files_copied:,}")
+        metadata_saved = getattr(file_organizer, 'metadata_saved', 0)
+        if metadata_saved:
+            print(f"  • Metadata JSON files saved: {metadata_saved:,}")
 
     print("\n✅ Completeness Analysis:")
     if stats['total_patients']:
@@ -1092,7 +1095,8 @@ def process_single_patient(
             'sessions': {},
             'duplicates_removed': deduplicator.duplicates_removed,
             'files_copied': 0,
-            'validation_failed': []
+            'validation_failed': [],
+            'metadata_saved': 0,
         }
         
         for session_idx, session in enumerate(sessions, 1):
@@ -1144,6 +1148,7 @@ def process_single_patient(
         # Store stats from this patient's processing
         patient_data['files_copied'] = file_organizer.files_copied
         patient_data['validation_failed'] = file_organizer.validation_failed
+        patient_data['metadata_saved'] = file_organizer.metadata_saved
         
         logger.info(f"Completed {original_patient_id}")
         
@@ -1586,6 +1591,7 @@ def run_parallel(
     
     total_duplicates_removed = 0
     total_files_copied = 0
+    total_metadata_saved = 0
     all_validation_failed = []
     
     for result in results:
@@ -1593,10 +1599,12 @@ def run_parallel(
             # Extract and remove processing stats
             duplicates = patient_data.pop('duplicates_removed', 0)
             files_copied = patient_data.pop('files_copied', 0)
+            metadata_saved = patient_data.pop('metadata_saved', 0)
             validation_failed = patient_data.pop('validation_failed', [])
             
             total_duplicates_removed += duplicates
             total_files_copied += files_copied
+            total_metadata_saved += metadata_saved
             all_validation_failed.extend(validation_failed)
             
             # Store patient data
@@ -1604,11 +1612,14 @@ def run_parallel(
     
     # Create a mock FileOrganizer for stats (parallel version doesn't use single organizer)
     class FileOrganizerStats:
-        def __init__(self, files_copied, validation_failed):
+        def __init__(self, files_copied, validation_failed, metadata_saved):
             self.files_copied = files_copied
             self.validation_failed = validation_failed
+            self.metadata_saved = metadata_saved
     
-    file_organizer = FileOrganizerStats(total_files_copied, all_validation_failed)
+    file_organizer = FileOrganizerStats(
+        total_files_copied, all_validation_failed, total_metadata_saved
+    )
     
     # Check completeness
     logger.info("Checking data completeness...")
