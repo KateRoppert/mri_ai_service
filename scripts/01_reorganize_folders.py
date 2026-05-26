@@ -868,10 +868,20 @@ def print_summary(
     file_organizer: FileOrganizer,
     total_time: float,
     performance_metrics: Optional[Dict] = None,
-    dry_run: bool = False
+    dry_run: bool = False,
+    lesion_type: str = 'glioblastoma',
 ):
     """Print final summary report."""
     stats = completeness_data['statistics']
+
+    # Modalities relevant for the active lesion type (same source of truth
+    # as CompletenessChecker uses). Fallback to default if lesion_type unknown.
+    relevant_modalities = sorted(
+        CompletenessChecker.LESION_TYPE_MODALITIES.get(
+            lesion_type,
+            CompletenessChecker.DEFAULT_REQUIRED_MODALITIES,
+        )
+    )
 
     print("\n" + "=" * 60)
     print("=== Reorganization Summary ===")
@@ -881,9 +891,10 @@ def print_summary(
     print(f"  • Patients processed: {stats['total_patients']}")
     print(f"  • Sessions created: {stats['total_sessions']}")
 
-    # Count series by modality
-    modality_counts = {'t1': 0, 't1c': 0, 't2': 0, 't2fl': 0}
-    modality_slices = {'t1': 0, 't1c': 0, 't2': 0, 't2fl': 0}
+    # Count series by modality (initialize only modalities relevant for
+    # this lesion_type, but accept any others encountered via setdefault).
+    modality_counts: Dict[str, int] = {m: 0 for m in relevant_modalities}
+    modality_slices: Dict[str, int] = {m: 0 for m in relevant_modalities}
 
     for patient_data in mapping_data['patients'].values():
         for session_data in patient_data['sessions'].values():
@@ -894,7 +905,7 @@ def print_summary(
                 modality_slices[modality] += series_data.get('slice_count', 0)
 
     print(f"  • Series processed by modality:")
-    for modality in ['t1', 't1c', 't2', 't2fl']:
+    for modality in relevant_modalities:
         print(f"    - {modality:4s}: {modality_counts.get(modality,0):3d} series "
               f"({modality_slices.get(modality,0):,} slices)")
 
@@ -2017,7 +2028,8 @@ def main():
         file_organizer,
         total_time,
         performance_metrics,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        lesion_type=args.lesion_type,
     )
 
     logger.info("=" * 60)
