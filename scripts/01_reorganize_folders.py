@@ -1325,7 +1325,6 @@ def run_sequential(
 
     # Scan dataset
     logger.info("Scanning input directory...")
-    scanner = DatasetScanner(logger)
     
     if patient_dirs is None:
         # Scan all patients if not provided
@@ -1514,7 +1513,6 @@ def run_parallel(
     
     # Scan dataset
     logger.info("Scanning input directory...")
-    scanner = DatasetScanner(logger)
     
     if patient_dirs is None:
         # Scan all patients if not provided
@@ -1693,9 +1691,6 @@ def main():
 
     args = parser.parse_args()
 
-
-    args = parser.parse_args()
-
     # Validate inputs
     if not args.input_dir.exists():
         print(f"Error: Input directory does not exist: {args.input_dir}")
@@ -1777,11 +1772,6 @@ def main():
     mapping_data = existing_mapping
     completeness_data = {}
     duplicates_removed = 0
-    
-    # Process each batch
-    all_deduplicators = []
-    all_file_organizers = []
-    all_performance_metrics = []
     
     for batch_idx, batch_patient_dirs in enumerate(batches, 1):
         logger.info(f"\n{'='*60}")
