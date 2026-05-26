@@ -1460,6 +1460,7 @@ def run_sequential(
     # Stop monitoring and collect metrics
     performance_metrics = None
     if monitor:
+        monitor.stop()
         performance_metrics = monitor.get_metrics()
         logger.info("Performance monitoring stopped")
 
