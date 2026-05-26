@@ -981,6 +981,149 @@ def print_summary(
 
     print("\n" + "=" * 60)
 
+def _process_one_patient_core(
+    patient_dir: Path,
+    new_patient_id: str,
+    modality_detector: 'ModalityDetector',
+    scanner: 'DatasetScanner',
+    grouper: 'SessionGrouper',
+    deduplicator: 'SeriesDeduplicator',
+    file_organizer: 'FileOrganizer',
+    logger: logging.Logger,
+) -> Optional[Dict]:
+    """
+    Process one patient end-to-end: scan series → detect modalities →
+    filter → group into sessions → dedupe → copy files into BIDS layout →
+    validate.
+
+    Returns:
+        Per-patient dict in the unified format:
+            {
+                'original_id': str,
+                'sessions': {ses-XXX: {...}},
+                'duplicates_removed': int,
+                'files_copied': int,
+                'validation_failed': List[str],
+                'metadata_saved': int,
+            }
+        Returns None if no valid series found (patient should be skipped).
+
+    Caller is responsible for:
+        - resolving new_patient_id via IDMapper.get_patient_id();
+        - calling check_patient_exists() before this function (to honor
+          --force semantics and counting skipped patients).
+    """
+    original_patient_id = patient_dir.name
+
+    # Scan series (now returns tuples: (series_dir, date_folder_name_or_None))
+    series_entries = scanner.scan_patient_series(patient_dir)
+    logger.debug(f"  Found {len(series_entries)} series entries (nested-aware)")
+
+    # Process series
+    series_list: List[SeriesInfo] = []
+    for series_dir, date_folder_name in series_entries:
+        # Priority: date from ancestor folder, else try parse from series_dir.name
+        date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
+        if not date:
+            date = scanner.parse_date_from_series_name(series_dir.name)
+
+        if not date:
+            logger.warning(f"  Could not parse date from {series_dir} or its parent folders, skipping")
+            continue
+
+        # Detect modality
+        modality, series_description = modality_detector.detect_modality(series_dir)
+
+        # Filter: only keep modalities the pipeline supports
+        if modality in MODALITY_BIDS_SUFFIX:
+            series_info = SeriesInfo(
+                original_path=series_dir,
+                patient_id=original_patient_id,
+                date=date,
+                modality=modality,
+                series_description=series_description,
+            )
+            series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
+            series_list.append(series_info)
+            logger.debug(f"  Series {series_dir}: {modality} ({series_info.slice_count} slices)")
+        elif modality:
+            logger.debug(f"  Series {series_dir}: {modality} (filtered out)")
+        else:
+            logger.debug(f"  Series {series_dir}: unknown modality (filtered out)")
+
+    if not series_list:
+        logger.warning(f"  No valid series found for {original_patient_id}")
+        return None
+
+    # Snapshot duplicates_removed BEFORE this patient's deduplication, so
+    # we can attribute per-patient delta correctly when the deduplicator
+    # is shared across patients (sequential mode).
+    dup_before = deduplicator.duplicates_removed
+    files_before = file_organizer.files_copied
+    metadata_before = file_organizer.metadata_saved
+    val_failed_before = len(file_organizer.validation_failed)
+
+    # Group by date into sessions
+    sessions = grouper.group_by_date(series_list)
+    logger.debug(f"  Grouped into {len(sessions)} sessions")
+
+    # Deduplicate: keep best series per modality
+    sessions = [deduplicator.deduplicate_session(s) for s in sessions]
+
+    patient_data: Dict = {
+        'original_id': original_patient_id,
+        'sessions': {},
+    }
+
+    for session_idx, session in enumerate(sessions, 1):
+        new_session_id = f"ses-{session_idx:03d}"
+        logger.debug(f"  Session {new_session_id} (date: {session.date})")
+
+        session_data: Dict = {
+            'original_date': session.date,
+            'series': {},
+        }
+
+        for modality, series in session.series.items():
+            target_dir = file_organizer.create_bids_structure(
+                new_patient_id, new_session_id, modality
+            )
+
+            copied = file_organizer.copy_series(
+                series.original_path,
+                target_dir,
+                new_patient_id,
+                new_session_id,
+                modality,
+            )
+
+            file_organizer.validate_copy(
+                series.original_path,
+                target_dir,
+                new_patient_id,
+                new_session_id,
+                modality,
+            )
+
+            session_data['series'][modality] = {
+                'original_path': str(series.original_path),
+                'slice_count': copied,
+                'series_description': series.series_description,
+            }
+
+            logger.debug(f"    {modality}: {copied} files copied")
+
+        patient_data['sessions'][new_session_id] = session_data
+
+    # Per-patient deltas (compatible with both shared and per-patient components).
+    patient_data['duplicates_removed'] = deduplicator.duplicates_removed - dup_before
+    patient_data['files_copied'] = file_organizer.files_copied - files_before
+    patient_data['metadata_saved'] = file_organizer.metadata_saved - metadata_before
+    patient_data['validation_failed'] = list(file_organizer.validation_failed[val_failed_before:])
+
+    return patient_data
+
+
 def process_single_patient(
     patient_dir: Path,
     input_dir: Path,
@@ -995,6 +1138,10 @@ def process_single_patient(
     """
     Process a single patient (designed to run in parallel).
     
+    Thin wrapper around _process_one_patient_core: creates per-process
+    components, resolves the new patient ID, checks existence, then
+    delegates the actual work.
+    
     Args:
         patient_dir: Patient directory path
         input_dir: Root input directory
@@ -1003,7 +1150,9 @@ def process_single_patient(
         log_level: Logging level
         
     Returns:
-        Dictionary with patient data or None if failed
+        Dict { new_patient_id: patient_data } on success,
+        or None if the patient was skipped (already processed) or had
+        no valid series, or processing failed with an exception.
     """
     # Setup logging for this process
     logger = logging.getLogger(f'patient_{patient_dir.name}')
@@ -1014,146 +1163,48 @@ def process_single_patient(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
         logger.addHandler(handler)
-    
+
     try:
-        # Check if patient already processed
         original_patient_id = patient_dir.name
         new_patient_id = patient_mapping[original_patient_id]
+
+        # Check if patient already processed
         if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
             return None  # Skip this patient
-        
-        # Initialize components for this process
+
+        # Initialize fresh components for this process
         modality_detector = ModalityDetector(logger)
         scanner = DatasetScanner(logger)
         grouper = SessionGrouper(logger)
         deduplicator = SeriesDeduplicator(logger)
-        # Create metadata extractor if config provided
         _metadata_extractor = None
         if tags_config:
             _metadata_extractor = MetadataExtractor(tags_config, logger)
-        
+
         file_organizer = FileOrganizer(
             output_dir, logger, dry_run=dry_run,
-            metadata_extractor=_metadata_extractor, metadata_dir=metadata_dir
+            metadata_extractor=_metadata_extractor, metadata_dir=metadata_dir,
         )
-        
-        original_patient_id = patient_dir.name
-        new_patient_id = patient_mapping[original_patient_id]
-        
+
         logger.info(f"Processing {original_patient_id} -> {new_patient_id}")
-        
-        # Scan series
-        series_entries = scanner.scan_patient_series(patient_dir)
-        logger.debug(f"  Found {len(series_entries)} series entries")
-        
-        # Process series
-        series_list: List[SeriesInfo] = []
-        for series_dir, date_folder_name in series_entries:
-            # Parse date
-            date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
-            if not date:
-                date = scanner.parse_date_from_series_name(series_dir.name)
-            
-            if not date:
-                logger.warning(f"  Could not parse date from {series_dir}, skipping")
-                continue
-            
-            # Detect modality
-            modality, series_description = modality_detector.detect_modality(series_dir)
-            
-            # Filter: only keep modalities the pipeline supports
-            if modality in MODALITY_BIDS_SUFFIX:
-                series_info = SeriesInfo(
-                    original_path=series_dir,
-                    patient_id=original_patient_id,
-                    date=date,
-                    modality=modality,
-                    series_description=series_description
-                )
-                series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
-                series_list.append(series_info)
-                logger.debug(f"  Series {series_dir.name}: {modality} ({series_info.slice_count} slices)")
-            elif modality:
-                logger.debug(f"  Series {series_dir.name}: {modality} (filtered out)")
-            else:
-                logger.debug(f"  Series {series_dir.name}: unknown modality (filtered out)")
-        
-        if not series_list:
-            logger.warning(f"  No valid series found for {original_patient_id}")
+
+        patient_data = _process_one_patient_core(
+            patient_dir=patient_dir,
+            new_patient_id=new_patient_id,
+            modality_detector=modality_detector,
+            scanner=scanner,
+            grouper=grouper,
+            deduplicator=deduplicator,
+            file_organizer=file_organizer,
+            logger=logger,
+        )
+
+        if patient_data is None:
             return None
-        
-        # Group by date into sessions
-        sessions = grouper.group_by_date(series_list)
-        logger.debug(f"  Grouped into {len(sessions)} sessions")
-        
-        # Deduplicate
-        sessions = [deduplicator.deduplicate_session(s) for s in sessions]
-        
-        # Process each session
-        patient_data = {
-            'original_id': original_patient_id,
-            'sessions': {},
-            'duplicates_removed': deduplicator.duplicates_removed,
-            'files_copied': 0,
-            'validation_failed': [],
-            'metadata_saved': 0,
-        }
-        
-        for session_idx, session in enumerate(sessions, 1):
-            new_session_id = f"ses-{session_idx:03d}"
-            
-            logger.debug(f"  Session {new_session_id} (date: {session.date})")
-            
-            session_data = {
-                'original_date': session.date,
-                'series': {}
-            }
-            
-            # Process each modality in session
-            for modality, series in session.series.items():
-                # Create BIDS structure
-                target_dir = file_organizer.create_bids_structure(
-                    new_patient_id, new_session_id, modality
-                )
-                
-                # Copy files
-                copied = file_organizer.copy_series(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-                
-                # Validate
-                file_organizer.validate_copy(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-                
-                # Update mapping
-                session_data['series'][modality] = {
-                    'original_path': str(series.original_path),
-                    'slice_count': copied,
-                    'series_description': series.series_description
-                }
-                
-                logger.debug(f"    {modality}: {copied} files copied")
-            
-            patient_data['sessions'][new_session_id] = session_data
-        
-        # Store stats from this patient's processing
-        patient_data['files_copied'] = file_organizer.files_copied
-        patient_data['validation_failed'] = file_organizer.validation_failed
-        patient_data['metadata_saved'] = file_organizer.metadata_saved
-        
+
         logger.info(f"Completed {original_patient_id}")
-        
         return {new_patient_id: patient_data}
-        
+
     except Exception as e:
         logger.error(f"Failed to process {patient_dir.name}: {e}", exc_info=True)
         return None
@@ -1369,111 +1420,35 @@ def run_sequential(
 
         logger.info(f"Processing patient {patient_idx}/{len(patient_dirs)}: "
                     f"{original_patient_id} -> {new_patient_id}")
-        
+
         # Check if patient already processed
         if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
             patients_skipped_this_run += 1
             continue
 
-        # Scan series (now returns tuples: (series_dir, date_folder_name_or_None))
-        series_entries = scanner.scan_patient_series(patient_dir)
-        logger.debug(f"  Found {len(series_entries)} series entries (nested-aware)")
+        patient_data = _process_one_patient_core(
+            patient_dir=patient_dir,
+            new_patient_id=new_patient_id,
+            modality_detector=modality_detector,
+            scanner=scanner,
+            grouper=grouper,
+            deduplicator=deduplicator,
+            file_organizer=file_organizer,
+            logger=logger,
+        )
 
-        # Process series
-        series_list: List[SeriesInfo] = []
-        for series_dir, date_folder_name in series_entries:
-            # Priority: date from ancestor folder (date_folder_name), else try parse from series_dir.name
-            date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
-            if not date:
-                date = scanner.parse_date_from_series_name(series_dir.name)
-
-            if not date:
-                logger.warning(f"  Could not parse date from {series_dir} or its parent folders, skipping")
-                continue
-
-            # Detect modality (returns modality and series_description)
-            modality, series_description = modality_detector.detect_modality(series_dir)
-
-            # Filter: only keep modalities the pipeline supports
-            if modality in MODALITY_BIDS_SUFFIX:
-                series_info = SeriesInfo(
-                    original_path=series_dir,
-                    patient_id=original_patient_id,
-                    date=date,
-                    modality=modality,
-                    series_description=series_description
-                )
-                # slice_count can be computed later in deduplicator, but store current count for info
-                series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
-                series_list.append(series_info)
-                logger.debug(f"  Series {series_dir}: {modality} ({series_info.slice_count} slices)")
-            elif modality:
-                logger.debug(f"  Series {series_dir}: {modality} (filtered out)")
-            else:
-                logger.debug(f"  Series {series_dir}: unknown modality (filtered out)")
-
-        if not series_list:
-            logger.warning(f"  No valid series found for {original_patient_id}")
+        if patient_data is None:
+            # No valid series for this patient — already logged inside.
             continue
 
-        # Group by date into sessions
-        sessions = grouper.group_by_date(series_list)
-        logger.debug(f"  Grouped into {len(sessions)} sessions")
-
-        # Deduplicate: keep best series per modality
-        sessions = [deduplicator.deduplicate_session(s) for s in sessions]
-
-        # Process each session
-        patient_data = {
-            'original_id': original_patient_id,
-            'sessions': {}
-        }
-
-        for session_idx, session in enumerate(sessions, 1):
-            new_session_id = f"ses-{session_idx:03d}"
-
-            logger.debug(f"  Session {new_session_id} (date: {session.date})")
-
-            session_data = {
-                'original_date': session.date,
-                'series': {}
-            }
-
-            # Process each modality in session
-            for modality, series in session.series.items():
-                # Create BIDS structure
-                target_dir = file_organizer.create_bids_structure(
-                    new_patient_id, new_session_id, modality
-                )
-
-                # Copy files (source_dir may have nested DICOMs)
-                copied = file_organizer.copy_series(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-
-                # Validate
-                file_organizer.validate_copy(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-
-                # Update mapping
-                session_data['series'][modality] = {
-                    'original_path': str(series.original_path),
-                    'slice_count': copied,
-                    'series_description': series.series_description
-                }
-
-                logger.debug(f"    {modality}: {copied} files copied")
-
-            patient_data['sessions'][new_session_id] = session_data
+        # Drop per-patient stats fields before persisting: aggregate stats
+        # live on the shared file_organizer / deduplicator components and
+        # are reported separately. This keeps mapping_data['patients'][*]
+        # format identical between sequential and parallel modes.
+        patient_data.pop('duplicates_removed', None)
+        patient_data.pop('files_copied', None)
+        patient_data.pop('metadata_saved', None)
+        patient_data.pop('validation_failed', None)
 
         mapping_data['patients'][new_patient_id] = patient_data
         patients_processed_this_run += 1
