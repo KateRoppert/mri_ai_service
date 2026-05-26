@@ -66,23 +66,25 @@ class SessionInfo:
     series: Dict[str, SeriesInfo] = field(default_factory=dict)  # modality -> SeriesInfo
 
 
-@dataclass
-class PatientResult:
-    """
-    Result of processing one patient (parallel mode).
-
-    Status semantics:
-        - "ok":      patient processed successfully; data is populated.
-        - "skipped": correct non-error pass (e.g. already processed and
-                     --force not set). reason indicates why.
-        - "failed":  processing did not produce usable output (no valid
-                     series, or an exception). reason carries the cause.
-    """
-    status: str  # "ok" | "skipped" | "failed"
-    patient_id: str  # original_id (always available); new_id only on "ok"
-    new_patient_id: Optional[str] = None  # set only when status == "ok"
-    data: Optional[Dict] = None  # patient_data dict; set only when status == "ok"
-    reason: Optional[str] = None  # human-readable reason for skipped/failed
+# Result of processing one patient. Returned by process_single_patient
+# in parallel mode and consumed by run_parallel.
+#
+# NOTE: this is a plain dict, not a dataclass. A dataclass defined in the
+# main script would carry __module__ == '__main__' (or 'main_module'
+# depending on how Python loaded the script), which breaks pickling of
+# return values from mp.Pool workers — worker processes cannot re-import
+# that module by name and pool.imap_unordered silently turns the result
+# into a failure. Plain dicts are pickle-safe regardless.
+#
+# Shape:
+#   {
+#     "status": "ok" | "skipped" | "failed",
+#     "patient_id": str,                 # original_id, always present
+#     "new_patient_id": Optional[str],   # set only when status == "ok"
+#     "data": Optional[Dict],            # patient_data dict, set only on "ok"
+#     "reason": Optional[str],           # human-readable explanation
+#   }
+PatientResult = Dict[str, object]
 
 
 class ModalityDetector:
@@ -1184,11 +1186,13 @@ def process_single_patient(
 
         # Check if patient already processed
         if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
-            return PatientResult(
-                status="skipped",
-                patient_id=original_patient_id,
-                reason="already_exists",
-            )
+            return {
+                "status": "skipped",
+                "patient_id": original_patient_id,
+                "new_patient_id": None,
+                "data": None,
+                "reason": "already_exists",
+            }
 
         # Initialize fresh components for this process
         modality_detector = ModalityDetector(logger)
@@ -1218,27 +1222,32 @@ def process_single_patient(
         )
 
         if patient_data is None:
-            return PatientResult(
-                status="failed",
-                patient_id=original_patient_id,
-                reason="no_valid_series",
-            )
+            return {
+                "status": "failed",
+                "patient_id": original_patient_id,
+                "new_patient_id": None,
+                "data": None,
+                "reason": "no_valid_series",
+            }
 
         logger.info(f"Completed {original_patient_id}")
-        return PatientResult(
-            status="ok",
-            patient_id=original_patient_id,
-            new_patient_id=new_patient_id,
-            data=patient_data,
-        )
+        return {
+            "status": "ok",
+            "patient_id": original_patient_id,
+            "new_patient_id": new_patient_id,
+            "data": patient_data,
+            "reason": None,
+        }
 
     except Exception as e:
         logger.error(f"Failed to process {original_patient_id}: {e}", exc_info=True)
-        return PatientResult(
-            status="failed",
-            patient_id=original_patient_id,
-            reason=f"exception: {e}",
-        )
+        return {
+            "status": "failed",
+            "patient_id": original_patient_id,
+            "new_patient_id": None,
+            "data": None,
+            "reason": f"exception: {e}",
+        }
 
 def check_patient_exists(output_dir: Path, patient_id: str, force: bool, dry_run: bool, logger: logging.Logger) -> bool:
     """
@@ -1605,6 +1614,9 @@ def run_parallel(
         metadata_dir=metadata_dir
     )
     
+    # Map worker status strings to counter keys. "ok" → "successful".
+    STATUS_TO_COUNTER = {"ok": "successful", "skipped": "skipped", "failed": "failed"}
+
     # Process patients in parallel
     results: List[PatientResult] = []
     counters = {"successful": 0, "skipped": 0, "failed": 0}
@@ -1613,16 +1625,15 @@ def run_parallel(
     with mp.Pool(processes=workers) as pool:
         for pr in pool.imap_unordered(process_func, patient_dirs):
             results.append(pr)
-            counters[pr.status if pr.status in counters else "failed"] += 1
-            if pr.status == "failed":
-                failed_patients.append((pr.patient_id, pr.reason or "unknown"))
-                logger.warning(
-                    f"Patient {pr.patient_id} failed: {pr.reason}"
-                )
-            elif pr.status == "skipped":
-                logger.info(
-                    f"Patient {pr.patient_id} skipped: {pr.reason}"
-                )
+            status = pr.get("status", "failed")
+            patient_id = pr.get("patient_id", "?")
+            reason = pr.get("reason")
+            counters[STATUS_TO_COUNTER.get(status, "failed")] += 1
+            if status == "failed":
+                failed_patients.append((patient_id, reason or "unknown"))
+                logger.warning(f"Patient {patient_id} failed: {reason}")
+            elif status == "skipped":
+                logger.info(f"Patient {patient_id} skipped: {reason}")
             done = len(results)
             logger.info(f"Progress: {done}/{len(patient_dirs)} patients processed")
 
@@ -1641,9 +1652,12 @@ def run_parallel(
     all_validation_failed: List[str] = []
 
     for pr in results:
-        if pr.status != "ok" or pr.data is None or pr.new_patient_id is None:
+        if pr.get("status") != "ok":
             continue
-        patient_data = pr.data
+        patient_data = pr.get("data")
+        new_patient_id = pr.get("new_patient_id")
+        if patient_data is None or new_patient_id is None:
+            continue
         # Extract and remove processing stats
         duplicates = patient_data.pop('duplicates_removed', 0)
         files_copied = patient_data.pop('files_copied', 0)
@@ -1655,7 +1669,7 @@ def run_parallel(
         total_metadata_saved += metadata_saved
         all_validation_failed.extend(validation_failed)
 
-        mapping_data['patients'][pr.new_patient_id] = patient_data
+        mapping_data['patients'][new_patient_id] = patient_data
 
     # Create a mock FileOrganizer for stats (parallel doesn't use single organizer)
     class FileOrganizerStats:
