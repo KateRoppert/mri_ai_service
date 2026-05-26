@@ -1295,10 +1295,19 @@ async def slicer_agent_status():
 
 
 @app.post("/api/slicer/open/{run_id}")
-async def open_in_slicer(run_id: str, session_id: Optional[str] = None, selected_mask_version: Optional[int] = None):
+async def open_in_slicer(
+    run_id: str,
+    session_id: Optional[str] = None,
+    selected_mask_version: Optional[int] = None,
+    entity_id: Optional[str] = None,
+):
     """
     Открыть данные пациента в 3D Slicer через агента.
     Собирает пути к файлам из результатов пайплайна и отправляет агенту.
+
+    entity_id — обязательный для multi-patient/multi-session runs:
+        идентифицирует конкретную сущность (пациент+сессия) в пределах run'а.
+        Если не передан и в run'е больше одной записи — 400.
     selected_mask_version — если указана, эта версия маски будет default в Slicer.
     """
     from patient_registry import find_by_run_id
@@ -1319,7 +1328,30 @@ async def open_in_slicer(run_id: str, session_id: Optional[str] = None, selected
     if not records:
         raise HTTPException(status_code=404, detail="Нет данных пациента")
 
-    record = records[0]
+    # Выбираем нужную запись по entity_id.
+    # Если запись одна — допускаем отсутствие entity_id (single-session run).
+    # Иначе entity_id обязателен, чтобы корректно различать пациентов/сессии.
+    if entity_id:
+        record = next(
+            (r for r in records if r.get("kappa_entity_id") == entity_id),
+            None,
+        )
+        if record is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Запись с entity_id={entity_id} не найдена в run {run_id}",
+            )
+    elif len(records) == 1:
+        record = records[0]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"В run {run_id} {len(records)} записей; "
+                "необходимо передать entity_id для выбора конкретной"
+            ),
+        )
+
     bids_id = record.get("bids_id", "unknown")
     sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
 

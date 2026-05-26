@@ -181,11 +181,14 @@ export const checkSlicerAgent = async () => {
 /**
  * Открыть данные пациента в 3D Slicer
  */
-export const openInSlicer = async (runId, selectedMaskVersion = null) => {
+export const openInSlicer = async (runId, selectedMaskVersion = null, entityId = null) => {
   const sessionId = localStorage.getItem('kappa_session_id');
   let url = `/slicer/open/${runId}?session_id=${sessionId}`;
   if (selectedMaskVersion) {
     url += `&selected_mask_version=${selectedMaskVersion}`;
+  }
+  if (entityId) {
+    url += `&entity_id=${encodeURIComponent(entityId)}`;
   }
   const response = await apiClient.post(url);
   return response.data;
