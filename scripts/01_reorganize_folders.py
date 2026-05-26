@@ -34,6 +34,19 @@ import time
 import yaml
 from scripts.metadata_extractor import MetadataExtractor
 
+# Single source of truth for modalities the pipeline knows how to process.
+# Maps internal modality name → BIDS suffix used in output filenames.
+# The .keys() of this dict is the input filter: any series whose detected
+# modality is not here will be dropped. Adding a new modality (e.g. for
+# metastases work) requires only an entry here plus an update to
+# CompletenessChecker.LESION_TYPE_MODALITIES.
+MODALITY_BIDS_SUFFIX: Dict[str, str] = {
+    't1':   'T1w',
+    't1c':  'T1wCE',
+    't2':   'T2w',
+    't2fl': 'FLAIR',
+}
+
 
 @dataclass
 class SeriesInfo:
@@ -671,10 +684,7 @@ class FileOrganizer:
             self.logger.warning(f"No DICOM files in {source_dir}")
             return 0
 
-        bids_suffix_map = {
-            't1': 'T1w', 't1c': 'T1wCE', 't2': 'T2w', 't2fl': 'FLAIR'
-        }
-        bids_suffix = bids_suffix_map.get(modality, modality.upper())
+        bids_suffix = MODALITY_BIDS_SUFFIX.get(modality, modality.upper())
 
         if self.dry_run:
             count = len(source_files)
@@ -1037,8 +1047,8 @@ def process_single_patient(
             # Detect modality
             modality, series_description = modality_detector.detect_modality(series_dir)
             
-            # Filter: only keep 4 target modalities
-            if modality in {'t1', 't1c', 't2', 't2fl'}:
+            # Filter: only keep modalities the pipeline supports
+            if modality in MODALITY_BIDS_SUFFIX:
                 series_info = SeriesInfo(
                     original_path=series_dir,
                     patient_id=original_patient_id,
@@ -1368,8 +1378,8 @@ def run_sequential(
             # Detect modality (returns modality and series_description)
             modality, series_description = modality_detector.detect_modality(series_dir)
 
-            # Filter: only keep 4 target modalities
-            if modality in {'t1', 't1c', 't2', 't2fl'}:
+            # Filter: only keep modalities the pipeline supports
+            if modality in MODALITY_BIDS_SUFFIX:
                 series_info = SeriesInfo(
                     original_path=series_dir,
                     patient_id=original_patient_id,
