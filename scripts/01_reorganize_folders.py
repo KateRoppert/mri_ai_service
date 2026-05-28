@@ -846,42 +846,27 @@ def save_mapping_file(mapping_data: Dict, output_dir: Path):
         json.dump(mapping_data, f, indent=2)
 
 
-def save_completeness_report(completeness_data: Dict, output_dir: Path):
-    """Save completeness report to text file."""
-    report_file = output_dir / 'incomplete_data.txt'
+def save_completeness_report(completeness_data: Dict, output_dir: Path) -> Path:
+    """Save completeness report as JSON in incomplete_data/ subfolder."""
+    incomplete_dir = output_dir / 'incomplete_data'
+    incomplete_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(report_file, 'w') as f:
-        f.write("=== Incomplete Data Report ===\n")
-        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    stats = completeness_data['statistics']
+    total_sessions = stats['total_sessions'] or 1
+    success_rate = stats['complete_sessions'] / total_sessions * 100
 
-        stats = completeness_data['statistics']
-        total_patients = stats['total_patients'] or 1
-        total_sessions = stats['total_sessions'] or 1
+    report = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'stage': '01_reorganize_folders',
+        'statistics': {**stats, 'success_rate_percent': round(success_rate, 1)},
+        'incomplete_data': completeness_data['incomplete_patients'],
+    }
 
-        f.write(f"Total patients: {stats['total_patients']}\n")
-        f.write(f"Complete patients: {stats['complete_patients']} "
-                f"({stats['complete_patients']/total_patients*100:.1f}%)\n")
-        f.write(f"Incomplete patients: {stats['incomplete_patients']} "
-                f"({stats['incomplete_patients']/total_patients*100:.1f}%)\n\n")
+    report_path = incomplete_dir / '01_reorganize_folders_incomplete_data.json'
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
 
-        f.write(f"Total sessions: {stats['total_sessions']}\n")
-        f.write(f"Complete sessions: {stats['complete_sessions']} "
-                f"({stats['complete_sessions']/total_sessions*100:.1f}%)\n")
-        f.write(f"Incomplete sessions: {stats['incomplete_sessions']} "
-                f"({stats['incomplete_sessions']/total_sessions*100:.1f}%)\n\n")
-
-        if completeness_data['incomplete_patients']:
-            f.write("=== Details ===\n\n")
-
-            for patient in completeness_data['incomplete_patients']:
-                f.write(f"Patient: {patient['patient_id']} ({patient['original_id']})\n")
-
-                for session in patient['incomplete_sessions']:
-                    f.write(f"  Session: {session['session_id']} ({session['date']})\n")
-                    f.write(f"    Missing: {', '.join(session['missing'])}\n")
-                    f.write(f"    Available: {', '.join(session['available'])}\n")
-
-                f.write("\n")
+    return report_path
 
 
 def print_summary(
@@ -972,7 +957,7 @@ def print_summary(
             remaining = len(completeness_data['incomplete_patients']) - 5
             print(f"    ... and {remaining} more")
 
-        print(f"\n  📄 Detailed report: incomplete_data.txt")
+        print(f"\n  📄 Detailed report: incomplete_data/01_reorganize_folders_incomplete_data.json")
 
     print("\n🔍 Validation:")
     if not file_organizer.validation_failed:
@@ -1000,7 +985,7 @@ def print_summary(
     print("\n📁 Output:")
     print(f"  • BIDS directory: {mapping_data.get('output_dir', 'N/A')}")
     print(f"  • Mapping file: dataset_mapping.json")
-    print(f"  • Incomplete data report: incomplete_data.txt")
+    print(f"  • Incomplete data report: incomplete_data/01_reorganize_folders_incomplete_data.json")
 
     print("\n" + "=" * 60)
 

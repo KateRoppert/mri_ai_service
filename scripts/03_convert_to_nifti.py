@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 import time
-import json 
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Set
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
@@ -260,29 +259,6 @@ class NiftiConverter:
             self.logger.error(f"Error converting {patient_id}/{modality}: {e}")
             self.stats['failed'] += 1
             return False
-    # @staticmethod
-    # def process_series_wrapper(self, args):
-    #     """
-    #     Wrapper for multiprocessing conversion.
-        
-    #     Args:
-    #         args: Tuple of (series_path, patient_id, modality, output_dir, session, dcm2niix_cmd)
-        
-    #     Returns:
-    #         Tuple of (success, stats)
-    #     """
-    #     series_path, patient_id, modality, output_dir, session, dcm2niix_base_cmd = args
-        
-    #     # Create temporary converter instance for this process
-    #     temp_logger = logging.getLogger(f"converter_worker_{patient_id}_{modality}")
-    #     temp_converter = NiftiConverter.__new__(NiftiConverter)
-    #     temp_converter.logger = temp_logger
-    #     temp_converter.dcm2niix_base_cmd = dcm2niix_base_cmd
-    #     temp_converter.stats = {'total_series': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
-        
-    #     success = temp_converter.convert_series(series_path, patient_id, modality, output_dir, session)
-    #     return success, temp_converter.stats
-    
     def run(self, input_dir: Path, output_dir: Path, max_subjects: Optional[int] = None,
             benchmark: bool = False, results_dir: Optional[Path] = None,
             mode: str = 'sequential', workers: int = 1) -> None:
@@ -363,17 +339,14 @@ class NiftiConverter:
         efficiency = None
         baseline_time = None
 
-        # Load baseline from sequential run
-        if results_dir:
-            baseline_file = results_dir / "sequential_workers_1.json"
-            if baseline_file.exists():
-                try:
-                    with open(baseline_file, 'r') as f:
-                        baseline_data = json.load(f)
-                        baseline_time = baseline_data.get('total_time')
-                        self.logger.debug(f"Loaded baseline time: {baseline_time:.2f}s from {baseline_file}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to load baseline: {e}")
+        # Load baseline from BenchmarkLogger CSV (same source as Stage 01)
+        if benchmark_logger:
+            try:
+                baseline_time = benchmark_logger.get_baseline_time()
+                if baseline_time:
+                    self.logger.debug(f"Loaded baseline time: {baseline_time:.2f}s")
+            except Exception as e:
+                self.logger.warning(f"Failed to load baseline: {e}")
 
         if mode == 'sequential' and workers == 1:
             # Sequential mode is the baseline
@@ -405,7 +378,6 @@ class NiftiConverter:
             self.logger.info(f"Parallel efficiency: {efficiency:.3f}")
         self.logger.info("=" * 60)
 
-        self.logger.info("=" * 60)
         self.logger.info("Validating input-output correspondence...")
         
         try:
@@ -487,23 +459,25 @@ class NiftiConverter:
     def _process_parallel(self, series_list, output_dir, workers):
         """Process series in parallel using multiprocessing."""
         self.logger.info(f"Starting parallel processing with {workers} workers")
-        
+
         # Prepare arguments for workers
         tasks = [
             (series_path, patient_id, modality, output_dir, session_id, self.dcm2niix_base_cmd)
             for series_path, patient_id, session_id, modality in series_list
         ]
-        
+
         # Process in parallel
         with Pool(processes=workers) as pool:
             results = pool.map(process_series_worker, tasks)
-        
-        # Aggregate results
-        for success, worker_stats in results:
-            self.stats['total_series'] += 1
-            if success:
-                self.stats['successful'] += 1
-            # Note: worker stats already counted internally
+
+        # Aggregate stats from each worker's returned stats dict.
+        # Workers track successful/failed/skipped independently; we must
+        # sum them here — checking only `success` misses failed and skipped.
+        for _success, worker_stats in results:
+            self.stats['total_series'] += worker_stats['total_series']
+            self.stats['successful'] += worker_stats['successful']
+            self.stats['failed'] += worker_stats['failed']
+            self.stats['skipped'] += worker_stats['skipped']
 
 
 def setup_logging(log_file: Optional[Path] = None) -> logging.Logger:
