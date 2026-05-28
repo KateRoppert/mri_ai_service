@@ -6,6 +6,9 @@ Covered cases:
 - ModalityDetector._match_modality: correct exclusions for T1-TSE, MPR FLAIR, MPR T1-TFE
 - save_completeness_report: JSON in incomplete_data/ subfolder, correct structure
 - NiftiConverter._process_parallel: correct aggregation from worker stats
+- NiftiConverter.convert_series: dcm2niix _Eq_N artifacts cleaned up
+- NiftiConverter.run: baseline warning suppressed outside benchmark mode
+- pipeline_validator._scan_bids_nifti: modality parsed from parts[2], not parts[-1]
 """
 
 import json
@@ -34,10 +37,12 @@ def _load_module(filename: str, module_name: str):
 
 reorganize_mod = _load_module("01_reorganize_folders.py", "reorganize_folders")
 convert_mod = _load_module("03_convert_to_nifti.py", "convert_nifti")
+validator_mod = _load_module("pipeline_validator.py", "pipeline_validator_mod")
 
 ModalityDetector = reorganize_mod.ModalityDetector
 save_completeness_report = reorganize_mod.save_completeness_report
 NiftiConverter = convert_mod.NiftiConverter
+InputOutputValidator = validator_mod.InputOutputValidator
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +248,148 @@ class TestProcessParallel:
         assert converter.stats['successful'] == 9
         assert converter.stats['failed'] == 2
         assert converter.stats['skipped'] == 1
+
+
+# ---------------------------------------------------------------------------
+# NiftiConverter.convert_series — dcm2niix artifact cleanup
+# ---------------------------------------------------------------------------
+
+class TestConvertSeriesArtifactCleanup:
+    def test_eq_artifact_deleted_after_successful_conversion(self, tmp_path, converter):
+        """dcm2niix _Eq_1 file is removed; primary file is kept."""
+        anat_dir = tmp_path / "sub-001" / "ses-001" / "anat"
+        anat_dir.mkdir(parents=True)
+
+        primary = anat_dir / "sub-001_ses-001_t1.nii.gz"
+        artifact = anat_dir / "sub-001_ses-001_t1_Eq_1.nii.gz"
+        primary.write_bytes(b"fake")
+        artifact.write_bytes(b"fake")
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            return m
+
+        # check_output_exists would see the existing primary and skip — bypass it
+        with (
+            patch.object(converter, 'check_output_exists', return_value=False),
+            patch.object(convert_mod.subprocess, 'run', side_effect=fake_run),
+        ):
+            converter.convert_series(Path("/fake/dicom"), "001", "t1", tmp_path, "001")
+
+        assert primary.exists()
+        assert not artifact.exists()
+
+    def test_primary_file_survives_without_artifacts(self, tmp_path, converter):
+        """When dcm2niix produces only the primary file, nothing is deleted."""
+        anat_dir = tmp_path / "sub-001" / "ses-001" / "anat"
+        anat_dir.mkdir(parents=True)
+        primary = anat_dir / "sub-001_ses-001_t1.nii.gz"
+        primary.write_bytes(b"fake")
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            return m
+
+        with (
+            patch.object(converter, 'check_output_exists', return_value=False),
+            patch.object(convert_mod.subprocess, 'run', side_effect=fake_run),
+        ):
+            converter.convert_series(Path("/fake/dicom"), "001", "t1", tmp_path, "001")
+
+        assert primary.exists()
+
+
+# ---------------------------------------------------------------------------
+# NiftiConverter.run — baseline warning only in benchmark mode
+# ---------------------------------------------------------------------------
+
+class TestBaselineWarningScope:
+    def test_no_baseline_warning_outside_benchmark_mode(self, tmp_path, converter):
+        """WARNING about missing baseline must NOT appear when benchmark=False."""
+        # Provide an empty input structure so run() exits early after finding no series
+        with patch.object(converter, 'find_dicom_series', return_value=[]):
+            import io
+            log_capture = io.StringIO()
+            handler = logging.StreamHandler(log_capture)
+            handler.setLevel(logging.WARNING)
+            converter.logger.addHandler(handler)
+            converter.logger.setLevel(logging.WARNING)
+
+            converter.run(tmp_path, tmp_path, benchmark=False, mode='parallel', workers=4)
+
+            converter.logger.removeHandler(handler)
+            output = log_capture.getvalue()
+
+        assert "No baseline found" not in output
+
+    def test_baseline_warning_appears_in_benchmark_parallel_mode(self, tmp_path, converter):
+        """WARNING should appear in benchmark+parallel mode when no baseline exists."""
+        fake_series = [
+            (Path("/fake/t1"), "001", "ses-001", "t1"),
+        ]
+        with (
+            patch.object(converter, 'find_dicom_series', return_value=fake_series),
+            patch.object(converter, '_process_parallel'),
+        ):
+            import io
+            log_capture = io.StringIO()
+            handler = logging.StreamHandler(log_capture)
+            handler.setLevel(logging.WARNING)
+            converter.logger.addHandler(handler)
+            converter.logger.setLevel(logging.WARNING)
+
+            converter.run(
+                tmp_path, tmp_path,
+                benchmark=True,
+                mode='parallel', workers=4,
+                results_dir=tmp_path / "bench",
+            )
+
+            converter.logger.removeHandler(handler)
+            output = log_capture.getvalue()
+
+        assert "No baseline found" in output
+
+
+# ---------------------------------------------------------------------------
+# InputOutputValidator._scan_bids_nifti — modality parsing
+# ---------------------------------------------------------------------------
+
+class TestScanBidsNiftiModalityParsing:
+    @pytest.fixture
+    def validator(self):
+        return InputOutputValidator(logging.getLogger("test_validator"))
+
+    def _make_nifti_tree(self, tmp_path: Path, filenames: list) -> Path:
+        anat_dir = tmp_path / "sub-001" / "ses-001" / "anat"
+        anat_dir.mkdir(parents=True)
+        for name in filenames:
+            (anat_dir / name).write_bytes(b"")
+        return tmp_path
+
+    def test_standard_modality_parsed_correctly(self, tmp_path, validator):
+        root = self._make_nifti_tree(tmp_path, ["sub-001_ses-001_t1.nii.gz"])
+        structure = validator.scan_structure(root, format_type='bids-nifti')
+        assert structure["001"]["001"] == {"t1"}
+
+    def test_eq_suffix_does_not_create_phantom_modality(self, tmp_path, validator):
+        root = self._make_nifti_tree(
+            tmp_path,
+            ["sub-001_ses-001_t1.nii.gz", "sub-001_ses-001_t1_Eq_1.nii.gz"]
+        )
+        structure = validator.scan_structure(root, format_type='bids-nifti')
+        # "1" must not appear as a phantom modality; only "t1" is valid
+        assert "1" not in structure["001"]["001"]
+        assert "t1" in structure["001"]["001"]
+
+    def test_multiple_modalities_without_artifacts(self, tmp_path, validator):
+        files = [
+            "sub-001_ses-001_t1.nii.gz",
+            "sub-001_ses-001_t2fl.nii.gz",
+            "sub-001_ses-001_t1c.nii.gz",
+        ]
+        root = self._make_nifti_tree(tmp_path, files)
+        structure = validator.scan_structure(root, format_type='bids-nifti')
+        assert structure["001"]["001"] == {"t1", "t2fl", "t1c"}

@@ -234,6 +234,15 @@ class NiftiConverter:
                 # Check if output file was created
                 expected_file = anat_dir / f"{filename_pattern}.nii.gz"
                 if expected_file.exists():
+                    # dcm2niix sometimes produces extra files (e.g. _Eq_1, _e2) when a
+                    # DICOM series contains multiple equivalent groups (common in MPR series).
+                    # These don't fit our naming convention and confuse downstream stages.
+                    for extra in anat_dir.glob(f"{filename_pattern}_*.nii.gz"):
+                        extra.unlink()
+                        self.logger.warning(
+                            f"Removed dcm2niix artifact: {extra.name} "
+                            f"(DICOM series may contain multiple equivalent acquisitions)"
+                        )
                     self.stats['successful'] += 1
                     self.logger.debug(f"Successfully converted {patient_id}/{modality}")
                     return True
@@ -306,15 +315,18 @@ class NiftiConverter:
                 if patient_id not in patients:
                     patients[patient_id] = []
                 patients[patient_id].append((series_path, patient_id, session_id, modality))
-            
-            # Take first N patients
+
             limited_patients = list(patients.keys())[:max_subjects]
             series_list = []
             for patient_id in limited_patients:
                 series_list.extend(patients[patient_id])
-            
-            self.logger.info(f"Limited to {max_subjects} subjects: {len(series_list)} series "
-                           f"(was {original_count})")
+
+            # Only log when the limit actually removes subjects
+            if len(limited_patients) < len(patients):
+                self.logger.info(
+                    f"Limited to {max_subjects} subjects: {len(series_list)} series "
+                    f"(was {original_count})"
+                )
         
         # Process series
         if mode == 'parallel' and workers > 1:
@@ -334,34 +346,34 @@ class NiftiConverter:
         avg_time_per_series = elapsed_time / total_processed if total_processed > 0 else 0
         throughput = total_processed / elapsed_time if elapsed_time > 0 else 0
         
-        # Calculate speedup and efficiency
+        # Calculate speedup and efficiency — only meaningful in benchmark mode
         speedup = None
         efficiency = None
-        baseline_time = None
 
-        # Load baseline from BenchmarkLogger CSV (same source as Stage 01)
-        if benchmark_logger:
-            try:
-                baseline_time = benchmark_logger.get_baseline_time()
-                if baseline_time:
-                    self.logger.debug(f"Loaded baseline time: {baseline_time:.2f}s")
-            except Exception as e:
-                self.logger.warning(f"Failed to load baseline: {e}")
+        if benchmark:
+            baseline_time = None
 
-        if mode == 'sequential' and workers == 1:
-            # Sequential mode is the baseline
-            speedup = 1.0
-            efficiency = 1.0
+            # Load baseline from BenchmarkLogger CSV (same source as Stage 01)
+            if benchmark_logger:
+                try:
+                    baseline_time = benchmark_logger.get_baseline_time()
+                    if baseline_time:
+                        self.logger.debug(f"Loaded baseline time: {baseline_time:.2f}s")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load baseline: {e}")
 
-        elif mode == 'parallel' and workers > 1:
-            if baseline_time is not None:
-                # Calculate speedup relative to baseline
-                speedup = baseline_time / elapsed_time if elapsed_time > 0 else 0
-                efficiency = speedup / workers if workers > 0 else 0
-            else:
-                self.logger.warning("No baseline found! Run 'python 03_convert_to_nifti.py <input> <output> --benchmark --mode sequential' first.")
-                speedup = None
-                efficiency = None
+            if mode == 'sequential' and workers == 1:
+                # Sequential mode is the baseline
+                speedup = 1.0
+                efficiency = 1.0
+            elif mode == 'parallel' and workers > 1:
+                if baseline_time is not None:
+                    speedup = baseline_time / elapsed_time if elapsed_time > 0 else 0
+                    efficiency = speedup / workers if workers > 0 else 0
+                else:
+                    self.logger.warning(
+                        "No baseline found! Run with --benchmark --mode sequential first."
+                    )
         
         # Final statistics
         self.logger.info("=" * 60)
