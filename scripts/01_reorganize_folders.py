@@ -110,7 +110,7 @@ class ModalityDetector:
     MODALITY_PATTERNS = {
         't2fl': {  # FLAIR (check first - most specific)
             'keywords': ['flair', 'dark fluid', 't2-flair', 't2 flair'],
-            'exclude': []
+            'exclude': ['mpr']
         },
         't1c': {  # T1 with contrast (post)
             'keywords': ['t1'],
@@ -122,7 +122,9 @@ class ModalityDetector:
         },
         't2': {  # T2
             'keywords': ['t2', 'tse', 'fse', 't2w'],
-            'exclude': ['flair', 'dark fluid']
+            # 't1' prevents T1-TSE from matching; 'mpr' prevents derived
+            # reconstructions (e.g. MPR CE_T1-TSE) from falling through here
+            'exclude': ['flair', 'dark fluid', 't1', 'mpr']
         },
         't1': {  # Plain T1 (non-contrast)
             'keywords': ['t1', 'mprage', 'spgr', 'tfe', 't1w'],
@@ -1327,26 +1329,6 @@ def load_existing_mapping(output_dir: Path, logger: logging.Logger) -> Dict:
             'created_at': datetime.now().isoformat()
         }
     
-def create_batches(items: List, batch_size: int) -> List[List]:
-    """
-    Split list into batches.
-    
-    Args:
-        items: List of items to split
-        batch_size: Size of each batch
-        
-    Returns:
-        List of batches
-    """
-    if batch_size is None or batch_size <= 0:
-        return [items]  # Single batch with all items
-    
-    batches = []
-    for i in range(0, len(items), batch_size):
-        batches.append(items[i:i + batch_size])
-    
-    return batches
-
 def restore_id_mapper(mapping_data: Dict, logger: logging.Logger) -> IDMapper:
     """
     Restore IDMapper from existing mapping data.
@@ -1515,7 +1497,7 @@ def run_sequential(
     total_patients_in_mapping = len(mapping_data['patients'])
     logger.info("="*60)
     logger.info("Run statistics:")
-    logger.info(f"  Patients in this batch: {len(patient_dirs)}")
+    logger.info(f"  Patients in this run: {len(patient_dirs)}")
     logger.info(f"  New patients processed: {patients_processed_this_run}")
     logger.info(f"  Existing patients skipped: {patients_skipped_this_run}")
     logger.info(f"  Patients failed: {patients_failed_this_run}")
@@ -1749,12 +1731,6 @@ def main():
         help="Maximum number of subjects to process (for testing)"
     )
     parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=None,
-        help='Process patients in batches of N (e.g., 10). Useful for incremental processing.'
-    )
-    parser.add_argument(
         '--force',
         action='store_true',
         help='Force reprocessing: delete existing patient directories and reprocess'
@@ -1841,238 +1817,146 @@ def main():
 
     # Start processing
     start_time = datetime.now()
-    
+
     # Scan dataset to get all patient directories
     logger.info("Scanning dataset for patients...")
     scanner = DatasetScanner(logger)
     all_patient_dirs = scanner.scan_dataset(args.input_dir)
-    
+
     if args.max_subjects:
         all_patient_dirs = all_patient_dirs[:args.max_subjects]
         logger.info(f"Limited to {args.max_subjects} patients")
-    
-    total_patients = len(all_patient_dirs)
-    logger.info(f"Total patients to process: {total_patients}")
-    
-    # Create batches
-    batch_size = args.batch_size if args.batch_size else total_patients
-    batches = create_batches(all_patient_dirs, batch_size)
-    
-    logger.info(f"Processing in {len(batches)} batch(es) of up to {batch_size} patients each")
-    logger.info("="*60)
-    
-    # Initialize or restore IDMapper ONCE for all batches
+
+    logger.info(f"Total patients to process: {len(all_patient_dirs)}")
+    logger.info("=" * 60)
+
+    # Initialize or restore IDMapper from any previously saved mapping
     existing_mapping = load_existing_mapping(args.output_dir, logger)
     id_mapper = restore_id_mapper(existing_mapping, logger)
-    
-    # Initialize aggregation lists
-    all_deduplicators = []
-    all_file_organizers = []
-    all_performance_metrics = []
-    all_run_counters: Dict[str, object] = {
-        "successful": 0,
-        "skipped": 0,
-        "failed": 0,
-        "failed_patients": [],
-    }
 
-    # Initialize result variables (updated in batch loop)
-    mapping_data = existing_mapping
-    completeness_data = {}
-    duplicates_removed = 0
+    if args.mode == 'sequential':
+        (
+            mapping_data,
+            completeness_data,
+            deduplicator,
+            file_organizer,
+            performance_metrics,
+            run_counters,
+        ) = run_sequential(
+            args.input_dir,
+            args.output_dir,
+            logger,
+            patient_dirs=all_patient_dirs,
+            max_subjects=None,
+            benchmark=args.benchmark,
+            results_dir=args.results_dir,
+            mode=args.mode,
+            workers=args.workers,
+            force=args.force,
+            dry_run=args.dry_run,
+            id_mapper=id_mapper,
+            tags_config=tags_config,
+            metadata_dir=metadata_dir,
+            lesion_type=args.lesion_type,
+        )
+        dedup_stats = deduplicator
+        file_organizer_stats = file_organizer
 
-    for batch_idx, batch_patient_dirs in enumerate(batches, 1):
-        logger.info(f"\n{'='*60}")
-        logger.info(f"BATCH {batch_idx}/{len(batches)}: Processing {len(batch_patient_dirs)} patients")
-        logger.info(f"{'='*60}\n")
-        
-        batch_start_time = datetime.now()
-        
-        if args.mode == 'sequential':
-            # Process batch sequentially
-            (
-                mapping_data,
-                completeness_data,
-                deduplicator,
-                file_organizer,
-                performance_metrics,
-                batch_counters,
-            ) = run_sequential(
-                args.input_dir,
-                args.output_dir,
-                logger,
-                patient_dirs=batch_patient_dirs,
-                max_subjects=None,  # We already filtered
-                benchmark=args.benchmark,
-                results_dir=args.results_dir,
-                mode=args.mode,
-                workers=args.workers,
-                force=args.force,
-                dry_run=args.dry_run,
-                id_mapper=id_mapper,
-                tags_config=tags_config,
-                metadata_dir=metadata_dir,
-                lesion_type=args.lesion_type,
-            )
-            all_deduplicators.append(deduplicator)
-            all_file_organizers.append(file_organizer)
+    else:
+        (
+            mapping_data,
+            completeness_data,
+            total_duplicates_removed,
+            file_organizer,
+            performance_metrics,
+            run_counters,
+        ) = run_parallel(
+            args.input_dir,
+            args.output_dir,
+            logger,
+            workers=args.workers,
+            patient_dirs=all_patient_dirs,
+            max_subjects=None,
+            benchmark=args.benchmark,
+            results_dir=args.results_dir,
+            mode=args.mode,
+            force=args.force,
+            dry_run=args.dry_run,
+            id_mapper=id_mapper,
+            tags_config=tags_config,
+            metadata_dir=metadata_dir,
+            lesion_type=args.lesion_type,
+        )
 
-        else:
-            # Process batch in parallel
-            (
-                mapping_data,
-                completeness_data,
-                duplicates_removed,
-                file_organizer,
-                performance_metrics,
-                batch_counters,
-            ) = run_parallel(
-                args.input_dir,
-                args.output_dir,
-                logger,
-                workers=args.workers,
-                patient_dirs=batch_patient_dirs,
-                max_subjects=None,  # We already filtered
-                benchmark=args.benchmark,
-                results_dir=args.results_dir,
-                mode=args.mode,
-                force=args.force,
-                dry_run=args.dry_run,
-                id_mapper=id_mapper,
-                tags_config=tags_config,
-                metadata_dir=metadata_dir,
-                lesion_type=args.lesion_type,
-            )
+        class _DeduplicatorStats:
+            def __init__(self, n):
+                self.duplicates_removed = n
 
-            class DeduplicatorStats:
-                def __init__(self, duplicates_removed):
-                    self.duplicates_removed = duplicates_removed
-            all_deduplicators.append(DeduplicatorStats(duplicates_removed))
-            all_file_organizers.append(file_organizer)
+        dedup_stats = _DeduplicatorStats(total_duplicates_removed)
+        file_organizer_stats = file_organizer
 
-        # Accumulate run counters across batches
-        all_run_counters["successful"] += batch_counters["successful"]
-        all_run_counters["skipped"] += batch_counters["skipped"]
-        all_run_counters["failed"] += batch_counters["failed"]
-        all_run_counters["failed_patients"].extend(batch_counters["failed_patients"])
-        
-        if performance_metrics:
-            all_performance_metrics.append(performance_metrics)
-        
-        batch_end_time = datetime.now()
-        batch_time = (batch_end_time - batch_start_time).total_seconds()
-        
-        logger.info(f"\nBatch {batch_idx} completed in {batch_time:.1f}s")
-        
-        # Save intermediate mapping after each batch
-        logger.info("Saving intermediate mapping...")
-        save_mapping_file(mapping_data, args.output_dir)
-    
     end_time = datetime.now()
     total_time = (end_time - start_time).total_seconds()
-    
-    logger.info("\n" + "="*60)
-    logger.info("ALL BATCHES COMPLETED")
-    logger.info("="*60)
-    
-    # Aggregate statistics from all batches
-    total_duplicates_removed = sum(d.duplicates_removed for d in all_deduplicators)
-    total_files_copied = sum(fo.files_copied for fo in all_file_organizers)
-    all_validation_failed = []
-    for fo in all_file_organizers:
-        all_validation_failed.extend(fo.validation_failed)
-    
-    # Create aggregated objects for summary
-    class AggregatedDeduplicator:
-        def __init__(self, duplicates_removed):
-            self.duplicates_removed = duplicates_removed
-    
-    class AggregatedFileOrganizer:
-        def __init__(self, files_copied, validation_failed):
-            self.files_copied = files_copied
-            self.validation_failed = validation_failed
-    
-    dedup_stats = AggregatedDeduplicator(total_duplicates_removed)
-    file_organizer_stats = AggregatedFileOrganizer(total_files_copied, all_validation_failed)
-    
-    # Aggregate performance metrics (average)
-    performance_metrics = None
-    if all_performance_metrics:
-        # Filter valid metrics for averaging
-        cpu_avg_values = [m.get('cpu_avg', 0) for m in all_performance_metrics if m.get('cpu_avg')]
-        memory_avg_values = [m.get('memory_avg_mb', 0) for m in all_performance_metrics if m.get('memory_avg_mb')]
-        cpu_max_values = [m.get('cpu_max', 0) for m in all_performance_metrics if m.get('cpu_max')]
-        memory_peak_values = [m.get('memory_peak_mb', 0) for m in all_performance_metrics if m.get('memory_peak_mb')]
-        
-        performance_metrics = {
-            'cpu_avg': sum(cpu_avg_values) / len(cpu_avg_values) if cpu_avg_values else 0.0,
-            'cpu_max': max(cpu_max_values) if cpu_max_values else 0.0,
-            'memory_avg_mb': sum(memory_avg_values) / len(memory_avg_values) if memory_avg_values else 0.0,
-            'memory_peak_mb': max(memory_peak_values) if memory_peak_values else 0.0,
-            'duration': total_time
-        }
+
+    logger.info("\n" + "=" * 60)
+    logger.info("PROCESSING COMPLETED")
+    logger.info("=" * 60)
 
     # Save outputs
-    logger.info("Saving mapping file...")
-    save_mapping_file(mapping_data, args.output_dir)
+    if args.dry_run:
+        logger.info("[DRY RUN] Would save mapping file...")
+        logger.info("[DRY RUN] Would save completeness report...")
+        print("\n📄 [DRY RUN] Reports not saved (use without --dry_run to save)")
+    else:
+        logger.info("Saving mapping file...")
+        save_mapping_file(mapping_data, args.output_dir)
 
-    logger.info("Saving completeness report...")
-    save_completeness_report(completeness_data, args.output_dir)
+        logger.info("Saving completeness report...")
+        save_completeness_report(completeness_data, args.output_dir)
 
     # Save benchmark metrics
     if args.benchmark and performance_metrics:
         logger.info("Saving benchmark metrics...")
-        
-        # Create results directory
+
         args.results_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Calculate derived metrics
+
         stats = completeness_data['statistics']
         total_patients = stats['total_patients']
         total_sessions = stats['total_sessions']
-        
-        # Count total series
+
         total_series = sum(
             len(patient_data['sessions'][session_id]['series'])
             for patient_data in mapping_data['patients'].values()
             for session_id in patient_data['sessions']
         )
-        
-        # Calculate basic timing metrics
+
         time_per_patient = total_time / total_patients if total_patients > 0 else 0
         throughput_patients = total_patients / total_time if total_time > 0 else 0
-        
-        # Get baseline time for speedup calculation
+
         benchmark_logger = BenchmarkLogger(args.results_dir)
         baseline_time = benchmark_logger.get_baseline_time()
-        
+
         speedup = None
         efficiency = None
         if args.mode == 'sequential' and args.workers == 1:
-            # This IS the baseline
             speedup = 1.0
             efficiency = 1.0
         elif baseline_time:
-            # Compare to baseline
             speedup = baseline_time / time_per_patient
             efficiency = speedup / args.workers if args.workers > 0 else None
-        
-        # Create ExperimentMetrics object
+
         experiment_id = f"{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Use real per-status counts aggregated across batches.
-        # total_series reflects the number of patients we *attempted* to
-        # process (successful + failed); skipped patients did not run.
-        attempted = all_run_counters["successful"] + all_run_counters["failed"]
+
+        attempted = run_counters["successful"] + run_counters["failed"]
         metrics = ExperimentMetrics(
             experiment_id=experiment_id,
             timestamp=datetime.now().isoformat(),
             mode=args.mode if not args.dry_run else f"{args.mode}_dryrun",
             workers=args.workers,
             total_series=attempted,
-            successful=all_run_counters["successful"],
-            failed=all_run_counters["failed"],
-            skipped=all_run_counters["skipped"],
+            successful=run_counters["successful"],
+            failed=run_counters["failed"],
+            skipped=run_counters["skipped"],
             total_time=total_time,
             time_per_series=time_per_patient,
             throughput=throughput_patients,
@@ -2083,10 +1967,9 @@ def main():
             speedup=speedup,
             efficiency=efficiency,
         )
-        
-        # Save metrics
+
         benchmark_logger.log_metrics(metrics)
-        
+
         logger.info(f"Benchmark metrics saved to {args.results_dir / 'metrics.csv'}")
         logger.info(f"  Total time: {total_time:.2f}s")
         logger.info(f"  Patients: {total_patients} ({time_per_patient:.2f}s each)")
@@ -2095,46 +1978,21 @@ def main():
         logger.info(f"  Throughput: {throughput_patients:.2f} patients/sec")
         if performance_metrics.get('cpu_avg'):
             logger.info(f"  CPU: avg {performance_metrics['cpu_avg']:.1f}%, "
-                       f"peak {performance_metrics['cpu_max']:.1f}%")
+                        f"peak {performance_metrics['cpu_max']:.1f}%")
         if performance_metrics.get('memory_avg_mb'):
             logger.info(f"  Memory: avg {performance_metrics['memory_avg_mb']:.1f}MB, "
-                       f"peak {performance_metrics['memory_peak_mb']:.1f}MB")
+                        f"peak {performance_metrics['memory_peak_mb']:.1f}MB")
         if speedup:
             logger.info(f"  Speedup: {speedup:.2f}x")
         if efficiency:
             logger.info(f"  Efficiency: {efficiency:.1f}%")
-
-
-    # Create mock deduplicator for print_summary
-    class DeduplicatorStats:
-        def __init__(self, duplicates_removed):
-            self.duplicates_removed = duplicates_removed
-    
-    dedup_stats = DeduplicatorStats(duplicates_removed)
-
-    # Generate final completeness report for ALL patients in mapping
-    logger.info("Generating final completeness report for all patients...")
-    completeness_checker = CompletenessChecker(logger, lesion_type=args.lesion_type)
-    completeness_data = completeness_checker.generate_completeness_report(mapping_data)
-    
-    # Save final reports
-    if args.dry_run:
-        logger.info("[DRY RUN] Would save mapping file...")
-        logger.info("[DRY RUN] Would save completeness report...")
-        print("\n📄 [DRY RUN] Reports not saved (use without --dry_run to save)")
-    else:
-        logger.info("Saving final mapping file...")
-        save_mapping_file(mapping_data, args.output_dir)
-        
-        logger.info("Saving final completeness report...")
-        save_completeness_report(completeness_data, args.output_dir)
 
     # Print summary
     print_summary(
         mapping_data,
         completeness_data,
         dedup_stats,
-        file_organizer,
+        file_organizer_stats,
         total_time,
         performance_metrics,
         dry_run=args.dry_run,
@@ -2144,13 +2002,13 @@ def main():
     # Per-status run summary
     logger.info(
         "Run counters: ok=%d, skipped=%d, failed=%d",
-        all_run_counters["successful"],
-        all_run_counters["skipped"],
-        all_run_counters["failed"],
+        run_counters["successful"],
+        run_counters["skipped"],
+        run_counters["failed"],
     )
-    if all_run_counters["failed_patients"]:
-        logger.warning("Failed patients (%d):", len(all_run_counters["failed_patients"]))
-        for orig_id, reason in all_run_counters["failed_patients"]:
+    if run_counters["failed_patients"]:
+        logger.warning("Failed patients (%d):", len(run_counters["failed_patients"]))
+        for orig_id, reason in run_counters["failed_patients"]:
             logger.warning("  - %s: %s", orig_id, reason)
 
     logger.info("=" * 60)
