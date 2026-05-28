@@ -132,11 +132,13 @@ class QualityAssessor:
                 
                 # Find NIfTI files
                 for nifti_file in sorted(anat_dir.glob("*.nii.gz")):
-                    # Extract modality from filename
-                    # Format: sub-<ID>_ses-<session>_<modality>.nii.gz
+                    # Extract modality from filename.
+                    # Format: sub-<ID>_ses-<session>_<modality>[_extras].nii.gz
+                    # Always use index 2 — dcm2niix may append _Eq_1, _e2, etc.
+                    # which would make parts[-1] return a spurious suffix, not the modality.
                     parts = nifti_file.stem.replace('.nii', '').split('_')
                     if len(parts) >= 3:
-                        modality = parts[-1]  # Last part is modality
+                        modality = parts[2]  # 3rd token is always the modality
                         images.append((nifti_file, patient_id, session_id, modality))
         
         self.logger.info(f"Found {len(images)} NIfTI images")
@@ -189,8 +191,10 @@ class QualityAssessor:
                     
                     # Map to standard modality name
                     modality = modality_map.get(modality_upenn, modality_upenn.lower())
-                    
-                    images.append((nifti_file, patient_id, modality))
+
+                    # UPENN-flat has no session structure — use a fixed session ID
+                    # so the tuple matches (path, patient_id, session_id, modality)
+                    images.append((nifti_file, patient_id, "001", modality))
                     self.logger.debug(f"Found: {patient_id} / {modality_upenn} -> {modality}")
         
         self.logger.info(f"Found {len(images)} NIfTI images in UPENN-flat format")
@@ -307,17 +311,25 @@ class QualityAssessor:
             True if successful, False otherwise
         """
         self.stats['total_images'] += 1
-        
+
+        # Check skip before loading — avoids computing 8 metrics for nothing
+        report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat"
+        report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
+        if skip_existing and report_file.exists():
+            self.logger.debug(f"Skipping {patient_id}/{modality}: output already exists")
+            self.stats['skipped'] += 1
+            return True
+
         try:
             # Load NIfTI image
             img = nib.load(str(nifti_path))
             img_header = img.header
             data = img.get_fdata()
-            
+
             # Create foreground mask
             mask_method = self.config.get('foreground_mask', {}).get('method', 'otsu')
             fg_mask = create_foreground_mask(data, method=mask_method)
-            
+
             # Calculate metrics using modular calculators
             calculated_metrics = {}
             for metric_name, metric_calculator in self.metrics.items():
@@ -326,14 +338,14 @@ class QualityAssessor:
                     calculated_metrics[metric_name] = metric_calculator.calculate(data, fg_mask, img_header)
                 else:
                     calculated_metrics[metric_name] = metric_calculator.calculate(data, fg_mask)
-            
+
             # Calculate quality score
             score, normalized = self.calculate_quality_score(calculated_metrics, modality)
             category = self.get_quality_category(score)
-            
+
             # Update category counts
             self.category_counts[category] += 1
-            
+
             # Create report
             report = {
                 'file': nifti_path.name,
@@ -344,27 +356,17 @@ class QualityAssessor:
                 'metrics': {k: round(v, 3) for k, v in calculated_metrics.items()},
                 'normalized_scores': {k: round(v, 3) for k, v in normalized.items()}
             }
-            
-            # Save report
-            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat"
+
             report_dir.mkdir(parents=True, exist_ok=True)
-
-            report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
-
-            if skip_existing and report_file.exists():
-                self.logger.debug(f"Skipping {patient_id}/{modality}: output already exists")
-                self.stats['skipped'] += 1
-                return True
-            
             with open(report_file, 'w') as f:
                 json.dump(report, f, indent=2)
-            
+
             self.logger.debug(
                 f"Assessed {patient_id}/{modality}: {category} (score: {score:.1f})"
             )
             self.stats['successful'] += 1
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to assess {nifti_path}: {e}")
             self.stats['failed'] += 1
@@ -393,15 +395,16 @@ class QualityAssessor:
         with Pool(processes=workers) as pool:
             results = pool.map(self._assess_image_wrapper, tasks)
         
-        # Aggregate results
+        # Aggregate results from workers
         successful_count = 0
         failed_count = 0
+        skipped_count = 0
         category_counts = {'GOOD': 0, 'ACCEPTABLE': 0, 'POOR': 0}
 
         for success, category in results:
             if success:
                 if category == "SKIPPED":
-                    # Don't count skipped files in successful/category counts
+                    skipped_count += 1
                     continue
                 successful_count += 1
                 if category in category_counts:
@@ -409,11 +412,10 @@ class QualityAssessor:
             else:
                 failed_count += 1
 
-        # Update stats with actual counts from workers
         self.stats['successful'] = successful_count
         self.stats['failed'] = failed_count
+        self.stats['skipped'] = skipped_count
 
-        # Update category counts
         for category, count in category_counts.items():
             self.category_counts[category] = count
 
@@ -423,6 +425,12 @@ class QualityAssessor:
         nifti_path, patient_id, session_id, modality, output_dir, config, skip_existing = args
         
         try:
+            # Check skip before loading — avoids computing 8 metrics for nothing
+            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat"
+            report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
+            if skip_existing and report_file.exists():
+                return True, "SKIPPED"
+
             # Create metrics calculators
             metrics_calc = {
                 'snr': SNRMetric(),
@@ -434,7 +442,7 @@ class QualityAssessor:
                 'intensity_variance': IntensityVarianceMetric(),
                 'coefficient_of_variation': CoefficientOfVariationMetric()
             }
-            
+
             # Load NIfTI image
             img = nib.load(str(nifti_path))
             img_header = img.header
@@ -510,20 +518,13 @@ class QualityAssessor:
                 'normalized_scores': {k: round(v, 3) for k, v in normalized.items()}
             }
             
-            # Save report
-            report_dir = output_dir / f"sub-{patient_id}" / f"ses-{session_id}" / "anat"
+            # Save report (report_dir already created above for skip check)
             report_dir.mkdir(parents=True, exist_ok=True)
-            
-            report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
-
-            if skip_existing and report_file.exists():
-                return True, "SKIPPED"  # Return success but mark as skipped
-            
             with open(report_file, 'w') as f:
                 json.dump(report, f, indent=2)
-            
-            return True, category 
-            
+
+            return True, category
+
         except Exception as e:
             print(f"Error processing {nifti_path}: {e}")
             return False, "UNKNOWN"
@@ -569,7 +570,6 @@ class QualityAssessor:
         images = self.find_nifti_images(input_dir, input_format)
         
         if max_subjects is not None:
-            # Limit to first N subjects
             unique_patients = []
             filtered_images = []
             for nifti_path, patient_id, session_id, modality in images:
@@ -579,8 +579,14 @@ class QualityAssessor:
                     unique_patients.append(patient_id)
                 if patient_id in unique_patients:
                     filtered_images.append((nifti_path, patient_id, session_id, modality))
+
+            # Only log when actual filtering happened
+            if len(filtered_images) < len(images):
+                self.logger.info(
+                    f"Limited to first {max_subjects} subjects: "
+                    f"{len(filtered_images)} images (was {len(images)})"
+                )
             images = filtered_images
-            self.logger.info(f"Limited to first {max_subjects} subjects")
         
         if not images:
             self.logger.warning("No NIfTI images found")
@@ -668,6 +674,7 @@ class QualityAssessor:
         self.logger.info(f"Total images: {self.stats['total_images']}")
         self.logger.info(f"Successful: {self.stats['successful']}")
         self.logger.info(f"Failed: {self.stats['failed']}")
+        self.logger.info(f"Skipped: {self.stats['skipped']}")
         self.logger.info(f"GOOD: {self.category_counts['GOOD']}")
         self.logger.info(f"ACCEPTABLE: {self.category_counts['ACCEPTABLE']}")
         self.logger.info(f"POOR: {self.category_counts['POOR']}")
@@ -675,7 +682,6 @@ class QualityAssessor:
         self.logger.info(f"Average time per image: {avg_time_per_image:.3f}s")
         self.logger.info("=" * 60)
 
-        self.logger.info("=" * 60)
         self.logger.info("Validating input-output correspondence...")
         
         try:
