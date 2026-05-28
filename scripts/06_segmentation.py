@@ -488,18 +488,20 @@ class BIDSScanner:
             List of SubjectSession objects with complete metadata
         """
         sessions = []
-        subject_dirs = sorted([d for d in self.input_dir.iterdir() 
+        subject_dirs = sorted([d for d in self.input_dir.iterdir()
                               if d.is_dir() and d.name.startswith('sub-')])
-        
+
         logger.info(f"Found {len(subject_dirs)} subject directories in {self.input_dir}")
-        
+
+        subjects_processed = 0
         for subject_dir in subject_dirs:
-            if max_subjects and len(sessions) >= max_subjects:
+            if max_subjects and subjects_processed >= max_subjects:
                 logger.info(f"Reached max_subjects limit ({max_subjects}). Stopping scan.")
                 break
-            
+
             subject_id = subject_dir.name
             sessions.extend(self._scan_subject(subject_dir, subject_id))
+            subjects_processed += 1
         
         logger.info(f"Total sessions discovered: {len(sessions)}")
         return sessions
@@ -1091,10 +1093,7 @@ class SegmentationRunner:
         # Запускаем все задачи параллельно
         tasks = [process_one(idx, session) for idx, session in enumerate(sessions, 1)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Log final statistics
-        self.stats.log_summary()
-        
+
         return self.stats.failed == 0
     
 
@@ -1134,7 +1133,7 @@ class SegmentationRunner:
             total_series=self.stats.total,
             successful=self.stats.successful,
             failed=self.stats.failed,
-            skipped=0,  # segmentation doesn't skip, only fails
+            skipped=self.stats.skipped,
             total_time=total_time,
             time_per_series=total_time / self.stats.total if self.stats.total > 0 else 0,
             throughput=self.stats.total / total_time if total_time > 0 else 0,
@@ -1250,7 +1249,7 @@ class SegmentationRunner:
                     
                     if anat_dir.exists():
                         # Look for segmentation masks
-                        mask_files = list(anat_dir.glob("*_segmask.nii.gz"))
+                        mask_files = list(anat_dir.rglob("*_segmask.nii.gz"))
                         if mask_files:
                             structure[patient_id][session_id].add('segmask')
                             logger.debug(f"  Found mask: {patient_id}/ses-{session_id}")
