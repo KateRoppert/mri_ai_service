@@ -336,8 +336,7 @@ def process_single_subject(
                 "time": time.time() - step_start
             }
             
-            # Check if reference modality succeeded
-            reference_modality = config.get('steps', [{}])[2].get('params', {}).get('reference_modality', 't1c')
+            # Check if reference modality succeeded (reference_modality resolved above from steps config)
             if not reorient_results.get(reference_modality, {}).get('success', False):
                 raise RuntimeError(f"Reference modality {reference_modality} failed reorientation")
             
@@ -473,8 +472,8 @@ def process_single_subject(
         else:
             logger.info("Step 4/4: Skull Stripping - SKIPPED (disabled in config)")
         
-        # STEP 5: Cleanup temporary files
-        logger.info("Step 5/4: Cleaning up temporary files")
+        # Cleanup temporary files
+        logger.info("Cleaning up temporary files")
         try:
             subject_temp_reoriented = temp_reoriented / subject_id
             subject_temp_bias = temp_bias_corrected / subject_id if temp_bias_corrected else None
@@ -725,19 +724,21 @@ def main():
         logger.info(f"Processing modalities: {', '.join(modalities)}")
         
         # Find subjects
-        subjects = find_subjects(args.input_dir, args.max_subjects)
-        
+        subjects = find_subjects(args.input_dir, max_subjects=None)
+
         if not subjects:
             logger.error("No subjects found to process")
             return 1
-        
-        if args.max_subjects:
-            logger.info(f"Limited to {args.max_subjects} subjects (--max-subjects)")
+
+        if args.max_subjects and len(subjects) > args.max_subjects:
+            subjects = subjects[:args.max_subjects]
+            logger.info(f"Limited to first {args.max_subjects} subjects (--max-subjects)")
         
         # Process each subject
         all_results = []
         successful = 0
         failed = 0
+        skipped = 0
 
         # Initialize performance monitoring if benchmark mode
         monitor = None
@@ -796,7 +797,7 @@ def main():
                             "success": True,
                             "skipped": True
                         })
-                        successful += 1
+                        skipped += 1
                         continue
                     elif missing_mods:
                         logger.info(f"→ {subject_id}/{session_id} partially processed, missing: {', '.join(missing_mods)}")
@@ -838,7 +839,7 @@ def main():
                             "success": True,
                             "skipped": True
                         })
-                        successful += 1
+                        skipped += 1
                         skipped_count += 1
                     else:
                         if missing_mods:
@@ -919,8 +920,8 @@ def main():
         except Exception as e:
             logger.warning(f"Could not remove temp directory: {e}")
         
-        # Calculate metrics
-        total_time = time.time() - pipeline_start_time
+        # Processing time (excludes validation) — used for benchmark metrics
+        processing_time = time.time() - pipeline_start_time
 
         # Save benchmark metrics if enabled
         if args.benchmark and monitor and benchmark_logger:
@@ -938,10 +939,10 @@ def main():
                 total_series=len(subjects),
                 successful=successful,
                 failed=failed,
-                skipped=0,
-                total_time=total_time,
-                time_per_series=total_time / len(subjects) if len(subjects) > 0 else 0,
-                throughput=len(subjects) / total_time if total_time > 0 else 0,
+                skipped=skipped,
+                total_time=processing_time,
+                time_per_series=processing_time / len(subjects) if len(subjects) > 0 else 0,
+                throughput=len(subjects) / processing_time if processing_time > 0 else 0,
                 cpu_avg=system_metrics.get('cpu_avg'),
                 cpu_max=system_metrics.get('cpu_max'),
                 memory_avg_mb=system_metrics.get('memory_avg_mb'),
@@ -1030,6 +1031,7 @@ def main():
         logger.info("=" * 70)
         logger.info(f"Total subjects:    {len(subjects)}")
         logger.info(f"Successful:        {successful}")
+        logger.info(f"Skipped:           {skipped}")
         logger.info(f"Failed:            {failed}")
         logger.info(f"Total time:        {total_time:.1f}s ({total_time/60:.1f} min)")
         if successful > 0:
