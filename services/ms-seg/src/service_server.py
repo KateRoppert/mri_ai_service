@@ -86,24 +86,8 @@ torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
-# ============================================================================
-# Patch torch.load to support legacy checkpoints (CATMIL weights pre-date
-# PyTorch 2.6's default weights_only=True). Same patch as in gbm-seg.
-# ============================================================================
-try:
-    import numpy
-    if hasattr(torch.serialization, "add_safe_globals"):
-        torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
-
-    _original_torch_load = torch.load
-
-    def _patched_torch_load(*args: Any, **kwargs: Any) -> Any:
-        kwargs["weights_only"] = False
-        return _original_torch_load(*args, **kwargs)
-
-    torch.load = _patched_torch_load  # type: ignore[assignment]
-except Exception as e:
-    print(f"WARNING: could not patch torch.load: {e}")
+from common.torch_compat import enable_legacy_checkpoint_loading
+enable_legacy_checkpoint_loading()
 
 
 # Make services/common/ visible (PYTHONPATH=/app set in Dockerfile)
