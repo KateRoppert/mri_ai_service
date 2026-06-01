@@ -2,7 +2,7 @@
 # scipy, batchgenerators, scikit-learn etc.
 
 # Shared server stack (Quart, Hypercorn, Flask, pynvml, PyYAML)
--r ../common/requirements-base.txt
+-r common/requirements-base.txt
 
 # CATMIL trainer dependency, pinned to the version the fork was trained against
 monai==1.3.0
