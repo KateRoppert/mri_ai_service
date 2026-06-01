@@ -1,16 +1,8 @@
 # Top-level deps only — nnUNetv2 fork's setup.py installs torch, numpy,
 # scipy, batchgenerators, scikit-learn etc.
 
-# HTTP server (versions synced with gbm-seg to avoid Quart/Flask config drift)
-Quart==0.20.0
-Hypercorn==0.18.0
-Flask==3.1.2
-
-# Config & filesystem
-pyyaml>=6.0
-
-# GPU monitoring (graceful fallback if missing — see common/gpu_monitor.py)
-pynvml>=11.5.0
+# Shared server stack (Quart, Hypercorn, Flask, pynvml, PyYAML)
+-r ../common/requirements-base.txt
 
 # CATMIL trainer dependency, pinned to the version the fork was trained against
 monai==1.3.0
