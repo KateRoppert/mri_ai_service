@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -270,7 +271,7 @@ def main():
     logger.info(f"Output:               {args.output_dir}")
     logger.info(f"Atlas:                {atlas_path.name}")
     logger.info(f"Mapping:              {mapping_path.name}")
-    logger.info(f"Mode:                 {args.mode}, workers: {args.workers}")
+    logger.info(f"Mode:                 {args.mode} (max workers: {args.workers})")
 
     # Find masks
     masks = find_masks(args.input_dir, args.max_subjects, args.lesion_type)
@@ -300,6 +301,20 @@ def main():
         logger.info("All masks already processed")
         return 0
 
+    # Auto-tune parallelism.
+    # Lobar analysis is pure Python/numpy — no ANTs threads, so workers can
+    # use all available cores without thread over-subscription risk.
+    cpu_count = os.cpu_count() or 4
+    if args.mode == "sequential":
+        actual_workers = 1
+        logger.info(f"Workers: 1 (sequential)")
+    else:
+        actual_workers = max(1, min(args.workers, len(masks)))
+        reason = ""
+        if actual_workers < args.workers:
+            reason = f" (capped by n_masks={len(masks)})"
+        logger.info(f"Workers: {actual_workers}{reason} | cpu_count: {cpu_count}")
+
     # Performance monitoring
     monitor = None
     if args.benchmark:
@@ -328,7 +343,7 @@ def main():
                 failed += 1
                 logger.error(f"  ✗ {result.get('error', 'unknown')}")
     else:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        with ProcessPoolExecutor(max_workers=actual_workers) as executor:
             future_map = {
                 executor.submit(
                     process_one_mask,
@@ -362,10 +377,10 @@ def main():
         benchmark_logger = BenchmarkLogger(args.results_dir)
 
         metrics = ExperimentMetrics(
-            experiment_id=f"lobar_{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            experiment_id=f"lobar_{args.mode}_w{actual_workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             timestamp=datetime.now().isoformat(),
             mode=args.mode,
-            workers=args.workers if args.mode == "parallel" else 1,
+            workers=actual_workers,
             total_series=len(masks),
             successful=successful,
             failed=failed,

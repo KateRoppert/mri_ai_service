@@ -90,24 +90,26 @@ def _run_main_with_args(tmp_path: Path, extra_args: list[str]) -> tuple[int, dic
 # Thread limits — set for both modes
 # ---------------------------------------------------------------------------
 
-def _run_main_patched(tmp_path: Path, mode: str, workers: int = 1) -> None:
+def _run_main_patched(tmp_path: Path, mode: str, workers: int = 1,
+                      n_masks: int = 1) -> None:
     """
     Call main() with all required directories created and processing mocked.
-    Thread-limit env vars will be set by main() before any processing starts.
+    n_masks controls how many segmentation masks exist (= how many tasks to distribute).
+    Thread-limit env vars are set by main() after auto-tuning.
     """
     seg_dir = tmp_path / "segmentation"
     out_dir = tmp_path / "output"
-    nifti_dir = tmp_path / "nifti"        # required by path validation
-    xfm_dir = tmp_path / "transformations"  # required by path validation
+    nifti_dir = tmp_path / "nifti"
+    xfm_dir = tmp_path / "transformations"
 
-    _make_bids_masks(seg_dir, ["001"], ["001"])
+    subjects = [f"{i:03d}" for i in range(1, n_masks + 1)]
+    _make_bids_masks(seg_dir, subjects, ["001"])
     nifti_dir.mkdir(exist_ok=True)
     xfm_dir.mkdir(exist_ok=True)
 
     argv = [
         "07_inverse_transform.py",
-        str(seg_dir),
-        str(out_dir),
+        str(seg_dir), str(out_dir),
         "--mode", mode,
         "--workers", str(workers),
     ]
@@ -120,58 +122,62 @@ def _run_main_patched(tmp_path: Path, mode: str, workers: int = 1) -> None:
                 pass
 
 
-class TestThreadLimits:
+class TestAutoTuneParallelism:
     """
-    Bug: thread limits (ITK/ANTs) were only set for sequential mode.
-    Parallel workers would each use all CPUs → N×cpu_count threads total.
-    Fixed: set limits for both modes; parallel gets cpu_count // workers.
+    Auto-tune: actual_workers = min(configured_workers, n_masks, cpu_count // 4)
+    threads_per_worker = cpu_count // actual_workers
+
+    Stage 07 uses ANTs apply_transforms (~4 threads/call), so the CPU ceiling
+    is cpu_count // 4 workers. Stage 05 used // 8 (heavier full registration).
     """
 
-    def test_sequential_mode_sets_thread_limits(self, tmp_path):
-        os.environ.pop("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", None)
+    def test_sequential_sets_thread_limits_to_all_cores(self, tmp_path):
+        cpu_count = os.cpu_count() or 4
         _run_main_patched(tmp_path, mode="sequential")
+        assert int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0)) == cpu_count
+        assert int(os.environ.get("ANTS_NUMBER_OF_THREADS", 0)) == cpu_count
+
+    def test_parallel_always_sets_thread_limits(self, tmp_path):
+        os.environ.pop("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", None)
+        _run_main_patched(tmp_path, mode="parallel", workers=4, n_masks=1)
         assert "ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS" in os.environ
         assert "ANTS_NUMBER_OF_THREADS" in os.environ
 
-    def test_parallel_mode_also_sets_thread_limits(self, tmp_path):
-        os.environ.pop("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", None)
-        _run_main_patched(tmp_path, mode="parallel", workers=4)
-        assert "ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS" in os.environ, \
-            "Parallel mode must set ITK thread limit"
-        assert "ANTS_NUMBER_OF_THREADS" in os.environ, \
-            "Parallel mode must set ANTs thread limit"
-
-    def test_parallel_threads_per_worker_equals_cpu_div_workers(self, tmp_path):
-        """parallel: each worker gets cpu_count // workers threads."""
+    def test_parallel_workers_capped_by_n_masks(self, tmp_path):
+        """n_masks < cpu_count // 4 → actual_workers = n_masks, threads = cpu_count."""
         cpu_count = os.cpu_count() or 4
-        workers = 4
-        expected = max(1, cpu_count // workers)
-
-        _run_main_patched(tmp_path, mode="parallel", workers=workers)
-
-        actual = int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0))
-        assert actual == expected, (
-            f"Expected {expected} threads/worker (cpu={cpu_count}, workers={workers}), got {actual}"
-        )
-
-    def test_sequential_threads_equal_cpu_count(self, tmp_path):
-        cpu_count = os.cpu_count() or 4
-        _run_main_patched(tmp_path, mode="sequential")
+        # 1 mask is always fewer than any reasonable workers_by_cpu
+        _run_main_patched(tmp_path, mode="parallel", workers=cpu_count, n_masks=1)
+        # actual_workers = min(cpu_count, 1, cpu_count//4) = 1
+        # threads = cpu_count // 1 = cpu_count
         actual = int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0))
         assert actual == cpu_count
 
-    def test_parallel_uses_fewer_threads_than_sequential(self, tmp_path):
-        """Invariant: parallel thread count < sequential thread count (for workers > 1)."""
+    def test_parallel_workers_capped_by_cpu_formula(self, tmp_path):
+        """n_masks > cpu_count // 4 → actual_workers = cpu_count // 4, threads = 4."""
         cpu_count = os.cpu_count() or 4
-        if cpu_count < 2:
-            pytest.skip("Need at least 2 CPUs for this invariant to hold")
+        workers_by_cpu = max(1, cpu_count // 4)
+        n_masks = workers_by_cpu + 5  # enough tasks that cpu formula is binding
+        _run_main_patched(tmp_path, mode="parallel", workers=cpu_count, n_masks=n_masks)
+        # actual_workers = workers_by_cpu, threads = cpu_count // workers_by_cpu
+        actual = int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0))
+        expected = max(1, cpu_count // workers_by_cpu)
+        assert actual == expected
+
+    def test_parallel_threads_less_than_sequential_when_multiple_workers(self, tmp_path):
+        """With multiple actual workers, threads/worker < cpu_count."""
+        cpu_count = os.cpu_count() or 4
+        workers_by_cpu = max(1, cpu_count // 4)
+        if workers_by_cpu < 2:
+            pytest.skip("Need cpu_count >= 8 for parallel to outperform sequential here")
 
         _run_main_patched(tmp_path, mode="sequential")
         seq_threads = int(os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"])
 
         tmp2 = tmp_path / "par"
         tmp2.mkdir()
-        _run_main_patched(tmp2, mode="parallel", workers=min(4, cpu_count))
+        n_masks = workers_by_cpu + 5
+        _run_main_patched(tmp2, mode="parallel", workers=cpu_count, n_masks=n_masks)
         par_threads = int(os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"])
 
         assert par_threads < seq_threads
