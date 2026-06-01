@@ -17,6 +17,31 @@ logger = logging.getLogger(__name__)
 KAPPA_DATA_URL = "https://kappa.nsu.ru:8061/data-micro-services/v1"
 
 
+async def list_user_datasets(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+) -> list:
+    """
+    Return all datasets for the given user.
+    Each element is a dict with at least 'datasetId' and 'datasetName'.
+    Returns an empty list on error.
+    """
+    url = f"{KAPPA_DATA_URL}/datasets/{user_id}/{user_type_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            response = await client.get(url, headers=headers)
+        if response.is_success:
+            data = response.json()
+            return data if isinstance(data, list) else []
+        logger.warning("list_user_datasets: status=%s", response.status_code)
+        return []
+    except Exception as exc:
+        logger.exception("Error listing datasets: %s", exc)
+        return []
+
+
 async def _find_dataset_id(
     token: str,
     user_id: int,
