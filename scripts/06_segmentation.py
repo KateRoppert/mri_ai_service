@@ -880,12 +880,13 @@ class SegmentationRunner:
         # Get and display profile information
         try:
             active_profile_name = self.config._data.get('segmentation', {}).get('active_profile', 'unknown')
-            profile = self.config.get_active_profile()
+            service_url_for_lesion = self.registry.get_url_for(self.args.lesion_type)
             logger.info("=" * 60)
             logger.info(f"Active profile:   {active_profile_name}")
             logger.info(f"Description:      {self.config.get_profile_description()}")
             logger.info(f"Connection:       {self.config.get_connection_type()}")
-            logger.info(f"Server URL:       {profile.get('server_url')}")
+            logger.info(f"Lesion type:      {self.args.lesion_type}")
+            logger.info(f"Service URL:      {service_url_for_lesion}")
             logger.info("=" * 60)
         except Exception as e:
             logger.warning(f"Could not load profile info: {e}")
@@ -917,19 +918,19 @@ class SegmentationRunner:
                 
                 atexit.register(lambda: close_ssh_tunnel(ssh_tunnel_process))
             
-            server_url = self.config.get_server_url()
-            
+            server_url = self.registry.get_url_for(self.args.lesion_type)
+
             # Check server availability
             logger.info("=" * 60)
             logger.info("CHECKING SERVER AVAILABILITY")
             logger.info("=" * 60)
-            
+
             if not check_server_availability(server_url):
                 raise ConnectionError(
                     f"Server not accessible at {server_url}.\n"
                     f"Please ensure the server is running on the remote machine."
                 )
-            
+
             logger.info(f"✓ Server is accessible at {server_url}")
             
             # Scan for subjects/sessions

@@ -6,6 +6,7 @@ Covered cases:
 - _scan_output_structure: finds masks in lesion_type/ subfolder (rglob fix)
 - _save_benchmark_metrics: uses stats.skipped not hardcoded 0
 - _process_sessions_async: does NOT call stats.log_summary() (only run() does)
+- run(): server availability check uses registry URL, not hardcoded profile URL
 """
 
 import asyncio
@@ -262,3 +263,69 @@ class TestProcessSessionsAsyncNoLogSummary:
         with patch.object(seg_mod, "AsyncSegmentationClient", MagicMock()):
             result = asyncio.run(runner._process_sessions_async([]))
             assert result is True  # stats.failed == 0
+
+
+# ---------------------------------------------------------------------------
+# run() — server availability check uses registry URL, not config profile URL
+# ---------------------------------------------------------------------------
+
+class TestServerAvailabilityUsesRegistryUrl:
+    """
+    Bug: run() called self.config.get_server_url() for availability check.
+    That returns the active profile's hardcoded URL (gbm-seg) regardless of
+    lesion type. Fixed to use self.registry.get_url_for(self.args.lesion_type).
+    """
+
+    def _captured_check_url(self, runner, registry_url: str) -> list[str]:
+        """
+        Runs run() with the server reported as down (ConnectionError raised).
+        Returns the list of URLs that were passed to check_server_availability.
+        """
+        runner.registry.get_url_for.return_value = registry_url
+        checked_urls = []
+
+        def capture_and_fail(url, **kwargs):
+            checked_urls.append(url)
+            return False  # server down → run() raises ConnectionError
+
+        with patch.object(seg_mod, "check_server_availability", side_effect=capture_and_fail):
+            try:
+                runner.run()
+            except (ConnectionError, Exception):
+                pass  # expected — server was reported as down
+
+        return checked_urls
+
+    def test_ms_lesion_type_checks_ms_seg_service(self):
+        runner = _make_runner()
+        runner.args.lesion_type = "multiple_sclerosis"
+
+        urls = self._captured_check_url(runner, "http://service-ms-seg:5001")
+
+        assert urls == ["http://service-ms-seg:5001"], (
+            f"Expected ms-seg URL, got: {urls}"
+        )
+
+    def test_gbm_lesion_type_checks_gbm_seg_service(self):
+        runner = _make_runner()
+        runner.args.lesion_type = "glioblastoma"
+
+        urls = self._captured_check_url(runner, "http://service-gbm-seg:5000")
+
+        assert urls == ["http://service-gbm-seg:5000"], (
+            f"Expected gbm-seg URL, got: {urls}"
+        )
+
+    def test_profile_url_is_not_used_for_availability_check(self):
+        """config.get_server_url() must never be called for the availability check."""
+        runner = _make_runner()
+        runner.args.lesion_type = "multiple_sclerosis"
+        runner.registry.get_url_for.return_value = "http://service-ms-seg:5001"
+
+        with patch.object(seg_mod, "check_server_availability", return_value=False):
+            with patch.object(runner.config, "get_server_url") as mock_get_url:
+                try:
+                    runner.run()
+                except (ConnectionError, Exception):
+                    pass
+                mock_get_url.assert_not_called()
