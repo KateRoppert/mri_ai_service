@@ -1,0 +1,25 @@
+# Lesion type registry — canonical source for per-disease configuration.
+#
+# Currently consumed by: 01_reorganize_folders.py (CompletenessChecker),
+# services registry (services.yaml), CLI --lesion-type arguments.
+#
+# NOT yet wired to pipeline stages (stages 03–08 still use hardcoded
+# constants). Full migration is planned for feat/lesion-type-aware-pipeline.
+# See KI-016 in KNOWN_ISSUES.md.
+#
+# Fields:
+#   required_modalities  — MRI series the pipeline requires for this disease.
+#                          Stage 01 uses this for completeness checking.
+#   reference_modality   — Modality registered directly to the atlas in stage 05.
+#                          Other modalities are co-registered to this one first.
+#   reports              — Analysis outputs produced by stages 07–08.
+
+glioblastoma:
+  required_modalities: [t1, t1c, t2, t2fl]
+  reference_modality: t1
+  reports: [volume, lobar]
+
+multiple_sclerosis:
+  required_modalities: [t1, t2, t2fl]
+  reference_modality: t1
+  reports: [lesion_count, volume_per_lobe]
