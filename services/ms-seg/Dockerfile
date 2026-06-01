@@ -55,7 +55,7 @@ COPY common/ ./common/
 # This REPLACES the stock nnunetv2 inside this container.
 # -----------------------------------------------------------------------
 COPY ms-seg/SmallLesionMRI/ ./SmallLesionMRI/
-RUN cd SmallLesionMRI/slsseg && pip install --ignore-installed .
+RUN cd SmallLesionMRI/slsseg && pip install --ignore-installed --timeout 120 .
 
 # The fork's setup.py pins numpy==1.26.4 and scipy==1.11.4 — these are
 # pre-numpy-2.x constraints that are incompatible with the ABI of more

@@ -38,7 +38,7 @@ COPY gbm-seg/*.py .
 COPY gbm-seg/src/ ./src/
 COPY gbm-seg/nnUNet/ ./nnUNet/
 ENV SKLEARN_ALLOW_DEPRECATED_SKLEARN_PACKAGE_INSTALL=True
-RUN cd nnUNet && pip install .
+RUN cd nnUNet && pip install --timeout 120 .
 
 RUN mkdir -p /app/data/input /app/data/tmp /app/data/output
 ENV PYTHONPATH=/app:$PYTHONPATH
