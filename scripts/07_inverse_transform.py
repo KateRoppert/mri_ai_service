@@ -220,11 +220,15 @@ def main():
     logger.info(f"Reference modality:   {args.reference_modality}")
     logger.info(f"Mode:                 {args.mode}, workers: {args.workers}")
 
-    # Set thread limits
+    # Set thread limits — cap per-worker threads to avoid CPU over-subscription
+    cpu_count = os.cpu_count() or 4
     if args.mode == "sequential":
-        cpu_count = os.cpu_count() or 4
-        os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = str(cpu_count)
-        os.environ["ANTS_NUMBER_OF_THREADS"] = str(cpu_count)
+        threads = cpu_count
+    else:
+        threads = max(1, cpu_count // args.workers)
+    os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = str(threads)
+    os.environ["ANTS_NUMBER_OF_THREADS"] = str(threads)
+    logger.info(f"Thread limits: {threads} per worker (cpu_count={cpu_count}, mode={args.mode}, workers={args.workers})")
 
     # Find masks
     masks = find_masks(args.input_dir, args.max_subjects)
@@ -234,6 +238,8 @@ def main():
         return 1
 
     logger.info(f"Found {len(masks)} mask(s) to process")
+
+    total_found = len(masks)
 
     # Skip existing if requested
     if args.skip_existing:
@@ -329,7 +335,7 @@ def main():
             total_series=len(masks),
             successful=successful,
             failed=failed,
-            skipped=0,
+            skipped=total_found - len(masks),
             total_time=total_time,
             time_per_series=total_time / len(masks) if masks else 0,
             throughput=len(masks) / total_time if total_time > 0 else 0,
