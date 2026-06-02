@@ -39,6 +39,14 @@ mni_templates/
 .vscode/
 .idea/
 
+# Claude Code — local personal settings (project settings.json IS committed)
+.claude/settings.local.json
+.claude/projects/
+
+# Presentation build artifacts — source scripts are committed, binary outputs are not
+docs/presentation/*.pdf
+docs/presentation/*.pptx
+
 # Model weights
 services/gbm-seg/nnUNetv1_data/
 services/gbm-seg/nnUNetv2_data/
