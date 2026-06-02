@@ -21,10 +21,46 @@ from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import yaml
+import nibabel as nib
+import numpy as np
+from scipy.ndimage import label as ndimage_label
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from lobar_analysis import LobarAnalyzer
 
 logger = logging.getLogger(__name__)
+
+
+def compute_lesion_stats(mask_path: Path) -> dict:
+    """
+    Count connected components (individual lesions) in a binary mask.
+    Used for MS where each component = one lesion.
+
+    Returns dict with lesion_count, total_volume_cm3, mean_lesion_volume_cm3,
+    lesion_volumes_cm3.
+    """
+    img = nib.load(str(mask_path))
+    data = np.asarray(img.dataobj)
+    voxel_vol_mm3 = float(np.prod(np.abs(np.diag(img.affine[:3, :3]))))
+    voxel_vol_cm3 = voxel_vol_mm3 / 1000.0
+
+    binary = (data > 0).astype(np.uint8)
+    labeled, n_components = ndimage_label(binary)
+
+    lesion_volumes = []
+    for i in range(1, n_components + 1):
+        voxel_count = int(np.sum(labeled == i))
+        lesion_volumes.append(round(voxel_count * voxel_vol_cm3, 4))
+
+    total = round(sum(lesion_volumes), 4)
+    mean = round(total / n_components, 4) if n_components > 0 else 0.0
+
+    return {
+        "lesion_count": n_components,
+        "total_volume_cm3": total,
+        "mean_lesion_volume_cm3": mean,
+        "lesion_volumes_cm3": sorted(lesion_volumes, reverse=True),
+    }
+
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     """Setup logging configuration."""
@@ -171,6 +207,21 @@ def process_one_mask(
         report["session_id"] = session_id
 
         analyzer.save_report(report, report_path)
+
+        # For MS: compute and save per-lesion statistics
+        if lesion_type == 'multiple_sclerosis':
+            stats = compute_lesion_stats(mask_path)
+            stats["patient_id"] = subject_id
+            stats["session_id"] = session_id
+            stats_path = report_path.parent / report_path.name.replace(
+                "_lobar_report.json", "_lesion_stats_report.json"
+            )
+            with open(stats_path, 'w', encoding='utf-8') as f:
+                json.dump(stats, f, indent=2, ensure_ascii=False)
+            logger.info(
+                f"Lesion stats: {stats['lesion_count']} lesions, "
+                f"{stats['total_volume_cm3']:.3f} cm³ → {stats_path.name}"
+            )
 
         affected = len(report.get("lobes", {}))
         return {
