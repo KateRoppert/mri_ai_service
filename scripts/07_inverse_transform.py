@@ -254,26 +254,30 @@ def main():
 
     # Auto-tune parallelism.
     # apply_transforms uses ~4 ANTs threads per call (lighter than full registration).
+    # Reserve 2 cores for the OS/IDE on workstation machines.
+    _OS_RESERVED_CORES = 2
     cpu_count = os.cpu_count() or 4
+    effective_cpu = max(4, cpu_count - _OS_RESERVED_CORES)
     if args.mode == "sequential":
         actual_workers = 1
-        threads = cpu_count
-        logger.info(f"Workers: 1 | Threads: {threads} (all cores, sequential)")
+        threads = effective_cpu
+        logger.info(f"Workers: 1 | Threads: {threads} (all effective cores, sequential)")
     else:
         workers_by_tasks = min(args.workers, len(masks))
-        workers_by_cpu = max(1, cpu_count // 4)
+        workers_by_cpu = max(1, effective_cpu // 4)
         actual_workers = max(1, min(workers_by_tasks, workers_by_cpu))
-        threads = max(1, cpu_count // actual_workers)
+        threads = max(1, effective_cpu // actual_workers)
         reason = ""
         if actual_workers < args.workers:
             if workers_by_tasks <= workers_by_cpu:
                 reason = f" (capped by n_masks={len(masks)})"
             else:
-                reason = f" (capped by cpu_count//4={workers_by_cpu})"
+                reason = f" (capped by effective_cpu//4={workers_by_cpu})"
         logger.info(
             f"Workers: {actual_workers}{reason} | "
             f"Threads per worker: {threads} | "
-            f"Total threads: {actual_workers * threads}/{cpu_count}"
+            f"Total threads: {actual_workers * threads}/{cpu_count} "
+            f"(reserved {_OS_RESERVED_CORES} for OS)"
         )
     os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = str(threads)
     os.environ["ANTS_NUMBER_OF_THREADS"] = str(threads)

@@ -38,6 +38,12 @@ from preprocessing_steps.resampling import process_subject_resampling
 
 logger = logging.getLogger(__name__)
 
+# Cores reserved for the OS, display server, and IDE on a workstation.
+# Prevents ANTs from starving the desktop environment and avoids RAM pressure
+# from too many concurrent ITK threads on machines with ≤32 GB RAM.
+_OS_RESERVED_CORES = 2
+
+
 def calculate_optimal_parallelism(
     n_subjects: int, cpu_count: int, max_workers: int
 ) -> tuple[int, int]:
@@ -48,18 +54,20 @@ def calculate_optimal_parallelism(
     The formula then reduces it further if subjects or CPU count make a smaller
     number more efficient:
 
-      workers_by_subjects = min(max_workers, n_subjects)   # no idle processes
-      workers_by_cpu      = max(1, cpu_count // 8)         # keep >=8 threads/worker
+      effective_cpu       = cpu_count - _OS_RESERVED_CORES   # leave headroom for OS/IDE
+      workers_by_subjects = min(max_workers, n_subjects)      # no idle processes
+      workers_by_cpu      = max(1, effective_cpu // 8)        # keep >=8 threads/worker
       actual_workers      = min(workers_by_subjects, workers_by_cpu)
-      threads             = cpu_count // actual_workers
+      threads             = effective_cpu // actual_workers
 
     N4 bias correction (ITK) and ANTs registration both benefit from ~8-12 threads;
     giving a worker fewer than 8 threads leaves most of the allocated CPUs idle.
     """
+    effective_cpu = max(4, cpu_count - _OS_RESERVED_CORES)
     workers_by_subjects = min(max_workers, n_subjects)
-    workers_by_cpu = max(1, cpu_count // 8)
+    workers_by_cpu = max(1, effective_cpu // 8)
     actual_workers = max(1, min(workers_by_subjects, workers_by_cpu))
-    threads = max(1, cpu_count // actual_workers)
+    threads = max(1, effective_cpu // actual_workers)
     return actual_workers, threads
 
 

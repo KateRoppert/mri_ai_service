@@ -65,6 +65,21 @@ def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
         except Exception as e:
             logger.error(f"Failed to set up file logger at {log_file}: {e}")
 
+# --- GPU error helpers ---
+
+_GPU_BUSY_MARKERS = (
+    "CUDA-capable device",
+    "is/are busy or unavailable",
+    "cudaErrorDevicesUnavailable",
+    "AcceleratorError",
+    "CUDA error",
+)
+
+def _is_gpu_busy_error(error_msg: str) -> bool:
+    """Return True if the error string indicates a transient GPU unavailability."""
+    return any(m in error_msg for m in _GPU_BUSY_MARKERS)
+
+
 # --- Server Availability Check ---
 
 def check_server_availability(server_url: str, timeout: int = 5) -> bool:
@@ -1018,14 +1033,12 @@ class SegmentationRunner:
         semaphore = asyncio.Semaphore(self.args.max_concurrent)
         
         async def process_one(idx: int, session) -> bool:
-            """Обработка одной сессии с семафором"""
+            """Обработка одной сессии с семафором и retry на GPU-занятость."""
             async with semaphore:
                 identifier = session.get_identifier()
                 logger.info(f"[{idx}/{self.stats.total}] Processing: {identifier}")
-                
+
                 try:
-                    # Validate input modalities exist (no actual upload — files
-                    # are read by the service via shared volume in the new contract)
                     seg_input = SegmentationInput(
                         t1=session.modality_files["t1"],
                         t1c=session.modality_files["t1c"],
@@ -1037,21 +1050,38 @@ class SegmentationRunner:
                             f"Modality file validation failed for {identifier}"
                         )
 
-                    # Derive input_dir and output_dir from session paths
                     input_dir = session.modality_files["t1"].parent
                     output_dir = session.output_mask_path.parent
                     output_dir.mkdir(parents=True, exist_ok=True)
 
-                    success, task_status = await client.segment_by_path_async(
-                        case_id=identifier,
-                        input_dir=input_dir,
-                        output_dir=output_dir,
-                        lesion_type=args.lesion_type,
-                        options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
-                    )
+                    # Retry when GPU is transiently busy (e.g. another pipeline
+                    # is still using the GPU after its segmentation step).
+                    _max_retries = 3
+                    _retry_delay = 30  # seconds between attempts
+                    success, task_status = False, {}
 
-                    # Service writes mask.nii.gz; rename to the expected
-                    # *_segmask.nii.gz filename to keep BIDS pipeline conventions
+                    for attempt in range(_max_retries):
+                        success, task_status = await client.segment_by_path_async(
+                            case_id=identifier,
+                            input_dir=input_dir,
+                            output_dir=output_dir,
+                            lesion_type=args.lesion_type,
+                            options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
+                        )
+                        if success:
+                            break
+                        error_msg = task_status.get("error", "")
+                        if _is_gpu_busy_error(error_msg) and attempt < _max_retries - 1:
+                            wait = _retry_delay * (attempt + 1)
+                            logger.warning(
+                                f"  GPU busy for {identifier} "
+                                f"(attempt {attempt + 1}/{_max_retries}), "
+                                f"retrying in {wait}s…"
+                            )
+                            await asyncio.sleep(wait)
+                        else:
+                            break  # non-retryable error or last attempt
+
                     if success and task_status.get("mask_path"):
                         produced = Path(task_status["mask_path"])
                         if produced.resolve() != session.output_mask_path.resolve():
@@ -1065,26 +1095,22 @@ class SegmentationRunner:
                                     f"Service reported mask_path {produced} but file is missing"
                                 )
                                 success = False
-                    
+
                     if success:
                         self.stats.successful += 1
-                        
-                        # compute volume report
                         try:
                             from compute_volumes import compute_and_save_volume_report
                             compute_and_save_volume_report(session.output_mask_path)
                         except Exception as e:
                             logger.warning(f"  Volume report failed for {identifier}: {e}")
-                        
-                        # Collect GPU metrics if benchmarking
                         if self.args.benchmark and task_status and 'gpu_metrics' in task_status:
                             self.gpu_metrics_collected.append(task_status['gpu_metrics'])
                     else:
                         self.stats.failed += 1
                         logger.error(f"  Failed to process {identifier}")
-                    
+
                     return success
-                
+
                 except Exception as e:
                     self.stats.failed += 1
                     logger.error(f"  ✗ Error processing {identifier}: {e}")

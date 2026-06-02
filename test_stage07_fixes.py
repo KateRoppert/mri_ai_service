@@ -124,18 +124,20 @@ def _run_main_patched(tmp_path: Path, mode: str, workers: int = 1,
 
 class TestAutoTuneParallelism:
     """
-    Auto-tune: actual_workers = min(configured_workers, n_masks, cpu_count // 4)
-    threads_per_worker = cpu_count // actual_workers
+    Auto-tune: actual_workers = min(configured_workers, n_masks, effective_cpu // 4)
+    threads_per_worker = effective_cpu // actual_workers
+    effective_cpu = max(4, cpu_count - 2)  — reserves 2 cores for OS/IDE
 
     Stage 07 uses ANTs apply_transforms (~4 threads/call), so the CPU ceiling
-    is cpu_count // 4 workers. Stage 05 used // 8 (heavier full registration).
+    is effective_cpu // 4 workers. Stage 05 used // 8 (heavier full registration).
     """
 
-    def test_sequential_sets_thread_limits_to_all_cores(self, tmp_path):
+    def test_sequential_sets_thread_limits_to_effective_cores(self, tmp_path):
         cpu_count = os.cpu_count() or 4
+        effective_cpu = max(4, cpu_count - 2)
         _run_main_patched(tmp_path, mode="sequential")
-        assert int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0)) == cpu_count
-        assert int(os.environ.get("ANTS_NUMBER_OF_THREADS", 0)) == cpu_count
+        assert int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0)) == effective_cpu
+        assert int(os.environ.get("ANTS_NUMBER_OF_THREADS", 0)) == effective_cpu
 
     def test_parallel_always_sets_thread_limits(self, tmp_path):
         os.environ.pop("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", None)
@@ -144,32 +146,35 @@ class TestAutoTuneParallelism:
         assert "ANTS_NUMBER_OF_THREADS" in os.environ
 
     def test_parallel_workers_capped_by_n_masks(self, tmp_path):
-        """n_masks < cpu_count // 4 → actual_workers = n_masks, threads = cpu_count."""
+        """n_masks < effective_cpu // 4 → actual_workers = n_masks, threads = effective_cpu."""
         cpu_count = os.cpu_count() or 4
+        effective_cpu = max(4, cpu_count - 2)
         # 1 mask is always fewer than any reasonable workers_by_cpu
         _run_main_patched(tmp_path, mode="parallel", workers=cpu_count, n_masks=1)
-        # actual_workers = min(cpu_count, 1, cpu_count//4) = 1
-        # threads = cpu_count // 1 = cpu_count
+        # actual_workers = min(cpu_count, 1, effective_cpu//4) = 1
+        # threads = effective_cpu // 1 = effective_cpu
         actual = int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0))
-        assert actual == cpu_count
+        assert actual == effective_cpu
 
     def test_parallel_workers_capped_by_cpu_formula(self, tmp_path):
-        """n_masks > cpu_count // 4 → actual_workers = cpu_count // 4, threads = 4."""
+        """n_masks > effective_cpu // 4 → actual_workers = effective_cpu // 4."""
         cpu_count = os.cpu_count() or 4
-        workers_by_cpu = max(1, cpu_count // 4)
+        effective_cpu = max(4, cpu_count - 2)
+        workers_by_cpu = max(1, effective_cpu // 4)
         n_masks = workers_by_cpu + 5  # enough tasks that cpu formula is binding
         _run_main_patched(tmp_path, mode="parallel", workers=cpu_count, n_masks=n_masks)
-        # actual_workers = workers_by_cpu, threads = cpu_count // workers_by_cpu
+        # actual_workers = workers_by_cpu, threads = effective_cpu // workers_by_cpu
         actual = int(os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", 0))
-        expected = max(1, cpu_count // workers_by_cpu)
+        expected = max(1, effective_cpu // workers_by_cpu)
         assert actual == expected
 
     def test_parallel_threads_less_than_sequential_when_multiple_workers(self, tmp_path):
-        """With multiple actual workers, threads/worker < cpu_count."""
+        """With multiple actual workers, threads/worker < effective_cpu."""
         cpu_count = os.cpu_count() or 4
-        workers_by_cpu = max(1, cpu_count // 4)
+        effective_cpu = max(4, cpu_count - 2)
+        workers_by_cpu = max(1, effective_cpu // 4)
         if workers_by_cpu < 2:
-            pytest.skip("Need cpu_count >= 8 for parallel to outperform sequential here")
+            pytest.skip("Need cpu_count >= 10 for parallel to use multiple workers")
 
         _run_main_patched(tmp_path, mode="sequential")
         seq_threads = int(os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"])

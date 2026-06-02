@@ -70,36 +70,41 @@ def _make_bids_tree(root: Path, subjects: list, sessions: list, modalities: list
 class TestCalculateOptimalParallelism:
     """
     Workers (from config) is treated as a ceiling.
-    Formula also caps at cpu_count // 8 to ensure each worker gets enough threads.
+    Formula uses effective_cpu = cpu_count - 2 (OS headroom) and caps
+    workers at effective_cpu // 8 to ensure each worker gets enough threads.
     """
 
+    # effective_cpu for cpu_count=24: max(4, 24-2) = 22
+    # workers_by_cpu for 24 CPUs:     22 // 8 = 2
+
     def test_fewer_subjects_than_workers_reduces_workers(self):
-        # 2 subjects, cap=14, 24 CPU → actual=2, threads=12
+        # 2 subjects, cap=14, 24 CPU → effective=22, actual=2, threads=22//2=11
         workers, threads = calculate_optimal_parallelism(n_subjects=2, cpu_count=24, max_workers=14)
         assert workers == 2
-        assert threads == 12
+        assert threads == 11
 
     def test_cpu_optimal_caps_workers(self):
-        # 20 subjects, cap=14, 24 CPU → cpu_optimal=24//8=3, actual=3
+        # 20 subjects, cap=14, 24 CPU → effective=22, workers_by_cpu=22//8=2, actual=2
         workers, threads = calculate_optimal_parallelism(n_subjects=20, cpu_count=24, max_workers=14)
-        assert workers == 3
-        assert threads == 8
+        assert workers == 2
+        assert threads == 11
 
     def test_config_cap_respected_when_lower_than_cpu_optimal(self):
-        # 20 subjects, cap=2, 24 CPU → user wants max 2, cpu_optimal=3 → actual=2
+        # 20 subjects, cap=2, 24 CPU → effective=22, cpu_floor=2, config=2 → actual=2
         workers, threads = calculate_optimal_parallelism(n_subjects=20, cpu_count=24, max_workers=2)
         assert workers == 2
-        assert threads == 12
+        assert threads == 11
 
     def test_single_subject_always_gives_one_worker(self):
+        # 1 subject → actual=1, gets all effective threads
         workers, threads = calculate_optimal_parallelism(n_subjects=1, cpu_count=24, max_workers=14)
         assert workers == 1
-        assert threads == 24
+        assert threads == 22  # effective_cpu = 24-2 = 22
 
-    def test_workers_times_threads_equals_cpu_count(self):
-        # Invariant: workers * threads == cpu_count (when subjects and cap are not binding)
+    def test_workers_times_threads_equals_effective_cpu(self):
+        # Invariant: workers * threads == effective_cpu (not raw cpu_count)
         workers, threads = calculate_optimal_parallelism(n_subjects=10, cpu_count=24, max_workers=10)
-        assert workers * threads == 24
+        assert workers * threads == 22  # effective_cpu = 24-2
 
     def test_minimum_one_worker_even_with_zero_subjects(self):
         # Defensive: shouldn't happen in practice but must not crash or return 0
@@ -108,10 +113,11 @@ class TestCalculateOptimalParallelism:
         assert threads >= 1
 
     def test_cap_24_same_as_cap_14_for_small_cpu(self):
-        # With 8 CPU and 5 subjects, both caps should give same result
+        # With 8 CPU (effective=6) and 5 subjects, both caps give same result
+        # workers_by_cpu = 6 // 8 = 0 → max(1,0) = 1
         w14, t14 = calculate_optimal_parallelism(n_subjects=5, cpu_count=8, max_workers=14)
         w24, t24 = calculate_optimal_parallelism(n_subjects=5, cpu_count=8, max_workers=24)
-        assert w14 == w24  # cpu_count // 8 = 1 in both cases
+        assert w14 == w24
         assert t14 == t24
 
 
