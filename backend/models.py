@@ -165,6 +165,7 @@ class PipelineStatusResponse(BaseModel):
     created_at: datetime = Field(..., description="Время запуска")
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     error: Optional[str] = Field(None, description="Сообщение об ошибке")
+    lesion_type: Optional[str] = Field(None, description="Тип поражения (glioblastoma / multiple_sclerosis)")
 
 
 # ============================================
@@ -256,3 +257,33 @@ class HealthCheckResponse(BaseModel):
     status: str = Field("ok", description="Статус сервиса")
     timestamp: datetime = Field(..., description="Текущее время сервера")
     version: str = Field(..., description="Версия API")
+
+
+# ============================================
+# МОДЕЛИ ДЛЯ МС-ОТЧЁТА
+# ============================================
+
+class LesionStatsReport(BaseModel):
+    """Статистика очагов МС для одной сессии"""
+    patient_id: str
+    session_id: str
+    lesion_count: int
+    total_volume_cm3: float
+    mean_lesion_volume_cm3: float
+    lesion_volumes_cm3: List[float]
+
+class LesionStatsListResponse(BaseModel):
+    total: int
+    reports: List[LesionStatsReport]
+
+class LongitudinalPoint(BaseModel):
+    """Одна точка лонгитюдного ряда"""
+    session_id: str
+    scan_date: Optional[str] = None
+    total_volume_cm3: float
+    lesion_count: Optional[int] = None
+
+class LongitudinalResponse(BaseModel):
+    patient_id: str
+    lesion_type: str
+    points: List[LongitudinalPoint]

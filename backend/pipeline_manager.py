@@ -465,6 +465,31 @@ class PipelineManager:
         logger.info(f"Успешно загружено {len(reports)} лобарных отчётов")
         return reports
     
+    def get_lesion_stats_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Read lesion_stats_report.json files produced by Stage 08 for MS cases.
+        Pattern: segmentation/**/*_lesion_stats_report.json
+        """
+        seg_dir = Path(output_path) / "segmentation"
+        if not seg_dir.exists():
+            return None
+
+        report_files = list(seg_dir.rglob("*_lesion_stats_report.json"))
+        if not report_files:
+            return None
+
+        reports = []
+        for report_file in report_files:
+            try:
+                with open(report_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                reports.append(data)
+                logger.info(f"Lesion stats loaded: {report_file.name}")
+            except Exception as e:
+                logger.error(f"Failed to read {report_file}: {e}")
+
+        return reports or None
+
     def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
         """
         Удаляет runtime конфиг после завершения

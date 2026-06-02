@@ -31,10 +31,14 @@ from models import (
     QualityReportResponse,
     QualityReportListResponse,
     QualityMetrics,
-    NIfTIFile,     
+    NIfTIFile,
     NIfTIFilesResponse,
     VolumeReportListResponse,
-    LobarReportListResponse 
+    LobarReportListResponse,
+    LesionStatsReport,
+    LesionStatsListResponse,
+    LongitudinalPoint,
+    LongitudinalResponse,
 )
 from database import (
     get_db,
@@ -370,7 +374,8 @@ async def get_pipeline_status(
         stages=stages,
         created_at=run.created_at,
         completed_at=run.completed_at,
-        error=run.error_message
+        error=run.error_message,
+        lesion_type=getattr(run, "lesion_type", None),
     )
 
 
@@ -728,6 +733,94 @@ async def get_lobar_reports(
         total=len(reports),
         reports=reports
     )
+
+@app.get("/api/lesion-stats/{run_id}", response_model=LesionStatsListResponse)
+async def get_lesion_stats(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """Статистика очагов МС (количество, объёмы) для run_id"""
+    logger.info(f"Запрос lesion stats для run_id: {run_id}")
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    if run.current_stage < 7:
+        raise HTTPException(status_code=400, detail="Lobar localization not yet completed")
+
+    reports = pipeline_manager.get_lesion_stats_reports(run.output_path)
+    if not reports:
+        raise HTTPException(status_code=404, detail="Lesion stats not found (MS only)")
+
+    return LesionStatsListResponse(
+        total=len(reports),
+        reports=[LesionStatsReport(**r) for r in reports]
+    )
+
+
+@app.get("/api/longitudinal/{patient_id}", response_model=LongitudinalResponse)
+async def get_longitudinal(
+    patient_id: str,
+    lesion_type: str = "multiple_sclerosis",
+    db: Session = Depends(get_db)
+):
+    """
+    Лонгитюдный анализ: все сессии пациента по данному lesion_type.
+
+    patient_id — original_patient_id (напр. "P000915").
+    Матчинг: bids_id в registry == patient_id в stats файле (оба "sub-P000915").
+    """
+    from patient_registry import find_by_patient_id
+
+    all_records = find_by_patient_id(patient_id)
+    records = [r for r in all_records if r.get("lesion_type") == lesion_type]
+
+    if not records:
+        raise HTTPException(status_code=404, detail="No sessions found for this patient/lesion_type")
+
+    # Collect all stats across unique run_ids, match by bids_id == patient_id in stats
+    seen_run_ids: set = set()
+    all_stats = []
+    for record in records:
+        # patient_registry stores run_id under key "pipeline_run_id"
+        run_id = record.get("pipeline_run_id")
+        if not run_id or run_id in seen_run_ids:
+            continue
+        seen_run_ids.add(run_id)
+        run = get_pipeline_run(db, run_id)
+        if run and run.output_path:
+            stats_list = pipeline_manager.get_lesion_stats_reports(run.output_path) or []
+            bids_id = record.get("bids_id", "")
+            for s in stats_list:
+                if s.get("patient_id") == bids_id:
+                    all_stats.append({**s, "_scan_date": record.get("scan_date")})
+
+    # Deduplicate by session_id, sort by scan_date
+    seen_sessions: set = set()
+    points = []
+    for s in sorted(all_stats, key=lambda x: x.get("_scan_date") or ""):
+        sid = s.get("session_id", "")
+        if sid in seen_sessions:
+            continue
+        seen_sessions.add(sid)
+        points.append(LongitudinalPoint(
+            session_id=sid,
+            scan_date=str(s["_scan_date"]) if s.get("_scan_date") else None,
+            total_volume_cm3=s.get("total_volume_cm3", 0.0),
+            lesion_count=s.get("lesion_count"),
+        ))
+
+    if len(points) < 2:
+        raise HTTPException(
+            status_code=404,
+            detail="Not enough sessions for longitudinal analysis (need >= 2)"
+        )
+
+    return LongitudinalResponse(
+        patient_id=patient_id,
+        lesion_type=lesion_type,
+        points=points,
+    )
+
 
 @app.get("/api/lobar-atlas/{run_id}")
 async def get_lobar_atlas(
