@@ -230,7 +230,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
               type="primary"
               size="small"
               icon={<EyeOutlined />}
-              onClick={() => onShowVisualization(record.run_id)}
+              onClick={() => onShowVisualization(record.run_id, record.lesion_type || 'glioblastoma')}
             >
               3D
             </Button>

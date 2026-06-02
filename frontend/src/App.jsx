@@ -24,6 +24,7 @@ function App() {
 
   const [historyQualityReportRunId, setHistoryQualityReportRunId] = useState(null);
   const [historyVisualizationRunId, setHistoryVisualizationRunId] = useState(null);
+  const [historyVisualizationLesionType, setHistoryVisualizationLesionType] = useState('glioblastoma');
   const [showHistoryQualityReport, setShowHistoryQualityReport] = useState(false);
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
   const [historyClinicalReportRunId, setHistoryClinicalReportRunId] = useState(null);
@@ -62,8 +63,9 @@ function App() {
   /**
    * Показать визуализацию из истории
    */
-  const handleShowHistoryVisualization = async (runId) => {
+  const handleShowHistoryVisualization = async (runId, lesionType = 'glioblastoma') => {
     setHistoryVisualizationRunId(runId);
+    setHistoryVisualizationLesionType(lesionType);
     setHistoryValidationRef(null);
     setShowHistoryVisualization(true);
 
@@ -231,6 +233,7 @@ function App() {
                 visible={showHistoryVisualization}
                 onClose={() => setShowHistoryVisualization(false)}
                 validationRef={historyValidationRef}
+                lesionType={historyVisualizationLesionType}
               />
             )}
             {showHistoryClinicalReport && (

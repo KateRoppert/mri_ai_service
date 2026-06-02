@@ -327,7 +327,8 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
     } else {
       // Добавляем атлас как третий слой
       try {
-        const atlasUrl = getLobarAtlasUrl(runId);
+        // В режиме валидации runId не передаётся напрямую — берём resolvedRunId
+        const atlasUrl = getLobarAtlasUrl(runId || resolvedRunId);
         await nv.addVolumeFromUrl({
           url: atlasUrl,
           colormap: 'freesurfer',
