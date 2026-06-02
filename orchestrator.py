@@ -62,6 +62,8 @@ def build_command(
     # Lesion type — global per-run, only injected into segmentation-related stages
     if stage_name in (
         'stage_01_reorganize',
+        'stage_04_quality',
+        'stage_05_preprocessing',
         'stage_06_segmentation',
         'stage_07_inverse_transform',
         'stage_08_lobar_localization',

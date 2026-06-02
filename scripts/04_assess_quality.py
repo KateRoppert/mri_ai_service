@@ -15,6 +15,9 @@ from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from pipeline_validator import InputOutputValidator
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.config_loader import load_lesion_type_config
+
 import numpy as np
 import yaml
 
@@ -832,9 +835,16 @@ def main():
         action="store_true",
         help="Force reprocessing: clear output directory before starting"
     )
-    
+    parser.add_argument(
+        '--lesion-type',
+        type=str,
+        default='glioblastoma',
+        choices=['glioblastoma', 'multiple_sclerosis'],
+        help='Type of brain lesion — determines expected modalities'
+    )
+
     args = parser.parse_args()
-    
+
     # Validate inputs
     if not args.input_dir.exists():
         print(f"Error: Input directory does not exist: {args.input_dir}")
@@ -862,6 +872,16 @@ def main():
         args.output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
+        # Load lesion type config and expected modalities
+        try:
+            lt_config = load_lesion_type_config(args.lesion_type)
+            expected_modalities = set(lt_config['required_modalities'])
+        except KeyError:
+            logger.warning(f"Unknown lesion_type '{args.lesion_type}', using all modalities")
+            expected_modalities = {'t1', 't1c', 't2', 't2fl'}
+
+        logger.info(f"Lesion type: {args.lesion_type}, expected modalities: {sorted(expected_modalities)}")
+
         # Determine number of workers
         if args.mode == 'parallel':
             if args.workers == 1:
