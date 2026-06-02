@@ -9,7 +9,7 @@ Usage:
 import argparse
 import logging
 import sys
-import os 
+import os
 import time
 import json
 import shutil
@@ -18,6 +18,10 @@ from typing import Dict, List, Tuple
 import yaml
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# Allow imports from the project root (utils/)
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.config_loader import load_lesion_type_config
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from pipeline_validator import InputOutputValidator
 
@@ -263,7 +267,8 @@ def process_single_subject(
     temp_dir: Path,
     atlas_path: Path,
     config: dict,
-    modalities: List[str]
+    modalities: List[str],
+    lesion_type: str = 'glioblastoma'
 ) -> dict:
     """
     Process a single subject through all preprocessing steps.
@@ -300,11 +305,15 @@ def process_single_subject(
     reference_modality = None
     for step in config.get('steps', []):
         if step['name'] == 'registration':
-            reference_modality = step.get('params', {}).get('reference_modality', 't1c')
+            reference_modality = step.get('params', {}).get('reference_modality')
             break
 
     if reference_modality is None:
-        reference_modality = 't1c'  # Default fallback
+        # Derive from lesion_types.yaml rather than hardcoding 't1c'
+        try:
+            reference_modality = load_lesion_type_config(lesion_type)['reference_modality']
+        except KeyError:
+            reference_modality = 't1'
 
     ref_pattern = f"{subject_id}_{session_id}_{reference_modality}.nii.gz"
     ref_files = list(anat_dir.glob(ref_pattern))
@@ -409,7 +418,7 @@ def process_single_subject(
             )
             
             results['steps']['registration'] = {
-                "success": registration_results.get(step_params.get('reference_modality', 't1c'), {}).get('success', False),
+                "success": registration_results.get(step_params.get('reference_modality', reference_modality), {}).get('success', False),
                 "results": registration_results,
                 "time": time.time() - step_start
             }
@@ -529,8 +538,8 @@ def process_subject_wrapper(args_tuple):
     """
     import traceback
     
-    (anat_dir, subject_id, session_id, output_dir, transform_dir, 
-     base_temp_dir, atlas_path, config, modalities, threads_per_worker) = args_tuple
+    (anat_dir, subject_id, session_id, output_dir, transform_dir,
+     base_temp_dir, atlas_path, config, modalities, lesion_type, threads_per_worker) = args_tuple
     
     # Set thread limits for this worker (only in parallel mode)
     if threads_per_worker is not None:
@@ -554,7 +563,8 @@ def process_subject_wrapper(args_tuple):
             temp_dir=worker_temp_dir,  # Use worker-specific temp dir
             atlas_path=atlas_path,
             config=config,
-            modalities=modalities
+            modalities=modalities,
+            lesion_type=lesion_type
         )
         
         # Cleanup worker temp directory for this subject
@@ -664,7 +674,15 @@ def main():
         action="store_true",
         help="Skip subjects that have already been processed (resume interrupted processing)"
     )
-    
+
+    parser.add_argument(
+        '--lesion-type',
+        type=str,
+        default='glioblastoma',
+        choices=['glioblastoma', 'multiple_sclerosis'],
+        help='Type of brain lesion — determines which modalities to process'
+    )
+
     args = parser.parse_args()
     
     # Setup logging
@@ -731,9 +749,16 @@ def main():
         
         logger.info(f"✓ Output directories created")
         
-        # Get modalities from config
-        modalities = config.get('modalities', ['t1c', 't1', 't2', 't2fl'])
-        logger.info(f"Processing modalities: {', '.join(modalities)}")
+        # Resolve modalities from lesion_types.yaml; fall back to preprocessing config
+        try:
+            lt_config = load_lesion_type_config(args.lesion_type)
+            modalities = lt_config['required_modalities']
+            logger.info(
+                f"Lesion type: {args.lesion_type}, processing modalities: {modalities}"
+            )
+        except KeyError:
+            modalities = config.get('modalities', ['t1c', 't1', 't2', 't2fl'])
+            logger.warning(f"Unknown lesion_type '{args.lesion_type}', using config modalities")
         
         # Find subjects
         subjects = find_subjects(args.input_dir, max_subjects=None)
@@ -777,7 +802,7 @@ def main():
 
         processing_args = [
             (anat_dir, subject_id, session_id, preprocessed_dir, transform_dir,
-            temp_dir, atlas_path, config, modalities, threads_for_parallel)
+            temp_dir, atlas_path, config, modalities, args.lesion_type, threads_for_parallel)
             for anat_dir, subject_id, session_id in subjects
         ]
 
