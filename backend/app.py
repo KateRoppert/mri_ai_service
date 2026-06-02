@@ -283,7 +283,8 @@ async def start_pipeline(
     run = create_pipeline_run(
         db,
         input_path=request.input_path,
-        output_path=output_path
+        output_path=output_path,
+        lesion_type=(request.lesion_type or "glioblastoma"),
     )
     
     # Запускаем pipeline в фоновой задаче
@@ -413,7 +414,8 @@ async def get_history(
             duration_seconds=(
                 int((run.completed_at - run.started_at).total_seconds())
                 if run.completed_at and run.started_at else None
-            )
+            ),
+            lesion_type=getattr(run, 'lesion_type', None) or 'glioblastoma',
         )
         for run in runs
     ]

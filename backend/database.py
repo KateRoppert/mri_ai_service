@@ -55,6 +55,9 @@ class PipelineRun(Base):
     # Путь к конфигу
     config_path = Column(String, nullable=True)
 
+    # Тип поражения (glioblastoma / multiple_sclerosis)
+    lesion_type = Column(String, nullable=True, default='glioblastoma')
+
 
 class StageExecution(Base):
     """Модель выполнения отдельного этапа"""
@@ -89,17 +92,19 @@ def get_db() -> Session:
 def create_pipeline_run(
     db: Session,
     input_path: str,
-    output_path: str
+    output_path: str,
+    lesion_type: str = 'glioblastoma',
 ) -> PipelineRun:
     """Создать новый запуск pipeline"""
     run_id = str(uuid.uuid4())
-    
+
     run = PipelineRun(
         run_id=run_id,
         input_path=input_path,
         output_path=output_path,
         status="pending",
-        created_at=datetime.now(timezone.utc)
+        created_at=datetime.now(timezone.utc),
+        lesion_type=lesion_type,
     )
     
     db.add(run)
@@ -196,8 +201,22 @@ def get_pipeline_history(
 # ============================================
 
 def init_db():
-    """Инициализировать базу данных"""
+    """Инициализировать базу данных и применить миграции колонок."""
     Base.metadata.create_all(bind=engine)
+    _migrate_add_lesion_type()
+
+
+def _migrate_add_lesion_type():
+    """Add lesion_type column to pipeline_runs if it doesn't exist yet."""
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            __import__('sqlalchemy').text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'lesion_type' not in cols:
+            conn.execute(__import__('sqlalchemy').text(
+                "ALTER TABLE pipeline_runs ADD COLUMN lesion_type TEXT DEFAULT 'glioblastoma'"
+            ))
+            conn.commit()
 
 
 def reset_db():

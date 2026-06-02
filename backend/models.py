@@ -240,6 +240,7 @@ class PipelineRunHistoryItem(BaseModel):
     started_at: Optional[datetime] = Field(None, description="Время начала выполнения")
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     duration_seconds: Optional[int] = Field(None, description="Длительность в секундах")
+    lesion_type: Optional[str] = Field(None, description="Тип поражения")
 
 
 class PipelineHistoryResponse(BaseModel):
