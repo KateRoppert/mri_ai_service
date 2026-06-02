@@ -138,6 +138,7 @@ class PipelineStartResponse(BaseModel):
     status: PipelineStatus = Field(..., description="Текущий статус")
     message: str = Field(..., description="Информационное сообщение")
     created_at: datetime = Field(..., description="Время создания задачи")
+    lesion_type: Optional[str] = Field(None, description="Тип поражения")
 
 
 # ============================================

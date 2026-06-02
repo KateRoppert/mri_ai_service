@@ -16,7 +16,7 @@ import ClinicalReport from './ClinicalReport';
 import wsService from '../services/websocket';
 import { getPipelineStatus, getEntitiesForRun } from '../services/api';
 
-const ProgressMonitor = ({ runId, onComplete }) => {
+const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [stages, setStages] = useState({});
   const [overallProgress, setOverallProgress] = useState(0);
@@ -267,11 +267,13 @@ const ProgressMonitor = ({ runId, onComplete }) => {
         visible={showVisualization}
         onClose={handleCloseVisualization}
         validationRef={validationRef}
+        lesionType={lesionType}
       />
       <ClinicalReport
         runId={runId}
         visible={showClinicalReport}
         onClose={handleCloseClinicalReport}
+        lesionType={lesionType}
       />
     </Card>
   );

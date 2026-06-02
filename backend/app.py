@@ -308,7 +308,8 @@ async def start_pipeline(
         run_id=run.run_id,
         status=PipelineStatus.PENDING,
         message="Pipeline запущен и будет выполнен в фоновом режиме",
-        created_at=run.created_at
+        created_at=run.created_at,
+        lesion_type=run.lesion_type,
     )
 
 

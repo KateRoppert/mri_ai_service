@@ -97,6 +97,7 @@ function App() {
       runId: response.run_id,
       status: response.status,
       createdAt: response.created_at,
+      lesionType: response.lesion_type || 'glioblastoma',
     });
   };
 
@@ -173,6 +174,7 @@ function App() {
                       ) : (
                         <ProgressMonitor
                           runId={activeRun.runId}
+                          lesionType={activeRun.lesionType}
                           onComplete={handlePipelineComplete}
                         />
                       )}
