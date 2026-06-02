@@ -635,48 +635,30 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                 Как управлять?
               </Button>
             </Popover>
-            {/* Легенда цветов сегментации */}
+            {/* Легенда цветов сегментации — зависит от типа поражения */}
             <Space size="large" style={{ fontSize: 13 }}>
-              <Space size="small">
-                <div style={{ 
-                  width: 16, 
-                  height: 16, 
-                  background: 'rgb(255, 0, 0)', 
-                  border: '1px solid #ccc',
-                  borderRadius: 2
-                }} />
-                <span>Некротическое ядро (NCR)</span>
-              </Space>
-              <Space size="small">
-                <div style={{ 
-                  width: 16, 
-                  height: 16, 
-                  background: 'rgb(0, 255, 0)', 
-                  border: '1px solid #ccc',
-                  borderRadius: 2
-                }} />
-                <span>Отёк (ED)</span>
-              </Space>
-              <Space size="small">
-                <div style={{ 
-                  width: 16, 
-                  height: 16, 
-                  background: 'rgb(255, 255, 0)', 
-                  border: '1px solid #ccc',
-                  borderRadius: 2
-                }} />
-                <span>Неусиливающаяся опухоль (NET)</span>
-              </Space>
-              <Space size="small">
-                <div style={{ 
-                  width: 16, 
-                  height: 16, 
-                  background: 'rgb(0, 0, 255)', 
-                  border: '1px solid #ccc',
-                  borderRadius: 2
-                }} />
-                <span>Усиливающаяся опухоль (ET)</span>
-              </Space>
+              {(lesionType === 'multiple_sclerosis'
+                ? [
+                    { color: 'rgb(82, 196, 26)', label: 'Очаги РС' },
+                  ]
+                : [
+                    { color: 'rgb(255, 0, 0)', label: 'Некротическое ядро (NCR)' },
+                    { color: 'rgb(0, 255, 0)', label: 'Отёк (ED)' },
+                    { color: 'rgb(255, 255, 0)', label: 'Неусиливающаяся опухоль (NET)' },
+                    { color: 'rgb(0, 0, 255)', label: 'Усиливающаяся опухоль (ET)' },
+                  ]
+              ).map((item) => (
+                <Space size="small" key={item.label}>
+                  <div style={{
+                    width: 16,
+                    height: 16,
+                    background: item.color,
+                    border: '1px solid #ccc',
+                    borderRadius: 2,
+                  }} />
+                  <span>{item.label}</span>
+                </Space>
+              ))}
             </Space>
           </div>
 
