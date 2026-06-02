@@ -1,134 +1,133 @@
-# Design: Lesion-Type-Aware Pipeline
+# Дизайн: lesion-type-aware pipeline
 
-**Branch:** `feat/lesion-type-aware-pipeline`
-**Date:** 2026-06-02
-**Author:** Kate Roppert
-**Closes:** KI-004, KI-005, KI-016, KI-019
-
----
-
-## 1. Context
-
-The MAS infrastructure (Stages 1–3) and post-MAS cleanup (`chore/post-mas-cleanup`) are
-complete and merged into `main`. The MS pipeline runs end-to-end without hard blockers,
-but several stages are either unaware of `lesion_type` or contain glio-only assumptions
-that cause suboptimal behavior for MS (wasted processing time, incorrect fallbacks,
-glio-only clinical reports).
-
-This branch makes MS a true first-class citizen across all pipeline stages and the
-frontend, and closes the partially-open KI-016 (lesion_types.yaml not yet wired to code).
-
-**Out of scope (deferred):**
-- KI-001 / KI-027 — ModalityDetector confidence scoring and series selection heuristics
-- KI-010 — GPU sharing coordination
-- Everything else tagged `feat/prod-readiness` or `feat/mas-coordinator` in KNOWN_ISSUES.md
+**Ветка:** `feat/lesion-type-aware-pipeline`
+**Дата:** 2026-06-02
+**Автор:** Kate Roppert
+**Закрывает:** KI-004, KI-005, KI-016, KI-019
 
 ---
 
-## 2. Approach
+## 1. Контекст
 
-Work stage-by-stage in pipeline order (01 → 03 → 04 → 05 → 06–08 → backend → frontend).
-Each stage is independently testable by disabling others in the orchestrator config.
-After each stage fix, run a smoke test on the MS case.
+MAS-инфраструктура (Этапы 1–3) и post-MAS cleanup (`chore/post-mas-cleanup`) завершены
+и смёрджены в `main`. МС-пайплайн проходит end-to-end без блокеров, но ряд этапов
+не знает о `lesion_type` или содержит глио-ориентированные допущения, которые приводят
+к неоптимальной работе для МС: лишние итерации по T1c, некорректные фолбэки,
+клинический отчёт только под глио.
+
+Эта ветка делает МС полноправным типом поражения на всех этапах pipeline и фронте,
+а также закрывает частично открытый KI-016 (lesion_types.yaml не подключён к коду).
+
+**Выходит за рамки ветки (отложено):**
+- KI-001 / KI-027 — confidence-скоринг в ModalityDetector и улучшенная эвристика выбора серий
+- KI-010 — координация GPU между сервисами
+- Всё с тегами `feat/prod-readiness` и `feat/mas-coordinator` в KNOWN_ISSUES.md
 
 ---
 
-## 3. Section 1 — Config migration (KI-016)
+## 2. Подход
 
-### Problem
+Работаем поэтапно в порядке pipeline (01 → 03 → 04 → 05 → 06–08 → backend → frontend).
+Каждый этап тестируется независимо (остальные отключаются в конфиге оркестратора).
+После каждого исправления — smoke-тест на МС-кейсе.
 
-`lesion_types.yaml` was created in `chore/post-mas-cleanup` but is not consumed by any
-pipeline stage. Each stage has its own hardcoded constants:
-- `CompletenessChecker.LESION_TYPE_MODALITIES` in Stage 01
-- `modalities: [t1c, t1, t2, t2fl]` default in Stage 05
-- No lesion_type awareness at all in Stage 04
+---
 
-### Solution
+## 3. Раздел 1 — Миграция конфига (KI-016)
 
-Add `load_lesion_type_config(lesion_type: str) -> dict` to `utils/config_loader.py`.
-Returns the full entry from `lesion_types.yaml` for the given lesion type.
+### Проблема
+
+`lesion_types.yaml` создан в `chore/post-mas-cleanup`, но ни один этап pipeline его
+не читает. У каждого этапа свои захардкоженные константы:
+- `CompletenessChecker.LESION_TYPE_MODALITIES` в Stage 01
+- `modalities: [t1c, t1, t2, t2fl]` по умолчанию в Stage 05
+- Stage 04 вообще не знает про lesion_type
+
+### Решение
+
+Добавить `load_lesion_type_config(lesion_type: str) -> dict` в `utils/config_loader.py`.
+Возвращает полную запись из `lesion_types.yaml` для нужного типа поражения.
 
 ```python
 def load_lesion_type_config(lesion_type: str) -> dict:
     """
-    Load per-lesion-type configuration from configs/lesion_types.yaml.
-    Returns required_modalities, reference_modality, reports.
+    Читает конфиг типа поражения из configs/lesion_types.yaml.
+    Возвращает required_modalities, reference_modality, reports.
     """
 ```
 
-All pipeline stages replace their hardcoded modality constants with a call to this
-function. Single source of truth — adding a new lesion type requires only a YAML edit.
+Все этапы pipeline заменяют свои захардкоженные константы на вызов этой функции.
+Единый источник истины — добавление нового типа поражения требует только правки YAML.
 
 ---
 
-## 4. Section 2 — Pipeline stage adaptation
+## 4. Раздел 2 — Адаптация этапов pipeline
 
-### Stage 01 (`01_reorganize_folders.py`) — KI-016 wiring only
+### Stage 01 (`01_reorganize_folders.py`) — только подключение KI-016
 
-Already adapted for MS in `chore/post-mas-cleanup`. Only change: replace the hardcoded
-`LESION_TYPE_MODALITIES` dict in `CompletenessChecker` with `load_lesion_type_config()`.
-No behavioral change, pure DRY refactor.
+Уже адаптирован для МС в `chore/post-mas-cleanup`. Единственное изменение: заменить
+захардкоженный dict `LESION_TYPE_MODALITIES` в `CompletenessChecker` на
+`load_lesion_type_config()`. Поведение не меняется, чистый DRY-рефакторинг.
 
-### Stage 03 (`03_convert_to_nifti.py`) — no changes needed
+### Stage 03 (`03_convert_to_nifti.py`) — изменений не нужно
 
-Converts whatever DICOM files Stage 01 organized into BIDS. T1c simply will not be
-present in the BIDS folder for MS patients, so Stage 03 processes only the correct
-modalities without modification.
+Конвертирует всё, что Stage 01 разложил в BIDS. T1c просто не будет в BIDS-папке
+для МС-пациентов — Stage 03 обработает только нужные модальности без каких-либо правок.
 
 ### Stage 04 (`04_assess_quality.py`) — KI-004
 
-**Problem:** No `--lesion-type` argument. Stage 04 processes whatever NIfTI files exist,
-so it does not crash for MS, but it has no explicit knowledge of which modalities are
-expected for which disease.
+**Проблема:** нет аргумента `--lesion-type`. Stage 04 обрабатывает NIfTI-файлы которые
+реально есть, поэтому на МС не падает, но не имеет явного знания о том, какие
+модальности ожидаются для каждой болезни.
 
-**Changes:**
-1. Add `--lesion-type` to argparse (same pattern as Stage 01, 06, 07, 08).
-2. Read `required_modalities` via `load_lesion_type_config()`.
-3. Use the modality list when building quality assessment scope and completeness report.
-4. Add `--lesion-type` to orchestrator's Stage 04 command builder.
+**Изменения:**
+1. Добавить `--lesion-type` в argparse (по образцу Stage 01, 06, 07, 08).
+2. Читать `required_modalities` через `load_lesion_type_config()`.
+3. Использовать список модальностей при формировании отчёта о полноте данных.
+4. Добавить `--lesion-type` в command builder оркестратора для Stage 04.
 
 ### Stage 05 (`05_preprocessing.py`) — KI-005
 
-**Problem:** Two glio-only assumptions:
+**Проблема:** два глио-ориентированных допущения:
 
-1. `modalities` defaults to `['t1c', 't1', 't2', 't2fl']` (line 735). For MS, T1c does
-   not exist. The current code gracefully skips missing files, but T1c remains in the
-   processing list and the code iterates over it unnecessarily. Fixing this explicitly
-   saves ~25% of Stage 05 runtime for MS (T1c N4 bias correction alone takes ~280s).
+1. `modalities` по умолчанию `['t1c', 't1', 't2', 't2fl']` (строка 735). Для МС T1c
+   не существует. Текущий код тихо пропускает отсутствующие файлы, но T1c остаётся
+   в списке обработки и код по нему итерируется зря. Явное исключение T1c экономит
+   ~25% времени Stage 05 для МС (только N4 bias correction T1c занимает ~280с).
 
-2. The reference modality fallback hardcodes `'t1c'` in two places (lines 303 and 307).
-   This contradicts `preprocessing_config.yaml` which already sets `reference_modality: "t1"`.
-   The fallback fires only when the registration step is absent from config or has no
-   `reference_modality` key — but if it fires for an MS case without T1c files, Stage 05
-   would skip the subject with `missing_reference_modality_t1c`.
+2. Фолбэк reference modality захардкожен как `'t1c'` в двух местах (строки 303 и 307).
+   Это противоречит `preprocessing_config.yaml`, где уже стоит `reference_modality: "t1"`.
+   Фолбэк срабатывает только когда шага registration нет в конфиге или у него нет
+   параметра `reference_modality` — но если он сработает для МС-кейса без T1c-файлов,
+   Stage 05 пропустит субъект с ошибкой `missing_reference_modality_t1c`.
 
-**Changes:**
-1. Add `--lesion-type` to argparse.
-2. Read `required_modalities` and `reference_modality` via `load_lesion_type_config()`.
-3. Override `modalities` list (from config) with the lesion-type-specific list. For MS:
-   `[t1, t2, t2fl]`; for glio: `[t1c, t1, t2, t2fl]`.
-4. Replace both `'t1c'` fallbacks with `lt_config['reference_modality']`
-   (= `'t1'` for both glio and MS per `lesion_types.yaml`).
-5. Add `--lesion-type` to orchestrator Stage 05 command builder.
+**Изменения:**
+1. Добавить `--lesion-type` в argparse.
+2. Читать `required_modalities` и `reference_modality` через `load_lesion_type_config()`.
+3. Переопределить список `modalities` (из конфига) списком из lesion_types.yaml.
+   Для МС: `[t1, t2, t2fl]`; для глио: `[t1c, t1, t2, t2fl]`.
+4. Заменить оба фолбэка `'t1c'` на `lt_config['reference_modality']`
+   (= `'t1'` для обоих типов согласно `lesion_types.yaml`).
+5. Добавить `--lesion-type` в command builder оркестратора для Stage 05.
 
-### Stages 06 / 07 / 08 — verify only
+### Stages 06 / 07 / 08 — только верификация
 
-Already parameterized with `--lesion-type` from `feat/mas-refactor`. Run a smoke MS
-pass to confirm no regressions. Fix only if a specific issue surfaces.
+Уже параметризованы `--lesion-type` из `feat/mas-refactor`. Прогоняем МС-кейс
+для подтверждения отсутствия регрессий. Правки только при выявлении конкретной проблемы.
 
 ---
 
-## 5. Section 3 — Backend for MS report
+## 5. Раздел 3 — Backend для МС-отчёта
 
-### Lesion count computation
+### Подсчёт очагов
 
-**Where:** Stage 08 (`08_lobar_localization.py`).
+**Место:** Stage 08 (`08_lobar_localization.py`).
 
-Stage 08 already reads the segmentation mask for lobar atlas mapping. Add a branch:
-if `lesion_type == 'multiple_sclerosis'`, run `scipy.ndimage.label()` on the binary
-mask and compute connected component statistics.
+Stage 08 уже читает маску сегментации для лобарного атласа. Добавляем ветку:
+если `lesion_type == 'multiple_sclerosis'` — запускаем `scipy.ndimage.label()` на
+бинарной маске, считаем связные компоненты (connected components).
 
-Output file: `lesion_stats_report.json` (written alongside existing `lobar_report.json`):
+Выходной файл: `lesion_stats_report.json` (рядом с существующим `lobar_report.json`):
 
 ```json
 {
@@ -141,16 +140,16 @@ Output file: `lesion_stats_report.json` (written alongside existing `lobar_repor
 }
 ```
 
-### New backend endpoints
+### Новые backend-эндпоинты
 
-`GET /api/reports/lesion-stats/{run_id}`
-Returns lesion_stats_report.json contents for each patient/session in the run.
-Pattern follows existing `get_volume_reports` / `get_lobar_reports`.
+`GET /api/reports/lesion-stats/{run_id}` — возвращает содержимое `lesion_stats_report.json`
+для каждого пациента/сессии в прогоне. Паттерн аналогичен существующим
+`get_volume_reports` / `get_lobar_reports`.
 
-`GET /api/reports/longitudinal/{patient_id}?lesion_type=multiple_sclerosis`
-Queries `patient_registry` (SQLite) for all sessions matching `patient_id` + `lesion_type`,
-sorted by `scan_date`. For each session reads `lesion_stats_report.json` (MS) or
-volume_report.txt (glio) to get total volume. Returns:
+`GET /api/reports/longitudinal/{patient_id}?lesion_type=multiple_sclerosis` — запрос
+к `patient_registry` (SQLite): все сессии с данным `patient_id` + `lesion_type`,
+сортировка по `scan_date`. Для каждой сессии читается `lesion_stats_report.json` (МС)
+или `volume_report.txt` (глио) для получения суммарного объёма. Ответ:
 
 ```json
 [
@@ -159,30 +158,30 @@ volume_report.txt (glio) to get total volume. Returns:
 ]
 ```
 
-Appears in the UI only when 2+ sessions are returned.
+Показывается в UI только при 2+ сессиях в ответе.
 
 ---
 
-## 6. Section 4 — Frontend
+## 6. Раздел 4 — Frontend
 
-### `NIfTIViewer.jsx` — dynamic colormap
+### `NIfTIViewer.jsx` — динамический colormap
 
-**Problem:** Colormap hardcodes 4 glio classes (NCR/ED/NET/ET).
+**Проблема:** colormap захардкожен под 4 класса глио (NCR/ED/NET/ET).
 
-**Solution:** Accept `lesionType` prop (already available in `ValidationPanel` from the
-run record). Build colormap from lesion type:
-- `multiple_sclerosis` → binary colormap: 0=background, 1=lesion (`#52c41a`)
-- `glioblastoma` → existing 4-class palette (NCR/ED/NET/ET), unchanged
+**Решение:** принимать prop `lesionType` (уже доступен в `ValidationPanel` из записи
+прогона). Строить colormap по типу поражения:
+- `multiple_sclerosis` → бинарный: 0=фон, 1=очаг (`#52c41a`)
+- `glioblastoma` → существующая 4-классовая палитра (NCR/ED/NET/ET), без изменений
 
-This is simpler than threading `outputClasses` from the inference result (which is not
-persisted in the database after pipeline completion) and correctly captures the fixed
-class structure of each model.
+Это проще, чем передавать `outputClasses` из результата инференса (который не хранится
+в БД после завершения pipeline), и корректно отражает фиксированную структуру классов
+каждой модели.
 
-### `ClinicalReportContent.jsx` — lesion_type routing
+### `ClinicalReportContent.jsx` — роутинг по lesion_type
 
-**Problem:** Monolithic component, fully glio-specific (NCR/ED/NET/ET volumes, CE+/CE−).
+**Проблема:** монолитный компонент, полностью заточен под глио (объёмы NCR/ED/NET/ET, CE+/CE−).
 
-**Solution:** Add `lesionType` prop. Split render path:
+**Решение:** добавить prop `lesionType`. Разделить рендер:
 
 ```jsx
 if (lesionType === 'multiple_sclerosis') {
@@ -191,62 +190,62 @@ if (lesionType === 'multiple_sclerosis') {
 return <GbmReportSection volumeReports={volumeReports} lobarReports={lobarReports} />;
 ```
 
-`GbmReportSection` — current code extracted into a sub-component, no behavioral change.
-`MsReportSection` — new sub-component (same file) showing:
-- Total lesion volume (Statistic)
-- Lesion count (Statistic)
-- Lobar distribution table (existing lobar_report, already works for MS)
-- `LongitudinalTimeline` (see below, only if 2+ sessions found)
+`GbmReportSection` — текущий код, вынесенный в подкомпонент, без изменений поведения.
+`MsReportSection` — новый подкомпонент (в том же файле), отображает:
+- Суммарный объём очагов (Statistic)
+- Количество очагов (Statistic)
+- Таблица по долям мозга (существующий lobar_report, уже работает для МС)
+- `LongitudinalTimeline` (ниже, только при 2+ сессиях)
 
-### `LongitudinalTimeline` — new sub-component
+### `LongitudinalTimeline` — новый подкомпонент
 
-Located alongside `ClinicalReport.jsx`. Fetches
-`GET /api/reports/longitudinal/{patient_id}?lesion_type=...` on mount. If API returns
-fewer than 2 rows, renders nothing. Otherwise renders a simple Ant Design table:
+Рядом с `ClinicalReport.jsx`. При монтировании запрашивает
+`GET /api/reports/longitudinal/{patient_id}?lesion_type=...`. Если API вернул менее
+2 строк — ничего не отображает. Иначе — простая Ant Design таблица:
 
 | Дата | Сессия | Объём (см³) | Кол-во очагов |
 |------|--------|------------|---------------|
 | 2022-01-18 | ses-001 | 2.14 | 11 |
 | 2023-03-25 | ses-002 | 3.21 | 14 |
 
-Δ-column (volume change vs. previous session) added if 3+ sessions.
+При 3+ сессиях добавляется колонка Δ (изменение объёма относительно предыдущей сессии).
 
 ---
 
-## 7. Work order summary
+## 7. Порядок работ
 
-| # | Area | Files | Closes |
-|---|------|-------|--------|
+| # | Область | Файлы | Закрывает |
+|---|---------|-------|-----------|
 | 1 | Config utility | `utils/config_loader.py` | KI-016 |
 | 2 | Stage 01 wiring | `scripts/01_reorganize_folders.py` | KI-016 |
 | 3 | Stage 04 | `scripts/04_assess_quality.py`, `orchestrator.py` | KI-004 |
 | 4 | Stage 05 | `scripts/05_preprocessing.py`, `orchestrator.py` | KI-005 |
-| 5 | Stages 06–08 smoke | verify only | — |
-| 6 | Stage 08 lesion count | `scripts/08_lobar_localization.py` | KI-019 (partial) |
-| 7 | Backend endpoints | `backend/app.py` | KI-019 |
+| 5 | Stages 06–08 smoke | только проверка | — |
+| 6 | Stage 08 lesion count | `scripts/08_lobar_localization.py` | KI-019 (частично) |
+| 7 | Backend эндпоинты | `backend/app.py` | KI-019 |
 | 8 | NIfTIViewer colormap | `frontend/src/components/NIfTIViewer.jsx` | SPEC §5 |
 | 9 | ClinicalReportContent routing | `frontend/src/components/ClinicalReportContent.jsx` | KI-019 |
 | 10 | LongitudinalTimeline | `frontend/src/components/LongitudinalTimeline.jsx`, `backend/app.py` | KI-019 |
 
 ---
 
-## 8. Testing
+## 8. Тестирование
 
-Each pipeline stage is tested independently (disable others in orchestrator config).
-Smoke test sequence per stage:
-1. `python3 -m py_compile <script>` — syntax check
-2. Run stage on MS case (P000915), verify log output
-3. Run stage on glio case (UPENN-GBM), verify no regression
+Каждый этап pipeline тестируется независимо (остальные отключаются в конфиге оркестратора).
+Последовательность smoke-теста на каждый этап:
+1. `python3 -m py_compile <script>` — проверка синтаксиса
+2. Прогон этапа на МС-кейсе (P000915), проверка лога
+3. Прогон этапа на глио-кейсе (UPENN-GBM), проверка отсутствия регрессий
 
-Frontend: manual test in browser after dev server start.
-
----
-
-## 9. Commit conventions
-
-`feat(stage04): ...`, `fix(stage05): ...`, `refactor(config): ...` etc.
-Each commit covers one completed sub-task with a passing smoke test.
+Frontend: ручное тестирование в браузере после старта dev-сервера.
 
 ---
 
-*Document status: approved. Next step — implementation plan.*
+## 9. Конвенции коммитов
+
+`feat(stage04): ...`, `fix(stage05): ...`, `refactor(config): ...` и т.д.
+Каждый коммит — одна завершённая подзадача с пройденным smoke-тестом.
+
+---
+
+*Статус документа: утверждён. Следующий шаг — план реализации.*
