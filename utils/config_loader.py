@@ -249,10 +249,10 @@ def get_stage_output_dir(stage_name: str, config: Dict[str, Any]) -> Path:
 def get_enabled_stages(config: Dict[str, Any]) -> List[str]:
     """
     Возвращает список включенных этапов в правильном порядке.
-    
+
     Args:
         config: Конфигурация
-        
+
     Returns:
         Список имен включенных этапов
     """
@@ -266,5 +266,29 @@ def get_enabled_stages(config: Dict[str, Any]) -> List[str]:
         'stage_07_inverse_transform',
         'stage_08_lobar_localization'
     ]
-    
+
     return [stage for stage in all_stages if config['stages'][stage]['enabled']]
+
+
+def load_lesion_type_config(lesion_type: str) -> Dict[str, Any]:
+    """
+    Load per-lesion-type configuration from configs/lesion_types.yaml.
+
+    Args:
+        lesion_type: Name of the lesion type (e.g., 'glioblastoma', 'multiple_sclerosis')
+
+    Returns:
+        Dict with keys: required_modalities, reference_modality, reports.
+
+    Raises:
+        KeyError: If lesion_type not found in the YAML.
+    """
+    config_path = Path(__file__).parent.parent / 'configs' / 'lesion_types.yaml'
+    with open(config_path, 'r', encoding='utf-8') as f:
+        all_configs = yaml.safe_load(f)
+    if lesion_type not in all_configs:
+        raise KeyError(
+            f"Unknown lesion_type '{lesion_type}'. "
+            f"Available: {list(all_configs.keys())}"
+        )
+    return all_configs[lesion_type]
