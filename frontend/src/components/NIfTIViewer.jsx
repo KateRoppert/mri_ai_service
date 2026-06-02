@@ -36,7 +36,15 @@ const createSegmentationColormap = () => {
   return colors;
 };
 
-const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null }) => {
+// Binary colormap for MS: 0=transparent background, 1=green lesion
+const createMsColormap = () => ({
+  R: [0, 82],
+  G: [0, 196],
+  B: [0, 26],
+  A: [0, 255],
+});
+
+const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null, lesionType = 'glioblastoma' }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
   
@@ -203,8 +211,10 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         throw new Error(`Не удалось загрузить маску: ${maskResponse.status}`);
       }
       
-      // Colormap
-      const segColormap = createSegmentationColormap();
+      // Colormap: binary green for MS, multi-class for GBM
+      const segColormap = lesionType === 'multiple_sclerosis'
+        ? createMsColormap()
+        : createSegmentationColormap();
       nv.addColormap('seg_custom', segColormap);
 
       // Загружаем в niivue. Передаём name для определения формата,
@@ -222,7 +232,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           colormap: 'seg_custom',
           opacity: maskOpacity,
           cal_min: 0,
-          cal_max: 4,
+          cal_max: lesionType === 'multiple_sclerosis' ? 1 : 4,
         }
       ]);
       
@@ -371,8 +381,10 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         throw new Error(`Не удалось загрузить маску v${versionInfo.version}: ${maskResponse.status}`);
       }
 
-      // Создаём colormap
-      const segColormap = createSegmentationColormap();
+      // Создаём colormap: binary green for MS, multi-class for GBM
+      const segColormap = lesionType === 'multiple_sclerosis'
+        ? createMsColormap()
+        : createSegmentationColormap();
       nv.addColormap('seg_custom', segColormap);
 
       // Добавляем новую маску
@@ -382,7 +394,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         colormap: 'seg_custom',
         opacity: maskOpacity,
         cal_min: 0,
-        cal_max: 4,
+        cal_max: lesionType === 'multiple_sclerosis' ? 1 : 4,
       });
 
       nv.drawScene();

@@ -69,6 +69,24 @@ export const getLobarReports = async (runId) => {
 };
 
 /**
+ * Статистика очагов МС (количество, объёмы)
+ */
+export const getLesionStatsReports = async (runId) => {
+  const response = await apiClient.get(`/lesion-stats/${runId}`);
+  return response.data;
+};
+
+/**
+ * Лонгитюдная динамика пациента по типу поражения
+ */
+export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sclerosis') => {
+  const response = await apiClient.get(`/longitudinal/${patientId}`, {
+    params: { lesion_type: lesionType },
+  });
+  return response.data;
+};
+
+/**
  * Получить список доступных NIfTI файлов для визуализации
  */
 export const getNIfTIFiles = async (runId) => {
@@ -286,9 +304,12 @@ export default {
   getPipelineHistory,
   getQualityReport,
   getVolumeReports,
-  getNIfTIFiles,     
-  getNIfTIFileUrl, 
-  getLesionTypes,   
+  getLobarReports,
+  getLesionStatsReports,
+  getLongitudinalReport,
+  getNIfTIFiles,
+  getNIfTIFileUrl,
+  getLesionTypes,
   getValidationEntities,
   getValidationFileUrl,
   validationAction,

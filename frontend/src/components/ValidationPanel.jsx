@@ -82,6 +82,7 @@ const ValidationPanel = () => {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFiles, setViewerFiles] = useState([]);
   const [viewerEntityRef, setViewerEntityRef] = useState(null);
+  const [viewerLesionType, setViewerLesionType] = useState('glioblastoma');
 
   useEffect(() => {
     loadLesionTypes();
@@ -132,6 +133,7 @@ const ValidationPanel = () => {
       entity_id: entity.dsEntityId,
       dataset_id: selectedDatasetId,
     });
+    setViewerLesionType(entity.dsEntityInfo?.lesion_type || 'glioblastoma');
     setViewerOpen(true);
   };
 
@@ -269,6 +271,7 @@ const ValidationPanel = () => {
         onClose={() => setViewerOpen(false)}
         customFiles={viewerFiles}
         validationRef={viewerEntityRef}
+        lesionType={viewerLesionType}
       />
     </>
   );
