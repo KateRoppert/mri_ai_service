@@ -33,13 +33,15 @@ from functools import partial
 import time
 import yaml
 from scripts.metadata_extractor import MetadataExtractor
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.config_loader import load_lesion_type_config
 
 # Single source of truth for modalities the pipeline knows how to process.
 # Maps internal modality name → BIDS suffix used in output filenames.
 # The .keys() of this dict is the input filter: any series whose detected
 # modality is not here will be dropped. Adding a new modality (e.g. for
 # metastases work) requires only an entry here plus an update to
-# CompletenessChecker.LESION_TYPE_MODALITIES.
+# configs/lesion_types.yaml.
 MODALITY_BIDS_SUFFIX: Dict[str, str] = {
     't1':   'T1w',
     't1c':  'T1wCE',
@@ -565,19 +567,18 @@ class SeriesDeduplicator:
 class CompletenessChecker:
     """Check if patients/sessions have all required modalities for the lesion type."""
 
-    DEFAULT_REQUIRED_MODALITIES = {'t1', 't1c', 't2', 't2fl'}  # glioma case
-
-    # Per-lesion-type modality requirements (extended over time)
-    LESION_TYPE_MODALITIES = {
-        'glioblastoma': {'t1', 't1c', 't2', 't2fl'},
-        'multiple_sclerosis': {'t1', 't2', 't2fl'},
-    }
+    DEFAULT_REQUIRED_MODALITIES = {'t1', 't1c', 't2', 't2fl'}  # fallback for unknown types
 
     def __init__(self, logger: logging.Logger, lesion_type: str = 'glioblastoma'):
         self.logger = logger
-        self.required_modalities = self.LESION_TYPE_MODALITIES.get(
-            lesion_type, self.DEFAULT_REQUIRED_MODALITIES
-        )
+        try:
+            cfg = load_lesion_type_config(lesion_type)
+            self.required_modalities = set(cfg['required_modalities'])
+        except KeyError:
+            self.logger.warning(
+                f"Unknown lesion_type '{lesion_type}', using default modalities"
+            )
+            self.required_modalities = self.DEFAULT_REQUIRED_MODALITIES
         self.logger.info(
             f"CompletenessChecker initialized for lesion_type={lesion_type}; "
             f"required modalities: {sorted(self.required_modalities)}"
@@ -884,12 +885,11 @@ def print_summary(
 
     # Modalities relevant for the active lesion type (same source of truth
     # as CompletenessChecker uses). Fallback to default if lesion_type unknown.
-    relevant_modalities = sorted(
-        CompletenessChecker.LESION_TYPE_MODALITIES.get(
-            lesion_type,
-            CompletenessChecker.DEFAULT_REQUIRED_MODALITIES,
-        )
-    )
+    try:
+        _mods = set(load_lesion_type_config(lesion_type)['required_modalities'])
+    except KeyError:
+        _mods = CompletenessChecker.DEFAULT_REQUIRED_MODALITIES
+    relevant_modalities = sorted(_mods)
 
     print("\n" + "=" * 60)
     print("=== Reorganization Summary ===")
