@@ -1059,16 +1059,13 @@ class SegmentationRunner:
                 logger.info(f"[{idx}/{self.stats.total}] Processing: {identifier}")
 
                 try:
-                    seg_input = SegmentationInput(
-                        t1=session.modality_files["t1"],
-                        t1c=session.modality_files["t1c"],
-                        t2=session.modality_files["t2"],
-                        flair=session.modality_files["t2fl"]
-                    )
-                    if not seg_input.validate():
-                        raise FileNotFoundError(
-                            f"Modality file validation failed for {identifier}"
-                        )
+                    # Validate that all required modality files exist
+                    # (lesion-type-aware: modality_files only contains required keys)
+                    for _mod, _path in session.modality_files.items():
+                        if not _path.exists():
+                            raise FileNotFoundError(
+                                f"Required file not found: {_path}"
+                            )
 
                     input_dir = session.modality_files["t1"].parent
                     output_dir = session.output_mask_path.parent
