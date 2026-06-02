@@ -324,6 +324,20 @@ MS `9ce28980`/ses-002) — Slicer корректно загружает соот
   В рамках чистки берём более лёгкий путь, base image — кандидат на
   `feat/prod-readiness`.
 
+**Реализация:**
+
+KI-008: создан `services/common/torch_compat.py::enable_legacy_checkpoint_loading()`.
+Оба `service_server.py` заменяют 15-строчный try/except-блок на два вызова.
+Из gbm-seg удалён ставший ненужным `import numpy`. Покрыто 9 pytest-тестами
+(мок torch, проверка patching, fallback на старый PyTorch, resilience к ошибкам).
+
+KI-009: создан `services/common/requirements-base.txt` (Quart, Hypercorn, Flask,
+pynvml, PyYAML). ms-seg references через `-r common/requirements-base.txt`.
+gbm-seg сохраняет полный pip-freeze для reproducibility (комментарий с ссылкой
+на canonical source). Найден и исправлен Docker-специфичный баг: `COPY common/`
+шёл после `pip install`, из-за чего requirements-base.txt не существовал при
+сборке — переставлен порядок в ms-seg Dockerfile.
+
 ---
 
 ### Этап 6 — Operational footgun
@@ -345,6 +359,15 @@ Kappa-датасетом.
 **Коммиты:**
 
 1. `feat(kappa): warn on empty duplicate dataset before auto-create` (KI-015)
+
+**Реализация:**
+
+Добавлена `list_user_datasets()` в `kappa_client.py` (GET /datasets/{uid}/{utid}).
+В `KappaUploader._resolve_dataset_id()` перед `create_dataset()` вызывается
+`_warn_if_empty_dataset_exists()`: находит датасеты с именем, содержащим
+`lesion_type`, проверяет пустоту через `get_dataset_entities()`, логирует
+WARNING с id и инструкцией. Сетевые ошибки перехватываются — создание
+датасета не блокируется ни при каких обстоятельствах. 6 pytest-тестов.
 
 ---
 
@@ -371,6 +394,14 @@ Kappa-датасетом.
 **Коммиты:**
 
 1. `feat(config): introduce lesion_types.yaml schema (not yet wired)` (KI-016 partial)
+
+**Реализация:**
+
+Создан `configs/lesion_types.yaml` с полями `required_modalities`,
+`reference_modality`, `reports` для обоих lesion_type. Данные соответствуют
+`CompletenessChecker.LESION_TYPE_MODALITIES` и `reference_modality: t1` из
+`preprocessing_config.yaml`. Файл содержит подробный комментарий о статусе
+(«not yet wired»). Валидация: `python3 -c 'import yaml; yaml.safe_load(open(...))'` ✓.
 
 ---
 
@@ -410,6 +441,42 @@ Kappa-датасетом.
   по ходу обхода обнаружим что-то крупное (например, structural bug) —
   обсуждаем отдельно, возможно выносим в отдельный этап.
 
+**Реализация:**
+
+Stage 02 как отдельного скрипта нет. Пройдено по stages 03–08.
+
+*Stage 03:* исправлены dcm2niix артефакты (лишние JSON/дополнительные файлы),
+уточнен scope warning, исправлена передача max_subjects через orchestrator.
+
+*Stage 04:* 7 багов — skip-existing по неправильному пути, skipped counter
+в параллельном режиме, unpacking кортежа UPENN, парсинг модальностей.
+
+*Stage 05:* 6 багов — reference_modality по имени (не по индексу [2]),
+skipped counter (True → skipped, не successful), FSL warning вместо error,
+дублирующий step number. Добавлен auto-tune параллелизма:
+`actual_workers = min(max_workers, n_subjects, effective_cpu // 8)`,
+`effective_cpu = cpu_count - 2` (резервирует ядра для OS/IDE).
+
+*Stage 06:* 5 багов — двойной log_summary, rglob для lesion_type subfolder,
+skipped=0 захардкожен, max_subjects считал сессии а не субъектов, server
+availability check использовал URL из профиля конфига вместо registry.
+GPU retry: 3 попытки с backoff 30/60s при `cudaErrorDevicesUnavailable`.
+
+*Stage 07:* thread limits не выставлялись для parallel mode, skipped=0
+в benchmark. Auto-tune: `actual_workers = min(workers, n_masks, effective_cpu // 4)`.
+
+*Stage 08:* lesion_type filter пропускал маски других типов, skipped
+не считался, LobarAnalyzer перезагружался при каждом процессе в parallel.
+Auto-tune: `actual_workers = min(workers, n_masks)` (no thread limits, pure Python).
+
+Новые KI, выявленные в survey: KI-033 (N4 intra-session parallel),
+KI-034 (args как global в SegmentationRunner).
+
+Docker: `network: host` + proxy build args для поддержки localhost прокси
+при сборке; pip timeout 120s для медленных соединений.
+
+Smoke-тест: glioblastoma ✅, multiple_sclerosis ✅ (после GPU retry fix).
+
 ---
 
 ### Этап 9 — Финализация и merge
@@ -434,11 +501,17 @@ Kappa-датасетом.
 
 **Коммиты:**
 
-1. `test: end-to-end smoke on glioblastoma case`
-2. `test: end-to-end smoke on multiple sclerosis case`
-3. `docs(known-issues): mark cleared items, refresh statuses`
-4. `docs(spec): finalize post-MAS cleanup phase notes`
-5. (merge commit) `Merge branch 'chore/post-mas-cleanup' into main`
+1. `docs(known-issues): mark cleared items, refresh statuses`
+2. `docs(spec): finalize post-MAS cleanup phase notes`
+3. (merge commit) `Merge branch 'chore/post-mas-cleanup' into main`
+
+**Реализация:**
+
+End-to-end smoke на glioblastoma: ✅ (прогон через веб-сервис, все этапы
+01→08 завершены успешно).
+End-to-end smoke на multiple_sclerosis: ✅ (после GPU retry fix; первый
+прогон упал на stage 06 из-за конкурентного использования GPU двумя
+пайплайнами, второй прошёл полностью).
 
 ---
 
@@ -446,7 +519,7 @@ Kappa-датасетом.
 
 | Этап | Что меняется | Smoke-минимум |
 |------|--------------|---------------|
-| 1 ✅ | Dockerfiles | `docker compose build` + оба `/health` |
+| 1 ✅ | Dockerfiles | `docker compose build` + оба `/health` ✅ |
 | 2 ✅ | Backend/frontend/Slicer | прогон MS-кейса + проверка в UI/Slicer |
 | 3 | Stage 01 (pipeline entry) | `py_compile` + прогон обоих типов в обоих режимах (sequential, parallel) |
 | 4 | Validation logic | прогон обоих типов, проверка логов валидации |
