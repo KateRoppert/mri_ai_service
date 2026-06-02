@@ -687,7 +687,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
               padding: '16px 0',
               borderTop: '2px solid #f0f0f0',
             }}>
-              <ClinicalReportContent runId={resolvedRunId} autoLoad={true} />
+              <ClinicalReportContent runId={resolvedRunId} autoLoad={true} lesionType={lesionType} />
             </div>
           )}
         </>

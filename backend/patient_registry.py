@@ -187,6 +187,18 @@ def find_by_patient_id(original_patient_id: str) -> List[Dict[str, Any]]:
         db.close()
 
 
+def find_by_bids_id(bids_id: str) -> List[Dict[str, Any]]:
+    """Найти все записи по BIDS-идентификатору пациента (sub-XXX)."""
+    db = SessionLocal()
+    try:
+        records = db.query(PatientRegistry).filter(
+            PatientRegistry.bids_id == bids_id
+        ).all()
+        return [_to_dict(r) for r in records]
+    finally:
+        db.close()
+
+
 def find_by_kappa_entity(kappa_entity_id: str) -> Optional[Dict[str, Any]]:
     """Найти запись по ID сущности в Каппе."""
     db = SessionLocal()

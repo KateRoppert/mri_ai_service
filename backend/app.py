@@ -772,9 +772,15 @@ async def get_longitudinal(
     patient_id — original_patient_id (напр. "P000915").
     Матчинг: bids_id в registry == patient_id в stats файле (оба "sub-P000915").
     """
-    from patient_registry import find_by_patient_id
+    from patient_registry import find_by_patient_id, find_by_bids_id
 
+    # stats files store the BIDS ID (e.g. "sub-001"); frontend passes that.
+    # Registry is keyed by original_patient_id but bids_id is also indexed.
+    # Try original_patient_id first, then fall back to bids_id.
     all_records = find_by_patient_id(patient_id)
+    if not all_records:
+        all_records = find_by_bids_id(patient_id)
+
     records = [r for r in all_records if r.get("lesion_type") == lesion_type]
 
     if not records:
