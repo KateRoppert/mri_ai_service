@@ -32,6 +32,9 @@ import asyncio
 import time
 from datetime import datetime 
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.config_loader import load_lesion_type_config
 from pipeline_validator import InputOutputValidator
 
 # --- Logger Setup ---
@@ -465,29 +468,39 @@ class SubjectSession:
     """
     subject_id: str
     session_id: Optional[str]
-    modality_files: dict[str, Path]  # Keys: t1, t1c, t2, flair
+    modality_files: dict[str, Path]  # Keys: t1, t1c, t2, t2fl (lesion-type dependent)
     output_mask_path: Path
-    
+    required_modalities: frozenset = frozenset({"t1", "t1c", "t2", "t2fl"})
+
     def get_identifier(self) -> str:
         """Returns a human-readable identifier for logging."""
         if self.session_id:
             return f"{self.subject_id}_{self.session_id}"
         return self.subject_id
-    
+
     def has_all_modalities(self) -> bool:
         """Checks if all required modalities are present."""
-        required = {"t1", "t1c", "t2", "t2fl"}
-        return required.issubset(self.modality_files.keys())
+        return self.required_modalities.issubset(self.modality_files.keys())
 
 
 class BIDSScanner:
     """
     Scans a BIDS directory structure and discovers subject/session combinations.
     """
-    def __init__(self, input_dir: Path, output_dir: Path, modality_map: dict[str, str]):
+    def __init__(
+        self,
+        input_dir: Path,
+        output_dir: Path,
+        modality_map: dict[str, str],
+        required_modalities: set = None,
+    ):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.modality_map = modality_map
+        self.required_modalities = frozenset(
+            required_modalities if required_modalities is not None
+            else {"t1", "t1c", "t2", "t2fl"}
+        )
         
         if not input_dir.exists():
             raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
@@ -583,8 +596,8 @@ class BIDSScanner:
             else:
                 logger.debug(f"{identifier}: Missing modality '{server_key}' (pattern: {pattern})")
         
-        # Check if we have all required modalities
-        required = {"t1", "t1c", "t2", "t2fl"}
+        # Check if we have all required modalities for this lesion type
+        required = self.required_modalities
         if not required.issubset(modality_files.keys()):
             missing = required - modality_files.keys()
             logger.warning(f"⚠️  Skipping {identifier}: Missing modalities {missing}")
@@ -625,7 +638,8 @@ class BIDSScanner:
             subject_id=subject_id,
             session_id=session_id,
             modality_files=modality_files,
-            output_mask_path=output_mask_path
+            output_mask_path=output_mask_path,
+            required_modalities=self.required_modalities,
         )
     
     def filter_existing(
@@ -953,10 +967,16 @@ class SegmentationRunner:
             logger.info("SCANNING INPUT DIRECTORY")
             logger.info("=" * 60)
             
+            try:
+                _lt_cfg = load_lesion_type_config(self.args.lesion_type)
+                _required = set(_lt_cfg['required_modalities'])
+            except (KeyError, Exception):
+                _required = {"t1", "t1c", "t2", "t2fl"}
             scanner = BIDSScanner(
                 input_dir=self.args.input_dir,
                 output_dir=self.args.output_dir,
-                modality_map=self.config.get_modality_map()
+                modality_map=self.config.get_modality_map(),
+                required_modalities=_required,
             )
             
             sessions = scanner.scan(max_subjects=self.args.max_subjects)

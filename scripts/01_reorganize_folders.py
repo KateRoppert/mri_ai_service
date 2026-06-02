@@ -998,6 +998,7 @@ def _process_one_patient_core(
     deduplicator: 'SeriesDeduplicator',
     file_organizer: 'FileOrganizer',
     logger: logging.Logger,
+    lesion_type: str = 'glioblastoma',
 ) -> Optional[Dict]:
     """
     Process one patient end-to-end: scan series → detect modalities →
@@ -1023,6 +1024,12 @@ def _process_one_patient_core(
     """
     original_patient_id = patient_dir.name
 
+    # Determine which modalities to copy for this lesion type
+    try:
+        required_modalities = set(load_lesion_type_config(lesion_type)['required_modalities'])
+    except (KeyError, Exception):
+        required_modalities = set(MODALITY_BIDS_SUFFIX.keys())
+
     # Scan series (now returns tuples: (series_dir, date_folder_name_or_None))
     series_entries = scanner.scan_patient_series(patient_dir)
     logger.debug(f"  Found {len(series_entries)} series entries (nested-aware)")
@@ -1042,8 +1049,8 @@ def _process_one_patient_core(
         # Detect modality
         modality, series_description = modality_detector.detect_modality(series_dir)
 
-        # Filter: only keep modalities the pipeline supports
-        if modality in MODALITY_BIDS_SUFFIX:
+        # Filter: only copy modalities required for this lesion type
+        if modality in MODALITY_BIDS_SUFFIX and modality in required_modalities:
             series_info = SeriesInfo(
                 original_path=series_dir,
                 patient_id=original_patient_id,
@@ -1141,7 +1148,8 @@ def process_single_patient(
     force: bool = False,
     dry_run: bool = False,
     tags_config: Optional[Dict] = None,
-    metadata_dir: Optional[Path] = None
+    metadata_dir: Optional[Path] = None,
+    lesion_type: str = 'glioblastoma',
 ) -> PatientResult:
     """
     Process a single patient (designed to run in parallel).
@@ -1206,6 +1214,7 @@ def process_single_patient(
             deduplicator=deduplicator,
             file_organizer=file_organizer,
             logger=logger,
+            lesion_type=lesion_type,
         )
 
         if patient_data is None:
@@ -1447,6 +1456,7 @@ def run_sequential(
             deduplicator=deduplicator,
             file_organizer=file_organizer,
             logger=logger,
+            lesion_type=lesion_type,
         )
 
         if patient_data is None:
@@ -1578,7 +1588,8 @@ def run_parallel(
         force=force,
         dry_run=dry_run,
         tags_config=tags_config,
-        metadata_dir=metadata_dir
+        metadata_dir=metadata_dir,
+        lesion_type=lesion_type,
     )
     
     # Map worker status strings to counter keys. "ok" → "successful".
