@@ -9,13 +9,15 @@
 import { useEffect, useState } from 'react';
 import { Table, Space, Spin, Alert, Tag, Tooltip, Row, Col, Statistic, Divider } from 'antd';
 import { MedicineBoxOutlined, ExperimentOutlined, EnvironmentOutlined } from '@ant-design/icons';
-import { getVolumeReports, getLobarReports } from '../services/api';
+import { getVolumeReports, getLobarReports, getLesionStatsReports } from '../services/api';
+import LongitudinalTimeline from './LongitudinalTimeline';
 
-const ClinicalReportContent = ({ runId, autoLoad = false }) => {
+const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma' }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [volumeReports, setVolumeReports] = useState([]);
   const [lobarReports, setLobarReports] = useState([]);
+  const [lesionStatsReports, setLesionStatsReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -28,12 +30,19 @@ const ClinicalReportContent = ({ runId, autoLoad = false }) => {
     setLoading(true);
     setError(null);
     try {
-      const [volData, lobarData] = await Promise.all([
+      const fetches = [
         getVolumeReports(runId).catch(() => ({ reports: [] })),
         getLobarReports(runId).catch(() => ({ reports: [] })),
-      ]);
-      setVolumeReports(volData.reports || []);
-      setLobarReports(lobarData.reports || []);
+      ];
+      if (lesionType === 'multiple_sclerosis') {
+        fetches.push(getLesionStatsReports(runId).catch(() => ({ reports: [] })));
+      }
+      const results = await Promise.all(fetches);
+      setVolumeReports(results[0].reports || []);
+      setLobarReports(results[1].reports || []);
+      if (lesionType === 'multiple_sclerosis') {
+        setLesionStatsReports(results[2]?.reports || []);
+      }
       setLoaded(true);
     } catch (err) {
       console.error('Ошибка загрузки отчёта:', err);
@@ -303,10 +312,88 @@ const ClinicalReportContent = ({ runId, autoLoad = false }) => {
     return <Alert description={error} type="error" showIcon style={{ marginBottom: 16 }} />;
   }
 
-  if (!loaded || volumeReports.length === 0) {
+  if (!loaded || (lesionType !== 'multiple_sclerosis' && volumeReports.length === 0)) {
     return null;
   }
 
+  // ===== MS RENDER PATH =====
+  if (lesionType === 'multiple_sclerosis') {
+    if (!loaded || lesionStatsReports.length === 0) return null;
+    return (
+      <>
+        {lesionStatsReports.map((stats, idx) => (
+          <div key={idx} style={{ marginBottom: 32 }}>
+            <div style={{ marginBottom: 16 }}>
+              <Tag>{stats.patient_id}</Tag>
+              <Tag>{stats.session_id}</Tag>
+            </div>
+
+            <Divider orientation="left" style={{ fontSize: 14 }}>
+              <Space><MedicineBoxOutlined /> Показатели МС</Space>
+            </Divider>
+
+            <Row gutter={32} style={{ marginBottom: 16 }}>
+              <Col>
+                <Statistic
+                  title="Суммарный объём очагов"
+                  value={stats.total_volume_cm3}
+                  precision={3}
+                  suffix="см³"
+                  valueStyle={{ color: '#52c41a' }}
+                />
+              </Col>
+              <Col>
+                <Statistic
+                  title="Количество очагов"
+                  value={stats.lesion_count}
+                  valueStyle={{ color: '#1890ff' }}
+                />
+              </Col>
+              <Col>
+                <Statistic
+                  title="Средний объём очага"
+                  value={stats.mean_lesion_volume_cm3}
+                  precision={3}
+                  suffix="см³"
+                />
+              </Col>
+            </Row>
+
+            {(() => {
+              const lobar = lobarReports.find(
+                lr => lr.patient_id === stats.patient_id && lr.session_id === stats.session_id
+              );
+              return lobar ? (
+                <>
+                  <Divider orientation="left" style={{ fontSize: 14 }}>
+                    <Space><EnvironmentOutlined /> Анатомическая локализация</Space>
+                  </Divider>
+                  <Table
+                    columns={lobarColumns}
+                    dataSource={getLobarTableData(lobar)}
+                    pagination={false}
+                    size="small"
+                    bordered
+                    style={{ marginBottom: 24 }}
+                  />
+                </>
+              ) : null;
+            })()}
+
+            <Divider orientation="left" style={{ fontSize: 14 }}>
+              <Space>📈 Динамика между сессиями</Space>
+            </Divider>
+            <LongitudinalTimeline
+              patientId={stats.patient_id}
+              lesionType="multiple_sclerosis"
+            />
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  // ===== GLIO RENDER PATH =====
   return (
     <>
       {volumeReports.map((report, idx) => {

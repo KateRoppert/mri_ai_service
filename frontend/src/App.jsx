@@ -27,6 +27,7 @@ function App() {
   const [showHistoryQualityReport, setShowHistoryQualityReport] = useState(false);
   const [showHistoryVisualization, setShowHistoryVisualization] = useState(false);
   const [historyClinicalReportRunId, setHistoryClinicalReportRunId] = useState(null);
+  const [historyClinicalReportLesionType, setHistoryClinicalReportLesionType] = useState('glioblastoma');
   const [showHistoryClinicalReport, setShowHistoryClinicalReport] = useState(false);
   const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
@@ -81,8 +82,9 @@ function App() {
     }
   };
 
-  const handleShowHistoryClinicalReport = (runId) => {
+  const handleShowHistoryClinicalReport = (runId, lesionType = 'glioblastoma') => {
     setHistoryClinicalReportRunId(runId);
+    setHistoryClinicalReportLesionType(lesionType);
     setShowHistoryClinicalReport(true);
   };
 
@@ -234,6 +236,7 @@ function App() {
                 runId={historyClinicalReportRunId}
                 visible={showHistoryClinicalReport}
                 onClose={() => setShowHistoryClinicalReport(false)}
+                lesionType={historyClinicalReportLesionType}
               />
             )}
           </>

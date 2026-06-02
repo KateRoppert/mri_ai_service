@@ -6,7 +6,7 @@ import { Modal, Space } from 'antd';
 import { MedicineBoxOutlined } from '@ant-design/icons';
 import ClinicalReportContent from './ClinicalReportContent';
 
-const ClinicalReport = ({ runId, visible, onClose }) => {
+const ClinicalReport = ({ runId, visible, onClose, lesionType = 'glioblastoma' }) => {
   return (
     <Modal
       title={
@@ -21,7 +21,7 @@ const ClinicalReport = ({ runId, visible, onClose }) => {
       footer={null}
       styles={{ body: { maxHeight: '80vh', overflowY: 'auto' } }}
     >
-      <ClinicalReportContent runId={runId} autoLoad={visible} />
+      <ClinicalReportContent runId={runId} autoLoad={visible} lesionType={lesionType} />
     </Modal>
   );
 };

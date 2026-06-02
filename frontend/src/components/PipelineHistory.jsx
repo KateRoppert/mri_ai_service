@@ -220,7 +220,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
               type="link"
               size="small"
               icon={<MedicineBoxOutlined />}
-              onClick={() => onShowClinicalReport(record.run_id)}
+              onClick={() => onShowClinicalReport(record.run_id, record.lesion_type || 'glioblastoma')}
             >
               Клинический отчёт
             </Button>
