@@ -281,11 +281,22 @@ def load_lesion_type_config(lesion_type: str) -> Dict[str, Any]:
         Dict with keys: required_modalities, reference_modality, reports.
 
     Raises:
+        ConfigValidationError: If the file is missing or YAML is invalid.
         KeyError: If lesion_type not found in the YAML.
     """
     config_path = Path(__file__).parent.parent / 'configs' / 'lesion_types.yaml'
-    with open(config_path, 'r', encoding='utf-8') as f:
-        all_configs = yaml.safe_load(f)
+
+    # Check file existence
+    if not config_path.exists():
+        raise ConfigValidationError(f"Config file not found: {config_path}")
+
+    # Load and parse YAML with error handling
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            all_configs = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigValidationError(f"Failed to parse YAML: {e}")
+
     if lesion_type not in all_configs:
         raise KeyError(
             f"Unknown lesion_type '{lesion_type}'. "
