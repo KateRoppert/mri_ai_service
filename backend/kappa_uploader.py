@@ -12,7 +12,13 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from kappa_client import create_dataset, upload_entity, update_entity_status
+from kappa_client import (
+    create_dataset,
+    get_dataset_entities,
+    list_user_datasets,
+    update_entity_status,
+    upload_entity,
+)
 from kappa_dataset_mapping import get_dataset_id, set_dataset_id
 from preprocessing_version import compute_preprocessing_id
 
@@ -123,6 +129,11 @@ class KappaUploader:
             )
             return dataset_id
 
+        # Warn if Kappa already has an empty dataset for this lesion_type —
+        # that usually means an operator created one manually and forgot to
+        # register it in kappa_datasets.yaml (KI-015 operational footgun).
+        await self._warn_if_empty_dataset_exists()
+
         # Создаём новый датасет в Каппе
         logger.info(
             "Creating new dataset: lesion=%s, prep=%s",
@@ -149,6 +160,44 @@ class KappaUploader:
             logger.info("New dataset created: id=%d", new_id)
 
         return new_id
+
+    async def _warn_if_empty_dataset_exists(self) -> None:
+        """
+        Log a WARNING if Kappa already has an empty dataset whose name contains
+        this lesion_type. That indicates a manually-created dataset was left
+        unregistered in kappa_datasets.yaml — the auto-create below will produce
+        a duplicate (KI-015).
+        """
+        try:
+            all_datasets = await list_user_datasets(
+                self.token, self.user_id, self.user_type_id
+            )
+        except Exception:
+            return  # network error — don't block the upload
+
+        for ds in all_datasets:
+            name = ds.get("datasetName", "")
+            ds_id = ds.get("datasetId")
+            if not name or ds_id is None:
+                continue
+            if self.lesion_type.lower() not in name.lower():
+                continue
+
+            try:
+                entities = await get_dataset_entities(
+                    self.token, self.user_id, self.user_type_id, ds_id
+                )
+            except Exception:
+                continue
+
+            if entities is not None and len(entities) == 0:
+                logger.warning(
+                    "Empty dataset '%s' (id=%d) found in Kappa for lesion_type='%s'. "
+                    "If it was created manually, either delete it or register its id "
+                    "in configs/kappa_datasets.yaml to prevent creating a duplicate. "
+                    "Proceeding with auto-create.",
+                    name, ds_id, self.lesion_type,
+                )
 
     def _discover_sessions(self) -> Dict[str, Dict[str, Any]]:
         """

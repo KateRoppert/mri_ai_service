@@ -39,6 +39,13 @@ RUN python -m pip install --upgrade pip setuptools wheel
 WORKDIR /app
 
 # -----------------------------------------------------------------------
+# Common shared code (ServiceBase, GPUMonitor, contracts, requirements-base)
+# Must come before requirements.txt install — requirements.txt references
+# common/requirements-base.txt via -r common/requirements-base.txt
+# -----------------------------------------------------------------------
+COPY common/ ./common/
+
+# -----------------------------------------------------------------------
 # Python dependencies — only what's on top of nnUNetv2 fork
 # (nnUNetv2 fork itself pulls torch, numpy, scipy, etc. via its setup.py)
 # -----------------------------------------------------------------------
@@ -46,16 +53,11 @@ COPY ms-seg/requirements.txt .
 RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
 
 # -----------------------------------------------------------------------
-# Common shared code (ServiceBase, GPUMonitor, contracts)
-# -----------------------------------------------------------------------
-COPY common/ ./common/
-
-# -----------------------------------------------------------------------
 # Luu's SmallLesionMRI fork — its slsseg/setup.py registers as 'nnunetv2'
 # This REPLACES the stock nnunetv2 inside this container.
 # -----------------------------------------------------------------------
 COPY ms-seg/SmallLesionMRI/ ./SmallLesionMRI/
-RUN cd SmallLesionMRI/slsseg && pip install --ignore-installed .
+RUN cd SmallLesionMRI/slsseg && pip install --ignore-installed --timeout 120 .
 
 # The fork's setup.py pins numpy==1.26.4 and scipy==1.11.4 — these are
 # pre-numpy-2.x constraints that are incompatible with the ABI of more

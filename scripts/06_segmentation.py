@@ -65,6 +65,21 @@ def setup_logging(log_file: Optional[Path] = None, console_level: str = "INFO"):
         except Exception as e:
             logger.error(f"Failed to set up file logger at {log_file}: {e}")
 
+# --- GPU error helpers ---
+
+_GPU_BUSY_MARKERS = (
+    "CUDA-capable device",
+    "is/are busy or unavailable",
+    "cudaErrorDevicesUnavailable",
+    "AcceleratorError",
+    "CUDA error",
+)
+
+def _is_gpu_busy_error(error_msg: str) -> bool:
+    """Return True if the error string indicates a transient GPU unavailability."""
+    return any(m in error_msg for m in _GPU_BUSY_MARKERS)
+
+
 # --- Server Availability Check ---
 
 def check_server_availability(server_url: str, timeout: int = 5) -> bool:
@@ -488,18 +503,20 @@ class BIDSScanner:
             List of SubjectSession objects with complete metadata
         """
         sessions = []
-        subject_dirs = sorted([d for d in self.input_dir.iterdir() 
+        subject_dirs = sorted([d for d in self.input_dir.iterdir()
                               if d.is_dir() and d.name.startswith('sub-')])
-        
+
         logger.info(f"Found {len(subject_dirs)} subject directories in {self.input_dir}")
-        
+
+        subjects_processed = 0
         for subject_dir in subject_dirs:
-            if max_subjects and len(sessions) >= max_subjects:
+            if max_subjects and subjects_processed >= max_subjects:
                 logger.info(f"Reached max_subjects limit ({max_subjects}). Stopping scan.")
                 break
-            
+
             subject_id = subject_dir.name
             sessions.extend(self._scan_subject(subject_dir, subject_id))
+            subjects_processed += 1
         
         logger.info(f"Total sessions discovered: {len(sessions)}")
         return sessions
@@ -878,12 +895,13 @@ class SegmentationRunner:
         # Get and display profile information
         try:
             active_profile_name = self.config._data.get('segmentation', {}).get('active_profile', 'unknown')
-            profile = self.config.get_active_profile()
+            service_url_for_lesion = self.registry.get_url_for(self.args.lesion_type)
             logger.info("=" * 60)
             logger.info(f"Active profile:   {active_profile_name}")
             logger.info(f"Description:      {self.config.get_profile_description()}")
             logger.info(f"Connection:       {self.config.get_connection_type()}")
-            logger.info(f"Server URL:       {profile.get('server_url')}")
+            logger.info(f"Lesion type:      {self.args.lesion_type}")
+            logger.info(f"Service URL:      {service_url_for_lesion}")
             logger.info("=" * 60)
         except Exception as e:
             logger.warning(f"Could not load profile info: {e}")
@@ -915,19 +933,19 @@ class SegmentationRunner:
                 
                 atexit.register(lambda: close_ssh_tunnel(ssh_tunnel_process))
             
-            server_url = self.config.get_server_url()
-            
+            server_url = self.registry.get_url_for(self.args.lesion_type)
+
             # Check server availability
             logger.info("=" * 60)
             logger.info("CHECKING SERVER AVAILABILITY")
             logger.info("=" * 60)
-            
+
             if not check_server_availability(server_url):
                 raise ConnectionError(
                     f"Server not accessible at {server_url}.\n"
                     f"Please ensure the server is running on the remote machine."
                 )
-            
+
             logger.info(f"✓ Server is accessible at {server_url}")
             
             # Scan for subjects/sessions
@@ -1015,14 +1033,12 @@ class SegmentationRunner:
         semaphore = asyncio.Semaphore(self.args.max_concurrent)
         
         async def process_one(idx: int, session) -> bool:
-            """Обработка одной сессии с семафором"""
+            """Обработка одной сессии с семафором и retry на GPU-занятость."""
             async with semaphore:
                 identifier = session.get_identifier()
                 logger.info(f"[{idx}/{self.stats.total}] Processing: {identifier}")
-                
+
                 try:
-                    # Validate input modalities exist (no actual upload — files
-                    # are read by the service via shared volume in the new contract)
                     seg_input = SegmentationInput(
                         t1=session.modality_files["t1"],
                         t1c=session.modality_files["t1c"],
@@ -1034,21 +1050,38 @@ class SegmentationRunner:
                             f"Modality file validation failed for {identifier}"
                         )
 
-                    # Derive input_dir and output_dir from session paths
                     input_dir = session.modality_files["t1"].parent
                     output_dir = session.output_mask_path.parent
                     output_dir.mkdir(parents=True, exist_ok=True)
 
-                    success, task_status = await client.segment_by_path_async(
-                        case_id=identifier,
-                        input_dir=input_dir,
-                        output_dir=output_dir,
-                        lesion_type=args.lesion_type,
-                        options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
-                    )
+                    # Retry when GPU is transiently busy (e.g. another pipeline
+                    # is still using the GPU after its segmentation step).
+                    _max_retries = 3
+                    _retry_delay = 30  # seconds between attempts
+                    success, task_status = False, {}
 
-                    # Service writes mask.nii.gz; rename to the expected
-                    # *_segmask.nii.gz filename to keep BIDS pipeline conventions
+                    for attempt in range(_max_retries):
+                        success, task_status = await client.segment_by_path_async(
+                            case_id=identifier,
+                            input_dir=input_dir,
+                            output_dir=output_dir,
+                            lesion_type=args.lesion_type,
+                            options={"use_tta": True, "folds": [0, 1, 2, 3, 4]},
+                        )
+                        if success:
+                            break
+                        error_msg = task_status.get("error", "")
+                        if _is_gpu_busy_error(error_msg) and attempt < _max_retries - 1:
+                            wait = _retry_delay * (attempt + 1)
+                            logger.warning(
+                                f"  GPU busy for {identifier} "
+                                f"(attempt {attempt + 1}/{_max_retries}), "
+                                f"retrying in {wait}s…"
+                            )
+                            await asyncio.sleep(wait)
+                        else:
+                            break  # non-retryable error or last attempt
+
                     if success and task_status.get("mask_path"):
                         produced = Path(task_status["mask_path"])
                         if produced.resolve() != session.output_mask_path.resolve():
@@ -1062,26 +1095,22 @@ class SegmentationRunner:
                                     f"Service reported mask_path {produced} but file is missing"
                                 )
                                 success = False
-                    
+
                     if success:
                         self.stats.successful += 1
-                        
-                        # compute volume report
                         try:
                             from compute_volumes import compute_and_save_volume_report
                             compute_and_save_volume_report(session.output_mask_path)
                         except Exception as e:
                             logger.warning(f"  Volume report failed for {identifier}: {e}")
-                        
-                        # Collect GPU metrics if benchmarking
                         if self.args.benchmark and task_status and 'gpu_metrics' in task_status:
                             self.gpu_metrics_collected.append(task_status['gpu_metrics'])
                     else:
                         self.stats.failed += 1
                         logger.error(f"  Failed to process {identifier}")
-                    
+
                     return success
-                
+
                 except Exception as e:
                     self.stats.failed += 1
                     logger.error(f"  ✗ Error processing {identifier}: {e}")
@@ -1091,10 +1120,7 @@ class SegmentationRunner:
         # Запускаем все задачи параллельно
         tasks = [process_one(idx, session) for idx, session in enumerate(sessions, 1)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Log final statistics
-        self.stats.log_summary()
-        
+
         return self.stats.failed == 0
     
 
@@ -1134,7 +1160,7 @@ class SegmentationRunner:
             total_series=self.stats.total,
             successful=self.stats.successful,
             failed=self.stats.failed,
-            skipped=0,  # segmentation doesn't skip, only fails
+            skipped=self.stats.skipped,
             total_time=total_time,
             time_per_series=total_time / self.stats.total if self.stats.total > 0 else 0,
             throughput=self.stats.total / total_time if total_time > 0 else 0,
@@ -1250,7 +1276,7 @@ class SegmentationRunner:
                     
                     if anat_dir.exists():
                         # Look for segmentation masks
-                        mask_files = list(anat_dir.glob("*_segmask.nii.gz"))
+                        mask_files = list(anat_dir.rglob("*_segmask.nii.gz"))
                         if mask_files:
                             structure[patient_id][session_id].add('segmask')
                             logger.debug(f"  Found mask: {patient_id}/ses-{session_id}")

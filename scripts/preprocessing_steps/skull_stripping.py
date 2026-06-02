@@ -45,15 +45,15 @@ def setup_fsl_environment(fsl_dir: str = None):
         
         # Verify bin directory exists
         if not FSL_BIN_DIR.exists():
-            logger.error(f"FSL bin directory not found: {FSL_BIN_DIR}")
+            logger.warning(f"FSL bin directory not found: {FSL_BIN_DIR} — falling back to system PATH")
             FSL_DIR = None
             FSL_BIN_DIR = None
             return
-        
+
         # Verify bet exists
         bet_path = FSL_BIN_DIR / "bet"
         if not bet_path.exists():
-            logger.error(f"BET executable not found: {bet_path}")
+            logger.warning(f"BET executable not found: {bet_path} — falling back to system PATH")
             FSL_DIR = None
             FSL_BIN_DIR = None
             return

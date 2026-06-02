@@ -50,10 +50,14 @@ def build_command(
     log_file = logs_dir / f"{stage_name}.log"
     cmd.extend(['--log_file', str(log_file)])
     
-    # Глобальный max-subjects
-    max_subjects = config['general'].get('max_subjects')
-    if max_subjects is not None:
-        cmd.extend(['--max-subjects', str(max_subjects)])
+    # Global max-subjects — only inject if the stage does not declare its own.
+    # A stage with max_subjects: null in its args section explicitly means "no limit"
+    # and should override the global setting.
+    stage_args = stage_config.get('args', {})
+    if 'max_subjects' not in stage_args:
+        max_subjects = config['general'].get('max_subjects')
+        if max_subjects is not None:
+            cmd.extend(['--max-subjects', str(max_subjects)])
 
     # Lesion type — global per-run, only injected into segmentation-related stages
     if stage_name in (

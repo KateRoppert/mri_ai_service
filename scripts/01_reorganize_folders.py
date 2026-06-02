@@ -34,6 +34,19 @@ import time
 import yaml
 from scripts.metadata_extractor import MetadataExtractor
 
+# Single source of truth for modalities the pipeline knows how to process.
+# Maps internal modality name → BIDS suffix used in output filenames.
+# The .keys() of this dict is the input filter: any series whose detected
+# modality is not here will be dropped. Adding a new modality (e.g. for
+# metastases work) requires only an entry here plus an update to
+# CompletenessChecker.LESION_TYPE_MODALITIES.
+MODALITY_BIDS_SUFFIX: Dict[str, str] = {
+    't1':   'T1w',
+    't1c':  'T1wCE',
+    't2':   'T2w',
+    't2fl': 'FLAIR',
+}
+
 
 @dataclass
 class SeriesInfo:
@@ -51,6 +64,27 @@ class SessionInfo:
     """Information about a session (grouped by date)."""
     date: str  # YYYYMMDD format
     series: Dict[str, SeriesInfo] = field(default_factory=dict)  # modality -> SeriesInfo
+
+
+# Result of processing one patient. Returned by process_single_patient
+# in parallel mode and consumed by run_parallel.
+#
+# NOTE: this is a plain dict, not a dataclass. A dataclass defined in the
+# main script would carry __module__ == '__main__' (or 'main_module'
+# depending on how Python loaded the script), which breaks pickling of
+# return values from mp.Pool workers — worker processes cannot re-import
+# that module by name and pool.imap_unordered silently turns the result
+# into a failure. Plain dicts are pickle-safe regardless.
+#
+# Shape:
+#   {
+#     "status": "ok" | "skipped" | "failed",
+#     "patient_id": str,                 # original_id, always present
+#     "new_patient_id": Optional[str],   # set only when status == "ok"
+#     "data": Optional[Dict],            # patient_data dict, set only on "ok"
+#     "reason": Optional[str],           # human-readable explanation
+#   }
+PatientResult = Dict[str, object]
 
 
 class ModalityDetector:
@@ -76,7 +110,7 @@ class ModalityDetector:
     MODALITY_PATTERNS = {
         't2fl': {  # FLAIR (check first - most specific)
             'keywords': ['flair', 'dark fluid', 't2-flair', 't2 flair'],
-            'exclude': []
+            'exclude': ['mpr']
         },
         't1c': {  # T1 with contrast (post)
             'keywords': ['t1'],
@@ -88,7 +122,9 @@ class ModalityDetector:
         },
         't2': {  # T2
             'keywords': ['t2', 'tse', 'fse', 't2w'],
-            'exclude': ['flair', 'dark fluid']
+            # 't1' prevents T1-TSE from matching; 'mpr' prevents derived
+            # reconstructions (e.g. MPR CE_T1-TSE) from falling through here
+            'exclude': ['flair', 'dark fluid', 't1', 'mpr']
         },
         't1': {  # Plain T1 (non-contrast)
             'keywords': ['t1', 'mprage', 'spgr', 'tfe', 't1w'],
@@ -671,10 +707,7 @@ class FileOrganizer:
             self.logger.warning(f"No DICOM files in {source_dir}")
             return 0
 
-        bids_suffix_map = {
-            't1': 'T1w', 't1c': 'T1wCE', 't2': 'T2w', 't2fl': 'FLAIR'
-        }
-        bids_suffix = bids_suffix_map.get(modality, modality.upper())
+        bids_suffix = MODALITY_BIDS_SUFFIX.get(modality, modality.upper())
 
         if self.dry_run:
             count = len(source_files)
@@ -813,42 +846,27 @@ def save_mapping_file(mapping_data: Dict, output_dir: Path):
         json.dump(mapping_data, f, indent=2)
 
 
-def save_completeness_report(completeness_data: Dict, output_dir: Path):
-    """Save completeness report to text file."""
-    report_file = output_dir / 'incomplete_data.txt'
+def save_completeness_report(completeness_data: Dict, output_dir: Path) -> Path:
+    """Save completeness report as JSON in incomplete_data/ subfolder."""
+    incomplete_dir = output_dir / 'incomplete_data'
+    incomplete_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(report_file, 'w') as f:
-        f.write("=== Incomplete Data Report ===\n")
-        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    stats = completeness_data['statistics']
+    total_sessions = stats['total_sessions'] or 1
+    success_rate = stats['complete_sessions'] / total_sessions * 100
 
-        stats = completeness_data['statistics']
-        total_patients = stats['total_patients'] or 1
-        total_sessions = stats['total_sessions'] or 1
+    report = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'stage': '01_reorganize_folders',
+        'statistics': {**stats, 'success_rate_percent': round(success_rate, 1)},
+        'incomplete_data': completeness_data['incomplete_patients'],
+    }
 
-        f.write(f"Total patients: {stats['total_patients']}\n")
-        f.write(f"Complete patients: {stats['complete_patients']} "
-                f"({stats['complete_patients']/total_patients*100:.1f}%)\n")
-        f.write(f"Incomplete patients: {stats['incomplete_patients']} "
-                f"({stats['incomplete_patients']/total_patients*100:.1f}%)\n\n")
+    report_path = incomplete_dir / '01_reorganize_folders_incomplete_data.json'
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
 
-        f.write(f"Total sessions: {stats['total_sessions']}\n")
-        f.write(f"Complete sessions: {stats['complete_sessions']} "
-                f"({stats['complete_sessions']/total_sessions*100:.1f}%)\n")
-        f.write(f"Incomplete sessions: {stats['incomplete_sessions']} "
-                f"({stats['incomplete_sessions']/total_sessions*100:.1f}%)\n\n")
-
-        if completeness_data['incomplete_patients']:
-            f.write("=== Details ===\n\n")
-
-            for patient in completeness_data['incomplete_patients']:
-                f.write(f"Patient: {patient['patient_id']} ({patient['original_id']})\n")
-
-                for session in patient['incomplete_sessions']:
-                    f.write(f"  Session: {session['session_id']} ({session['date']})\n")
-                    f.write(f"    Missing: {', '.join(session['missing'])}\n")
-                    f.write(f"    Available: {', '.join(session['available'])}\n")
-
-                f.write("\n")
+    return report_path
 
 
 def print_summary(
@@ -858,10 +876,20 @@ def print_summary(
     file_organizer: FileOrganizer,
     total_time: float,
     performance_metrics: Optional[Dict] = None,
-    dry_run: bool = False
+    dry_run: bool = False,
+    lesion_type: str = 'glioblastoma',
 ):
     """Print final summary report."""
     stats = completeness_data['statistics']
+
+    # Modalities relevant for the active lesion type (same source of truth
+    # as CompletenessChecker uses). Fallback to default if lesion_type unknown.
+    relevant_modalities = sorted(
+        CompletenessChecker.LESION_TYPE_MODALITIES.get(
+            lesion_type,
+            CompletenessChecker.DEFAULT_REQUIRED_MODALITIES,
+        )
+    )
 
     print("\n" + "=" * 60)
     print("=== Reorganization Summary ===")
@@ -871,9 +899,10 @@ def print_summary(
     print(f"  • Patients processed: {stats['total_patients']}")
     print(f"  • Sessions created: {stats['total_sessions']}")
 
-    # Count series by modality
-    modality_counts = {'t1': 0, 't1c': 0, 't2': 0, 't2fl': 0}
-    modality_slices = {'t1': 0, 't1c': 0, 't2': 0, 't2fl': 0}
+    # Count series by modality (initialize only modalities relevant for
+    # this lesion_type, but accept any others encountered via setdefault).
+    modality_counts: Dict[str, int] = {m: 0 for m in relevant_modalities}
+    modality_slices: Dict[str, int] = {m: 0 for m in relevant_modalities}
 
     for patient_data in mapping_data['patients'].values():
         for session_data in patient_data['sessions'].values():
@@ -884,7 +913,7 @@ def print_summary(
                 modality_slices[modality] += series_data.get('slice_count', 0)
 
     print(f"  • Series processed by modality:")
-    for modality in ['t1', 't1c', 't2', 't2fl']:
+    for modality in relevant_modalities:
         print(f"    - {modality:4s}: {modality_counts.get(modality,0):3d} series "
               f"({modality_slices.get(modality,0):,} slices)")
 
@@ -895,6 +924,9 @@ def print_summary(
         print(f"  • Total files that would be copied: {total_files:,}")
     else:
         print(f"  • Total files copied: {file_organizer.files_copied:,}")
+        metadata_saved = getattr(file_organizer, 'metadata_saved', 0)
+        if metadata_saved:
+            print(f"  • Metadata JSON files saved: {metadata_saved:,}")
 
     print("\n✅ Completeness Analysis:")
     if stats['total_patients']:
@@ -925,7 +957,7 @@ def print_summary(
             remaining = len(completeness_data['incomplete_patients']) - 5
             print(f"    ... and {remaining} more")
 
-        print(f"\n  📄 Detailed report: incomplete_data.txt")
+        print(f"\n  📄 Detailed report: incomplete_data/01_reorganize_folders_incomplete_data.json")
 
     print("\n🔍 Validation:")
     if not file_organizer.validation_failed:
@@ -953,9 +985,152 @@ def print_summary(
     print("\n📁 Output:")
     print(f"  • BIDS directory: {mapping_data.get('output_dir', 'N/A')}")
     print(f"  • Mapping file: dataset_mapping.json")
-    print(f"  • Incomplete data report: incomplete_data.txt")
+    print(f"  • Incomplete data report: incomplete_data/01_reorganize_folders_incomplete_data.json")
 
     print("\n" + "=" * 60)
+
+def _process_one_patient_core(
+    patient_dir: Path,
+    new_patient_id: str,
+    modality_detector: 'ModalityDetector',
+    scanner: 'DatasetScanner',
+    grouper: 'SessionGrouper',
+    deduplicator: 'SeriesDeduplicator',
+    file_organizer: 'FileOrganizer',
+    logger: logging.Logger,
+) -> Optional[Dict]:
+    """
+    Process one patient end-to-end: scan series → detect modalities →
+    filter → group into sessions → dedupe → copy files into BIDS layout →
+    validate.
+
+    Returns:
+        Per-patient dict in the unified format:
+            {
+                'original_id': str,
+                'sessions': {ses-XXX: {...}},
+                'duplicates_removed': int,
+                'files_copied': int,
+                'validation_failed': List[str],
+                'metadata_saved': int,
+            }
+        Returns None if no valid series found (patient should be skipped).
+
+    Caller is responsible for:
+        - resolving new_patient_id via IDMapper.get_patient_id();
+        - calling check_patient_exists() before this function (to honor
+          --force semantics and counting skipped patients).
+    """
+    original_patient_id = patient_dir.name
+
+    # Scan series (now returns tuples: (series_dir, date_folder_name_or_None))
+    series_entries = scanner.scan_patient_series(patient_dir)
+    logger.debug(f"  Found {len(series_entries)} series entries (nested-aware)")
+
+    # Process series
+    series_list: List[SeriesInfo] = []
+    for series_dir, date_folder_name in series_entries:
+        # Priority: date from ancestor folder, else try parse from series_dir.name
+        date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
+        if not date:
+            date = scanner.parse_date_from_series_name(series_dir.name)
+
+        if not date:
+            logger.warning(f"  Could not parse date from {series_dir} or its parent folders, skipping")
+            continue
+
+        # Detect modality
+        modality, series_description = modality_detector.detect_modality(series_dir)
+
+        # Filter: only keep modalities the pipeline supports
+        if modality in MODALITY_BIDS_SUFFIX:
+            series_info = SeriesInfo(
+                original_path=series_dir,
+                patient_id=original_patient_id,
+                date=date,
+                modality=modality,
+                series_description=series_description,
+            )
+            series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
+            series_list.append(series_info)
+            logger.debug(f"  Series {series_dir}: {modality} ({series_info.slice_count} slices)")
+        elif modality:
+            logger.debug(f"  Series {series_dir}: {modality} (filtered out)")
+        else:
+            logger.debug(f"  Series {series_dir}: unknown modality (filtered out)")
+
+    if not series_list:
+        logger.warning(f"  No valid series found for {original_patient_id}")
+        return None
+
+    # Snapshot duplicates_removed BEFORE this patient's deduplication, so
+    # we can attribute per-patient delta correctly when the deduplicator
+    # is shared across patients (sequential mode).
+    dup_before = deduplicator.duplicates_removed
+    files_before = file_organizer.files_copied
+    metadata_before = file_organizer.metadata_saved
+    val_failed_before = len(file_organizer.validation_failed)
+
+    # Group by date into sessions
+    sessions = grouper.group_by_date(series_list)
+    logger.debug(f"  Grouped into {len(sessions)} sessions")
+
+    # Deduplicate: keep best series per modality
+    sessions = [deduplicator.deduplicate_session(s) for s in sessions]
+
+    patient_data: Dict = {
+        'original_id': original_patient_id,
+        'sessions': {},
+    }
+
+    for session_idx, session in enumerate(sessions, 1):
+        new_session_id = f"ses-{session_idx:03d}"
+        logger.debug(f"  Session {new_session_id} (date: {session.date})")
+
+        session_data: Dict = {
+            'original_date': session.date,
+            'series': {},
+        }
+
+        for modality, series in session.series.items():
+            target_dir = file_organizer.create_bids_structure(
+                new_patient_id, new_session_id, modality
+            )
+
+            copied = file_organizer.copy_series(
+                series.original_path,
+                target_dir,
+                new_patient_id,
+                new_session_id,
+                modality,
+            )
+
+            file_organizer.validate_copy(
+                series.original_path,
+                target_dir,
+                new_patient_id,
+                new_session_id,
+                modality,
+            )
+
+            session_data['series'][modality] = {
+                'original_path': str(series.original_path),
+                'slice_count': copied,
+                'series_description': series.series_description,
+            }
+
+            logger.debug(f"    {modality}: {copied} files copied")
+
+        patient_data['sessions'][new_session_id] = session_data
+
+    # Per-patient deltas (compatible with both shared and per-patient components).
+    patient_data['duplicates_removed'] = deduplicator.duplicates_removed - dup_before
+    patient_data['files_copied'] = file_organizer.files_copied - files_before
+    patient_data['metadata_saved'] = file_organizer.metadata_saved - metadata_before
+    patient_data['validation_failed'] = list(file_organizer.validation_failed[val_failed_before:])
+
+    return patient_data
+
 
 def process_single_patient(
     patient_dir: Path,
@@ -967,22 +1142,24 @@ def process_single_patient(
     dry_run: bool = False,
     tags_config: Optional[Dict] = None,
     metadata_dir: Optional[Path] = None
-) -> Optional[Dict]:
+) -> PatientResult:
     """
     Process a single patient (designed to run in parallel).
-    
-    Args:
-        patient_dir: Patient directory path
-        input_dir: Root input directory
-        output_dir: Root output directory
-        patient_mapping: Mapping of original to new patient IDs
-        log_level: Logging level
-        
+
+    Thin wrapper around _process_one_patient_core: creates per-process
+    components, resolves the new patient ID, checks existence, then
+    delegates the actual work.
+
     Returns:
-        Dictionary with patient data or None if failed
+        PatientResult with one of three statuses:
+            - "ok":      patient processed; data contains patient_data dict.
+            - "skipped": already processed and --force not set.
+            - "failed":  no valid series, or an exception occurred.
     """
+    original_patient_id = patient_dir.name
+
     # Setup logging for this process
-    logger = logging.getLogger(f'patient_{patient_dir.name}')
+    logger = logging.getLogger(f'patient_{original_patient_id}')
     logger.setLevel(log_level)
     if not logger.handlers:
         handler = logging.StreamHandler()
@@ -990,147 +1167,74 @@ def process_single_patient(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
         logger.addHandler(handler)
-    
+
     try:
-        # Check if patient already processed
-        original_patient_id = patient_dir.name
         new_patient_id = patient_mapping[original_patient_id]
+
+        # Check if patient already processed
         if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
-            return None  # Skip this patient
-        
-        # Initialize components for this process
+            return {
+                "status": "skipped",
+                "patient_id": original_patient_id,
+                "new_patient_id": None,
+                "data": None,
+                "reason": "already_exists",
+            }
+
+        # Initialize fresh components for this process
         modality_detector = ModalityDetector(logger)
         scanner = DatasetScanner(logger)
         grouper = SessionGrouper(logger)
         deduplicator = SeriesDeduplicator(logger)
-        # Create metadata extractor if config provided
         _metadata_extractor = None
         if tags_config:
             _metadata_extractor = MetadataExtractor(tags_config, logger)
-        
+
         file_organizer = FileOrganizer(
             output_dir, logger, dry_run=dry_run,
-            metadata_extractor=_metadata_extractor, metadata_dir=metadata_dir
+            metadata_extractor=_metadata_extractor, metadata_dir=metadata_dir,
         )
-        
-        original_patient_id = patient_dir.name
-        new_patient_id = patient_mapping[original_patient_id]
-        
+
         logger.info(f"Processing {original_patient_id} -> {new_patient_id}")
-        
-        # Scan series
-        series_entries = scanner.scan_patient_series(patient_dir)
-        logger.debug(f"  Found {len(series_entries)} series entries")
-        
-        # Process series
-        series_list: List[SeriesInfo] = []
-        for series_dir, date_folder_name in series_entries:
-            # Parse date
-            date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
-            if not date:
-                date = scanner.parse_date_from_series_name(series_dir.name)
-            
-            if not date:
-                logger.warning(f"  Could not parse date from {series_dir}, skipping")
-                continue
-            
-            # Detect modality
-            modality, series_description = modality_detector.detect_modality(series_dir)
-            
-            # Filter: only keep 4 target modalities
-            if modality in {'t1', 't1c', 't2', 't2fl'}:
-                series_info = SeriesInfo(
-                    original_path=series_dir,
-                    patient_id=original_patient_id,
-                    date=date,
-                    modality=modality,
-                    series_description=series_description
-                )
-                series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
-                series_list.append(series_info)
-                logger.debug(f"  Series {series_dir.name}: {modality} ({series_info.slice_count} slices)")
-            elif modality:
-                logger.debug(f"  Series {series_dir.name}: {modality} (filtered out)")
-            else:
-                logger.debug(f"  Series {series_dir.name}: unknown modality (filtered out)")
-        
-        if not series_list:
-            logger.warning(f"  No valid series found for {original_patient_id}")
-            return None
-        
-        # Group by date into sessions
-        sessions = grouper.group_by_date(series_list)
-        logger.debug(f"  Grouped into {len(sessions)} sessions")
-        
-        # Deduplicate
-        sessions = [deduplicator.deduplicate_session(s) for s in sessions]
-        
-        # Process each session
-        patient_data = {
-            'original_id': original_patient_id,
-            'sessions': {},
-            'duplicates_removed': deduplicator.duplicates_removed,
-            'files_copied': 0,
-            'validation_failed': []
-        }
-        
-        for session_idx, session in enumerate(sessions, 1):
-            new_session_id = f"ses-{session_idx:03d}"
-            
-            logger.debug(f"  Session {new_session_id} (date: {session.date})")
-            
-            session_data = {
-                'original_date': session.date,
-                'series': {}
+
+        patient_data = _process_one_patient_core(
+            patient_dir=patient_dir,
+            new_patient_id=new_patient_id,
+            modality_detector=modality_detector,
+            scanner=scanner,
+            grouper=grouper,
+            deduplicator=deduplicator,
+            file_organizer=file_organizer,
+            logger=logger,
+        )
+
+        if patient_data is None:
+            return {
+                "status": "failed",
+                "patient_id": original_patient_id,
+                "new_patient_id": None,
+                "data": None,
+                "reason": "no_valid_series",
             }
-            
-            # Process each modality in session
-            for modality, series in session.series.items():
-                # Create BIDS structure
-                target_dir = file_organizer.create_bids_structure(
-                    new_patient_id, new_session_id, modality
-                )
-                
-                # Copy files
-                copied = file_organizer.copy_series(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-                
-                # Validate
-                file_organizer.validate_copy(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-                
-                # Update mapping
-                session_data['series'][modality] = {
-                    'original_path': str(series.original_path),
-                    'slice_count': copied,
-                    'series_description': series.series_description
-                }
-                
-                logger.debug(f"    {modality}: {copied} files copied")
-            
-            patient_data['sessions'][new_session_id] = session_data
-        
-        # Store stats from this patient's processing
-        patient_data['files_copied'] = file_organizer.files_copied
-        patient_data['validation_failed'] = file_organizer.validation_failed
-        
+
         logger.info(f"Completed {original_patient_id}")
-        
-        return {new_patient_id: patient_data}
-        
+        return {
+            "status": "ok",
+            "patient_id": original_patient_id,
+            "new_patient_id": new_patient_id,
+            "data": patient_data,
+            "reason": None,
+        }
+
     except Exception as e:
-        logger.error(f"Failed to process {patient_dir.name}: {e}", exc_info=True)
-        return None
+        logger.error(f"Failed to process {original_patient_id}: {e}", exc_info=True)
+        return {
+            "status": "failed",
+            "patient_id": original_patient_id,
+            "new_patient_id": None,
+            "data": None,
+            "reason": f"exception: {e}",
+        }
 
 def check_patient_exists(output_dir: Path, patient_id: str, force: bool, dry_run: bool, logger: logging.Logger) -> bool:
     """
@@ -1210,26 +1314,6 @@ def load_existing_mapping(output_dir: Path, logger: logging.Logger) -> Dict:
             'created_at': datetime.now().isoformat()
         }
     
-def create_batches(items: List, batch_size: int) -> List[List]:
-    """
-    Split list into batches.
-    
-    Args:
-        items: List of items to split
-        batch_size: Size of each batch
-        
-    Returns:
-        List of batches
-    """
-    if batch_size is None or batch_size <= 0:
-        return [items]  # Single batch with all items
-    
-    batches = []
-    for i in range(0, len(items), batch_size):
-        batches.append(items[i:i + batch_size])
-    
-    return batches
-
 def restore_id_mapper(mapping_data: Dict, logger: logging.Logger) -> IDMapper:
     """
     Restore IDMapper from existing mapping data.
@@ -1283,12 +1367,15 @@ def run_sequential(
     tags_config: Optional[Dict] = None,
     metadata_dir: Optional[Path] = None,
     lesion_type: str = 'glioblastoma',
-) -> Tuple[Dict, Dict, SeriesDeduplicator, FileOrganizer]:
+) -> Tuple[Dict, Dict, SeriesDeduplicator, 'FileOrganizer', Optional[Dict], Dict[str, int]]:
     """
     Run sequential processing (baseline).
 
     Returns:
-        (mapping_data, completeness_data, deduplicator, file_organizer)
+        (mapping_data, completeness_data, deduplicator, file_organizer,
+         performance_metrics, run_counters)
+        where run_counters = {"successful": N, "skipped": N, "failed": N,
+                              "failed_patients": [(orig_id, reason), ...]}.
     """
     # Initialize components
     modality_detector = ModalityDetector(logger)
@@ -1315,6 +1402,8 @@ def run_sequential(
     # Track statistics for this run
     patients_processed_this_run = 0
     patients_skipped_this_run = 0
+    patients_failed_this_run = 0
+    failed_patients: List[Tuple[str, str]] = []  # (original_id, reason)
 
     # Start performance monitoring
     monitor = None
@@ -1325,7 +1414,6 @@ def run_sequential(
 
     # Scan dataset
     logger.info("Scanning input directory...")
-    scanner = DatasetScanner(logger)
     
     if patient_dirs is None:
         # Scan all patients if not provided
@@ -1344,111 +1432,37 @@ def run_sequential(
 
         logger.info(f"Processing patient {patient_idx}/{len(patient_dirs)}: "
                     f"{original_patient_id} -> {new_patient_id}")
-        
+
         # Check if patient already processed
         if check_patient_exists(output_dir, new_patient_id, force, dry_run, logger):
             patients_skipped_this_run += 1
             continue
 
-        # Scan series (now returns tuples: (series_dir, date_folder_name_or_None))
-        series_entries = scanner.scan_patient_series(patient_dir)
-        logger.debug(f"  Found {len(series_entries)} series entries (nested-aware)")
+        patient_data = _process_one_patient_core(
+            patient_dir=patient_dir,
+            new_patient_id=new_patient_id,
+            modality_detector=modality_detector,
+            scanner=scanner,
+            grouper=grouper,
+            deduplicator=deduplicator,
+            file_organizer=file_organizer,
+            logger=logger,
+        )
 
-        # Process series
-        series_list: List[SeriesInfo] = []
-        for series_dir, date_folder_name in series_entries:
-            # Priority: date from ancestor folder (date_folder_name), else try parse from series_dir.name
-            date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
-            if not date:
-                date = scanner.parse_date_from_series_name(series_dir.name)
-
-            if not date:
-                logger.warning(f"  Could not parse date from {series_dir} or its parent folders, skipping")
-                continue
-
-            # Detect modality (returns modality and series_description)
-            modality, series_description = modality_detector.detect_modality(series_dir)
-
-            # Filter: only keep 4 target modalities
-            if modality in {'t1', 't1c', 't2', 't2fl'}:
-                series_info = SeriesInfo(
-                    original_path=series_dir,
-                    patient_id=original_patient_id,
-                    date=date,
-                    modality=modality,
-                    series_description=series_description
-                )
-                # slice_count can be computed later in deduplicator, but store current count for info
-                series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
-                series_list.append(series_info)
-                logger.debug(f"  Series {series_dir}: {modality} ({series_info.slice_count} slices)")
-            elif modality:
-                logger.debug(f"  Series {series_dir}: {modality} (filtered out)")
-            else:
-                logger.debug(f"  Series {series_dir}: unknown modality (filtered out)")
-
-        if not series_list:
-            logger.warning(f"  No valid series found for {original_patient_id}")
+        if patient_data is None:
+            # No valid series for this patient — already logged inside.
+            patients_failed_this_run += 1
+            failed_patients.append((original_patient_id, "no_valid_series"))
             continue
 
-        # Group by date into sessions
-        sessions = grouper.group_by_date(series_list)
-        logger.debug(f"  Grouped into {len(sessions)} sessions")
-
-        # Deduplicate: keep best series per modality
-        sessions = [deduplicator.deduplicate_session(s) for s in sessions]
-
-        # Process each session
-        patient_data = {
-            'original_id': original_patient_id,
-            'sessions': {}
-        }
-
-        for session_idx, session in enumerate(sessions, 1):
-            new_session_id = f"ses-{session_idx:03d}"
-
-            logger.debug(f"  Session {new_session_id} (date: {session.date})")
-
-            session_data = {
-                'original_date': session.date,
-                'series': {}
-            }
-
-            # Process each modality in session
-            for modality, series in session.series.items():
-                # Create BIDS structure
-                target_dir = file_organizer.create_bids_structure(
-                    new_patient_id, new_session_id, modality
-                )
-
-                # Copy files (source_dir may have nested DICOMs)
-                copied = file_organizer.copy_series(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-
-                # Validate
-                file_organizer.validate_copy(
-                    series.original_path,
-                    target_dir,
-                    new_patient_id,
-                    new_session_id,
-                    modality
-                )
-
-                # Update mapping
-                session_data['series'][modality] = {
-                    'original_path': str(series.original_path),
-                    'slice_count': copied,
-                    'series_description': series.series_description
-                }
-
-                logger.debug(f"    {modality}: {copied} files copied")
-
-            patient_data['sessions'][new_session_id] = session_data
+        # Drop per-patient stats fields before persisting: aggregate stats
+        # live on the shared file_organizer / deduplicator components and
+        # are reported separately. This keeps mapping_data['patients'][*]
+        # format identical between sequential and parallel modes.
+        patient_data.pop('duplicates_removed', None)
+        patient_data.pop('files_copied', None)
+        patient_data.pop('metadata_saved', None)
+        patient_data.pop('validation_failed', None)
 
         mapping_data['patients'][new_patient_id] = patient_data
         patients_processed_this_run += 1
@@ -1460,6 +1474,7 @@ def run_sequential(
     # Stop monitoring and collect metrics
     performance_metrics = None
     if monitor:
+        monitor.stop()
         performance_metrics = monitor.get_metrics()
         logger.info("Performance monitoring stopped")
 
@@ -1467,13 +1482,28 @@ def run_sequential(
     total_patients_in_mapping = len(mapping_data['patients'])
     logger.info("="*60)
     logger.info("Run statistics:")
-    logger.info(f"  Patients in this batch: {len(patient_dirs)}")
+    logger.info(f"  Patients in this run: {len(patient_dirs)}")
     logger.info(f"  New patients processed: {patients_processed_this_run}")
     logger.info(f"  Existing patients skipped: {patients_skipped_this_run}")
+    logger.info(f"  Patients failed: {patients_failed_this_run}")
     logger.info(f"  Total patients in mapping: {total_patients_in_mapping}")
     logger.info("="*60)
-    
-    return mapping_data, completeness_data, deduplicator, file_organizer, performance_metrics
+
+    run_counters = {
+        "successful": patients_processed_this_run,
+        "skipped": patients_skipped_this_run,
+        "failed": patients_failed_this_run,
+        "failed_patients": failed_patients,
+    }
+
+    return (
+        mapping_data,
+        completeness_data,
+        deduplicator,
+        file_organizer,
+        performance_metrics,
+        run_counters,
+    )
 
 def run_parallel(
     input_dir: Path,
@@ -1488,15 +1518,18 @@ def run_parallel(
     force: bool = False,
     dry_run: bool = False,
     id_mapper: Optional[IDMapper] = None,
-    tags_config: Optional[Dict] = None,        
+    tags_config: Optional[Dict] = None,
     metadata_dir: Optional[Path] = None,
     lesion_type: str = 'glioblastoma'
-) -> Tuple[Dict, Dict, int, FileOrganizer, Optional[Dict]]:
+) -> Tuple[Dict, Dict, int, 'FileOrganizer', Optional[Dict], Dict[str, int]]:
     """
     Run parallel processing using multiprocessing.
-    
+
     Returns:
-        (mapping_data, completeness_data, total_duplicates_removed, file_organizer_stats, performance_metrics)
+        (mapping_data, completeness_data, total_duplicates_removed,
+         file_organizer_stats, performance_metrics, run_counters)
+        where run_counters = {"successful": N, "skipped": N, "failed": N,
+                              "failed_patients": [(orig_id, reason), ...]}.
     """
     # Start performance monitoring
     monitor = None
@@ -1514,7 +1547,6 @@ def run_parallel(
     
     # Scan dataset
     logger.info("Scanning input directory...")
-    scanner = DatasetScanner(logger)
     
     if patient_dirs is None:
         # Scan all patients if not provided
@@ -1549,47 +1581,75 @@ def run_parallel(
         metadata_dir=metadata_dir
     )
     
+    # Map worker status strings to counter keys. "ok" → "successful".
+    STATUS_TO_COUNTER = {"ok": "successful", "skipped": "skipped", "failed": "failed"}
+
     # Process patients in parallel
-    results = []
+    results: List[PatientResult] = []
+    counters = {"successful": 0, "skipped": 0, "failed": 0}
+    failed_patients: List[Tuple[str, str]] = []  # (original_id, reason)
+
     with mp.Pool(processes=workers) as pool:
-        # Use imap_unordered for better performance
-        for result in pool.imap_unordered(process_func, patient_dirs):
-            if result:
-                results.append(result)
-                logger.info(f"Progress: {len(results)}/{len(patient_dirs)} patients completed")
-    
-    logger.info(f"Completed processing {len(results)} patients")
-    
+        for pr in pool.imap_unordered(process_func, patient_dirs):
+            results.append(pr)
+            status = pr.get("status", "failed")
+            patient_id = pr.get("patient_id", "?")
+            reason = pr.get("reason")
+            counters[STATUS_TO_COUNTER.get(status, "failed")] += 1
+            if status == "failed":
+                failed_patients.append((patient_id, reason or "unknown"))
+                logger.warning(f"Patient {patient_id} failed: {reason}")
+            elif status == "skipped":
+                logger.info(f"Patient {patient_id} skipped: {reason}")
+            done = len(results)
+            logger.info(f"Progress: {done}/{len(patient_dirs)} patients processed")
+
+    logger.info(
+        f"Parallel run done: ok={counters['successful']}, "
+        f"skipped={counters['skipped']}, failed={counters['failed']}"
+    )
+
     # Aggregate results
     logger.info("Aggregating results...")
-    # Initialize mapping data - load existing or create new
     mapping_data = load_existing_mapping(output_dir, logger)
-    
+
     total_duplicates_removed = 0
     total_files_copied = 0
-    all_validation_failed = []
-    
-    for result in results:
-        for patient_id, patient_data in result.items():
-            # Extract and remove processing stats
-            duplicates = patient_data.pop('duplicates_removed', 0)
-            files_copied = patient_data.pop('files_copied', 0)
-            validation_failed = patient_data.pop('validation_failed', [])
-            
-            total_duplicates_removed += duplicates
-            total_files_copied += files_copied
-            all_validation_failed.extend(validation_failed)
-            
-            # Store patient data
-            mapping_data['patients'][patient_id] = patient_data
-    
-    # Create a mock FileOrganizer for stats (parallel version doesn't use single organizer)
+    total_metadata_saved = 0
+    all_validation_failed: List[str] = []
+
+    for pr in results:
+        if pr.get("status") != "ok":
+            continue
+        patient_data = pr.get("data")
+        new_patient_id = pr.get("new_patient_id")
+        if patient_data is None or new_patient_id is None:
+            continue
+        # Extract and remove processing stats
+        duplicates = patient_data.pop('duplicates_removed', 0)
+        files_copied = patient_data.pop('files_copied', 0)
+        metadata_saved = patient_data.pop('metadata_saved', 0)
+        validation_failed = patient_data.pop('validation_failed', [])
+
+        total_duplicates_removed += duplicates
+        total_files_copied += files_copied
+        total_metadata_saved += metadata_saved
+        all_validation_failed.extend(validation_failed)
+
+        mapping_data['patients'][new_patient_id] = patient_data
+
+    # Create a mock FileOrganizer for stats (parallel doesn't use single organizer)
     class FileOrganizerStats:
-        def __init__(self, files_copied, validation_failed):
+        def __init__(self, files_copied, validation_failed, metadata_saved):
             self.files_copied = files_copied
             self.validation_failed = validation_failed
-    
-    file_organizer = FileOrganizerStats(total_files_copied, all_validation_failed)
+            self.metadata_saved = metadata_saved
+
+    file_organizer = FileOrganizerStats(
+        total_files_copied, all_validation_failed, total_metadata_saved
+    )
+
+    run_counters = {**counters, "failed_patients": failed_patients}
     
     # Check completeness
     logger.info("Checking data completeness...")
@@ -1601,8 +1661,15 @@ def run_parallel(
         monitor.stop()
         performance_metrics = monitor.get_metrics()
         logger.info("Performance monitoring stopped")
-    
-    return mapping_data, completeness_data, total_duplicates_removed, file_organizer, performance_metrics
+
+    return (
+        mapping_data,
+        completeness_data,
+        total_duplicates_removed,
+        file_organizer,
+        performance_metrics,
+        run_counters,
+    )
 
 
 def main():
@@ -1649,12 +1716,6 @@ def main():
         help="Maximum number of subjects to process (for testing)"
     )
     parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=None,
-        help='Process patients in batches of N (e.g., 10). Useful for incremental processing.'
-    )
-    parser.add_argument(
         '--force',
         action='store_true',
         help='Force reprocessing: delete existing patient directories and reprocess'
@@ -1690,9 +1751,6 @@ def main():
         help='Lesion type — affects which modalities are considered required '
              '(glio: T1+T1c+T2+FLAIR; MS: T1+T2+FLAIR).'
     )
-
-    args = parser.parse_args()
-
 
     args = parser.parse_args()
 
@@ -1744,215 +1802,146 @@ def main():
 
     # Start processing
     start_time = datetime.now()
-    
+
     # Scan dataset to get all patient directories
     logger.info("Scanning dataset for patients...")
     scanner = DatasetScanner(logger)
     all_patient_dirs = scanner.scan_dataset(args.input_dir)
-    
+
     if args.max_subjects:
         all_patient_dirs = all_patient_dirs[:args.max_subjects]
         logger.info(f"Limited to {args.max_subjects} patients")
-    
-    total_patients = len(all_patient_dirs)
-    logger.info(f"Total patients to process: {total_patients}")
-    
-    # Create batches
-    batch_size = args.batch_size if args.batch_size else total_patients
-    batches = create_batches(all_patient_dirs, batch_size)
-    
-    logger.info(f"Processing in {len(batches)} batch(es) of up to {batch_size} patients each")
-    logger.info("="*60)
-    
-    # Initialize or restore IDMapper ONCE for all batches
+
+    logger.info(f"Total patients to process: {len(all_patient_dirs)}")
+    logger.info("=" * 60)
+
+    # Initialize or restore IDMapper from any previously saved mapping
     existing_mapping = load_existing_mapping(args.output_dir, logger)
     id_mapper = restore_id_mapper(existing_mapping, logger)
-    
-    # Initialize aggregation lists
-    all_deduplicators = []
-    all_file_organizers = []
-    all_performance_metrics = []
-    
-    # Initialize result variables (updated in batch loop)
-    mapping_data = existing_mapping
-    completeness_data = {}
-    duplicates_removed = 0
-    
-    # Process each batch
-    all_deduplicators = []
-    all_file_organizers = []
-    all_performance_metrics = []
-    
-    for batch_idx, batch_patient_dirs in enumerate(batches, 1):
-        logger.info(f"\n{'='*60}")
-        logger.info(f"BATCH {batch_idx}/{len(batches)}: Processing {len(batch_patient_dirs)} patients")
-        logger.info(f"{'='*60}\n")
-        
-        batch_start_time = datetime.now()
-        
-        if args.mode == 'sequential':
-            # Process batch sequentially
-            # Note: patient_dirs is already filtered in run_sequential
-            mapping_data, completeness_data, deduplicator, file_organizer, performance_metrics = run_sequential(
-                args.input_dir,
-                args.output_dir,
-                logger,
-                patient_dirs=batch_patient_dirs,
-                max_subjects=None,  # We already filtered
-                benchmark=args.benchmark,
-                results_dir=args.results_dir,
-                mode=args.mode,
-                workers=args.workers,
-                force=args.force,
-                dry_run=args.dry_run,
-                id_mapper=id_mapper,
-                tags_config=tags_config,
-                metadata_dir=metadata_dir,
-                lesion_type=args.lesion_type
-            )
-            all_deduplicators.append(deduplicator)
-            all_file_organizers.append(file_organizer)
-            
-        else:
-            # Process batch in parallel
-            mapping_data, completeness_data, duplicates_removed, file_organizer, performance_metrics = run_parallel(
-                args.input_dir,
-                args.output_dir,
-                logger,
-                workers=args.workers,
-                patient_dirs=batch_patient_dirs,
-                max_subjects=None,  # We already filtered
-                benchmark=args.benchmark,
-                results_dir=args.results_dir,
-                mode=args.mode,
-                force=args.force,
-                dry_run=args.dry_run,
-                id_mapper=id_mapper,
-                tags_config=tags_config,
-                metadata_dir=metadata_dir,
-                lesion_type=args.lesion_type
-            )
-            # Create mock deduplicator for consistency
-            class DeduplicatorStats:
-                def __init__(self, duplicates_removed):
-                    self.duplicates_removed = duplicates_removed
-            all_deduplicators.append(DeduplicatorStats(duplicates_removed))
-            all_file_organizers.append(file_organizer)
-        
-        if performance_metrics:
-            all_performance_metrics.append(performance_metrics)
-        
-        batch_end_time = datetime.now()
-        batch_time = (batch_end_time - batch_start_time).total_seconds()
-        
-        logger.info(f"\nBatch {batch_idx} completed in {batch_time:.1f}s")
-        
-        # Save intermediate mapping after each batch
-        logger.info("Saving intermediate mapping...")
-        save_mapping_file(mapping_data, args.output_dir)
-    
+
+    if args.mode == 'sequential':
+        (
+            mapping_data,
+            completeness_data,
+            deduplicator,
+            file_organizer,
+            performance_metrics,
+            run_counters,
+        ) = run_sequential(
+            args.input_dir,
+            args.output_dir,
+            logger,
+            patient_dirs=all_patient_dirs,
+            max_subjects=None,
+            benchmark=args.benchmark,
+            results_dir=args.results_dir,
+            mode=args.mode,
+            workers=args.workers,
+            force=args.force,
+            dry_run=args.dry_run,
+            id_mapper=id_mapper,
+            tags_config=tags_config,
+            metadata_dir=metadata_dir,
+            lesion_type=args.lesion_type,
+        )
+        dedup_stats = deduplicator
+        file_organizer_stats = file_organizer
+
+    else:
+        (
+            mapping_data,
+            completeness_data,
+            total_duplicates_removed,
+            file_organizer,
+            performance_metrics,
+            run_counters,
+        ) = run_parallel(
+            args.input_dir,
+            args.output_dir,
+            logger,
+            workers=args.workers,
+            patient_dirs=all_patient_dirs,
+            max_subjects=None,
+            benchmark=args.benchmark,
+            results_dir=args.results_dir,
+            mode=args.mode,
+            force=args.force,
+            dry_run=args.dry_run,
+            id_mapper=id_mapper,
+            tags_config=tags_config,
+            metadata_dir=metadata_dir,
+            lesion_type=args.lesion_type,
+        )
+
+        class _DeduplicatorStats:
+            def __init__(self, n):
+                self.duplicates_removed = n
+
+        dedup_stats = _DeduplicatorStats(total_duplicates_removed)
+        file_organizer_stats = file_organizer
+
     end_time = datetime.now()
     total_time = (end_time - start_time).total_seconds()
-    
-    logger.info("\n" + "="*60)
-    logger.info("ALL BATCHES COMPLETED")
-    logger.info("="*60)
-    
-    # Aggregate statistics from all batches
-    total_duplicates_removed = sum(d.duplicates_removed for d in all_deduplicators)
-    total_files_copied = sum(fo.files_copied for fo in all_file_organizers)
-    all_validation_failed = []
-    for fo in all_file_organizers:
-        all_validation_failed.extend(fo.validation_failed)
-    
-    # Create aggregated objects for summary
-    class AggregatedDeduplicator:
-        def __init__(self, duplicates_removed):
-            self.duplicates_removed = duplicates_removed
-    
-    class AggregatedFileOrganizer:
-        def __init__(self, files_copied, validation_failed):
-            self.files_copied = files_copied
-            self.validation_failed = validation_failed
-    
-    dedup_stats = AggregatedDeduplicator(total_duplicates_removed)
-    file_organizer_stats = AggregatedFileOrganizer(total_files_copied, all_validation_failed)
-    
-    # Aggregate performance metrics (average)
-    performance_metrics = None
-    if all_performance_metrics:
-        # Filter valid metrics for averaging
-        cpu_avg_values = [m.get('cpu_avg', 0) for m in all_performance_metrics if m.get('cpu_avg')]
-        memory_avg_values = [m.get('memory_avg_mb', 0) for m in all_performance_metrics if m.get('memory_avg_mb')]
-        cpu_max_values = [m.get('cpu_max', 0) for m in all_performance_metrics if m.get('cpu_max')]
-        memory_peak_values = [m.get('memory_peak_mb', 0) for m in all_performance_metrics if m.get('memory_peak_mb')]
-        
-        performance_metrics = {
-            'cpu_avg': sum(cpu_avg_values) / len(cpu_avg_values) if cpu_avg_values else 0.0,
-            'cpu_max': max(cpu_max_values) if cpu_max_values else 0.0,
-            'memory_avg_mb': sum(memory_avg_values) / len(memory_avg_values) if memory_avg_values else 0.0,
-            'memory_peak_mb': max(memory_peak_values) if memory_peak_values else 0.0,
-            'duration': total_time
-        }
+
+    logger.info("\n" + "=" * 60)
+    logger.info("PROCESSING COMPLETED")
+    logger.info("=" * 60)
 
     # Save outputs
-    logger.info("Saving mapping file...")
-    save_mapping_file(mapping_data, args.output_dir)
+    if args.dry_run:
+        logger.info("[DRY RUN] Would save mapping file...")
+        logger.info("[DRY RUN] Would save completeness report...")
+        print("\n📄 [DRY RUN] Reports not saved (use without --dry_run to save)")
+    else:
+        logger.info("Saving mapping file...")
+        save_mapping_file(mapping_data, args.output_dir)
 
-    logger.info("Saving completeness report...")
-    save_completeness_report(completeness_data, args.output_dir)
+        logger.info("Saving completeness report...")
+        save_completeness_report(completeness_data, args.output_dir)
 
     # Save benchmark metrics
     if args.benchmark and performance_metrics:
         logger.info("Saving benchmark metrics...")
-        
-        # Create results directory
+
         args.results_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Calculate derived metrics
+
         stats = completeness_data['statistics']
         total_patients = stats['total_patients']
         total_sessions = stats['total_sessions']
-        
-        # Count total series
+
         total_series = sum(
             len(patient_data['sessions'][session_id]['series'])
             for patient_data in mapping_data['patients'].values()
             for session_id in patient_data['sessions']
         )
-        
-        # Calculate basic timing metrics
+
         time_per_patient = total_time / total_patients if total_patients > 0 else 0
         throughput_patients = total_patients / total_time if total_time > 0 else 0
-        
-        # Get baseline time for speedup calculation
+
         benchmark_logger = BenchmarkLogger(args.results_dir)
         baseline_time = benchmark_logger.get_baseline_time()
-        
+
         speedup = None
         efficiency = None
         if args.mode == 'sequential' and args.workers == 1:
-            # This IS the baseline
             speedup = 1.0
             efficiency = 1.0
         elif baseline_time:
-            # Compare to baseline
             speedup = baseline_time / time_per_patient
             efficiency = speedup / args.workers if args.workers > 0 else None
-        
-        # Create ExperimentMetrics object
+
         experiment_id = f"{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Count successful/failed/skipped (we don't track these separately now, so use totals)
+
+        attempted = run_counters["successful"] + run_counters["failed"]
         metrics = ExperimentMetrics(
             experiment_id=experiment_id,
             timestamp=datetime.now().isoformat(),
             mode=args.mode if not args.dry_run else f"{args.mode}_dryrun",
             workers=args.workers,
-            total_series=total_patients,  # Using patients as "series" for this script
-            successful=total_patients,
-            failed=0,
-            skipped=0,
+            total_series=attempted,
+            successful=run_counters["successful"],
+            failed=run_counters["failed"],
+            skipped=run_counters["skipped"],
             total_time=total_time,
             time_per_series=time_per_patient,
             throughput=throughput_patients,
@@ -1961,12 +1950,11 @@ def main():
             memory_avg_mb=performance_metrics.get('memory_avg_mb'),
             memory_peak_mb=performance_metrics.get('memory_peak_mb'),
             speedup=speedup,
-            efficiency=efficiency
+            efficiency=efficiency,
         )
-        
-        # Save metrics
+
         benchmark_logger.log_metrics(metrics)
-        
+
         logger.info(f"Benchmark metrics saved to {args.results_dir / 'metrics.csv'}")
         logger.info(f"  Total time: {total_time:.2f}s")
         logger.info(f"  Patients: {total_patients} ({time_per_patient:.2f}s each)")
@@ -1975,50 +1963,38 @@ def main():
         logger.info(f"  Throughput: {throughput_patients:.2f} patients/sec")
         if performance_metrics.get('cpu_avg'):
             logger.info(f"  CPU: avg {performance_metrics['cpu_avg']:.1f}%, "
-                       f"peak {performance_metrics['cpu_max']:.1f}%")
+                        f"peak {performance_metrics['cpu_max']:.1f}%")
         if performance_metrics.get('memory_avg_mb'):
             logger.info(f"  Memory: avg {performance_metrics['memory_avg_mb']:.1f}MB, "
-                       f"peak {performance_metrics['memory_peak_mb']:.1f}MB")
+                        f"peak {performance_metrics['memory_peak_mb']:.1f}MB")
         if speedup:
             logger.info(f"  Speedup: {speedup:.2f}x")
         if efficiency:
             logger.info(f"  Efficiency: {efficiency:.1f}%")
-
-
-    # Create mock deduplicator for print_summary
-    class DeduplicatorStats:
-        def __init__(self, duplicates_removed):
-            self.duplicates_removed = duplicates_removed
-    
-    dedup_stats = DeduplicatorStats(duplicates_removed)
-
-    # Generate final completeness report for ALL patients in mapping
-    logger.info("Generating final completeness report for all patients...")
-    completeness_checker = CompletenessChecker(logger, lesion_type=args.lesion_type)
-    completeness_data = completeness_checker.generate_completeness_report(mapping_data)
-    
-    # Save final reports
-    if args.dry_run:
-        logger.info("[DRY RUN] Would save mapping file...")
-        logger.info("[DRY RUN] Would save completeness report...")
-        print("\n📄 [DRY RUN] Reports not saved (use without --dry_run to save)")
-    else:
-        logger.info("Saving final mapping file...")
-        save_mapping_file(mapping_data, args.output_dir)
-        
-        logger.info("Saving final completeness report...")
-        save_completeness_report(completeness_data, args.output_dir)
 
     # Print summary
     print_summary(
         mapping_data,
         completeness_data,
         dedup_stats,
-        file_organizer,
+        file_organizer_stats,
         total_time,
         performance_metrics,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        lesion_type=args.lesion_type,
     )
+
+    # Per-status run summary
+    logger.info(
+        "Run counters: ok=%d, skipped=%d, failed=%d",
+        run_counters["successful"],
+        run_counters["skipped"],
+        run_counters["failed"],
+    )
+    if run_counters["failed_patients"]:
+        logger.warning("Failed patients (%d):", len(run_counters["failed_patients"]))
+        for orig_id, reason in run_counters["failed_patients"]:
+            logger.warning("  - %s: %s", orig_id, reason)
 
     logger.info("=" * 60)
     logger.info("Dataset reorganization completed")

@@ -38,26 +38,37 @@ from preprocessing_steps.resampling import process_subject_resampling
 
 logger = logging.getLogger(__name__)
 
-def calculate_threads_per_worker(mode: str, workers: int) -> int:
+# Cores reserved for the OS, display server, and IDE on a workstation.
+# Prevents ANTs from starving the desktop environment and avoids RAM pressure
+# from too many concurrent ITK threads on machines with ≤32 GB RAM.
+_OS_RESERVED_CORES = 2
+
+
+def calculate_optimal_parallelism(
+    n_subjects: int, cpu_count: int, max_workers: int
+) -> tuple[int, int]:
     """
-    Calculate optimal number of threads per worker.
-    
-    Args:
-        mode: 'sequential' or 'parallel'
-        workers: Number of workers
-    
-    Returns:
-        Number of threads per worker
+    Calculate actual worker count and threads per worker for parallel mode.
+
+    `max_workers` (from config) is treated as a ceiling — the user's resource cap.
+    The formula then reduces it further if subjects or CPU count make a smaller
+    number more efficient:
+
+      effective_cpu       = cpu_count - _OS_RESERVED_CORES   # leave headroom for OS/IDE
+      workers_by_subjects = min(max_workers, n_subjects)      # no idle processes
+      workers_by_cpu      = max(1, effective_cpu // 8)        # keep >=8 threads/worker
+      actual_workers      = min(workers_by_subjects, workers_by_cpu)
+      threads             = effective_cpu // actual_workers
+
+    N4 bias correction (ITK) and ANTs registration both benefit from ~8-12 threads;
+    giving a worker fewer than 8 threads leaves most of the allocated CPUs idle.
     """
-    cpu_count = os.cpu_count() or 4
-    
-    if mode == 'sequential' or workers == 1:
-        # Use all available cores
-        return cpu_count
-    else:
-        # Distribute cores among workers
-        threads = max(1, cpu_count // workers)
-        return threads
+    effective_cpu = max(4, cpu_count - _OS_RESERVED_CORES)
+    workers_by_subjects = min(max_workers, n_subjects)
+    workers_by_cpu = max(1, effective_cpu // 8)
+    actual_workers = max(1, min(workers_by_subjects, workers_by_cpu))
+    threads = max(1, effective_cpu // actual_workers)
+    return actual_workers, threads
 
 
 def setup_logging(log_file: Path = None, level: str = "INFO"):
@@ -336,8 +347,7 @@ def process_single_subject(
                 "time": time.time() - step_start
             }
             
-            # Check if reference modality succeeded
-            reference_modality = config.get('steps', [{}])[2].get('params', {}).get('reference_modality', 't1c')
+            # Check if reference modality succeeded (reference_modality resolved above from steps config)
             if not reorient_results.get(reference_modality, {}).get('success', False):
                 raise RuntimeError(f"Reference modality {reference_modality} failed reorientation")
             
@@ -473,8 +483,8 @@ def process_single_subject(
         else:
             logger.info("Step 4/4: Skull Stripping - SKIPPED (disabled in config)")
         
-        # STEP 5: Cleanup temporary files
-        logger.info("Step 5/4: Cleaning up temporary files")
+        # Cleanup temporary files
+        logger.info("Cleaning up temporary files")
         try:
             subject_temp_reoriented = temp_reoriented / subject_id
             subject_temp_bias = temp_bias_corrected / subject_id if temp_bias_corrected else None
@@ -660,21 +670,22 @@ def main():
     # Setup logging
     setup_logging(args.log_file, level="INFO")
 
-    # Calculate threads per worker based on mode
-    threads_per_worker = calculate_threads_per_worker(args.mode, args.workers)
     cpu_count = os.cpu_count() or 4
 
     logger.info(f"System: {cpu_count} CPU cores available")
     logger.info(f"Mode: {args.mode}")
-    logger.info(f"Workers: {args.workers if args.mode == 'parallel' else 1}")
-    logger.info(f"Threads per worker: {threads_per_worker}")
 
-    # Set thread limits for sequential mode (parallel mode sets in each worker)
     if args.mode == 'sequential':
+        # Sequential: give all cores to the single worker
+        threads_per_worker = cpu_count
+        logger.info(f"Workers: 1 | Threads: {threads_per_worker} (all cores)")
         os.environ['OMP_NUM_THREADS'] = str(threads_per_worker)
         os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(threads_per_worker)
         os.environ['ANTS_NUMBER_OF_THREADS'] = str(threads_per_worker)
-        logger.info(f"Sequential mode: using {threads_per_worker} threads for external tools")
+    else:
+        # Parallel: actual workers/threads calculated after subject discovery
+        threads_per_worker = 1  # placeholder; overwritten before executor starts
+        logger.info(f"Workers (configured cap): {args.workers} | Threads: auto (calculated after subject scan)")
     
     logger.info("=" * 70)
     logger.info("MRI BRAIN PREPROCESSING PIPELINE")
@@ -725,19 +736,21 @@ def main():
         logger.info(f"Processing modalities: {', '.join(modalities)}")
         
         # Find subjects
-        subjects = find_subjects(args.input_dir, args.max_subjects)
-        
+        subjects = find_subjects(args.input_dir, max_subjects=None)
+
         if not subjects:
             logger.error("No subjects found to process")
             return 1
-        
-        if args.max_subjects:
-            logger.info(f"Limited to {args.max_subjects} subjects (--max-subjects)")
+
+        if args.max_subjects and len(subjects) > args.max_subjects:
+            subjects = subjects[:args.max_subjects]
+            logger.info(f"Limited to first {args.max_subjects} subjects (--max-subjects)")
         
         # Process each subject
         all_results = []
         successful = 0
         failed = 0
+        skipped = 0
 
         # Initialize performance monitoring if benchmark mode
         monitor = None
@@ -759,9 +772,8 @@ def main():
             monitor.start()
             logger.info("Performance monitoring started")
 
-        # Prepare arguments for processing
-        # Pass threads_per_worker only for parallel mode (sequential sets globally)
-        threads_for_parallel = threads_per_worker if args.mode == 'parallel' else None
+        # Prepare base arguments (threads slot is None for parallel — filled after subject scan)
+        threads_for_parallel = None if args.mode == 'parallel' else None
 
         processing_args = [
             (anat_dir, subject_id, session_id, preprocessed_dir, transform_dir,
@@ -796,7 +808,7 @@ def main():
                             "success": True,
                             "skipped": True
                         })
-                        successful += 1
+                        skipped += 1
                         continue
                     elif missing_mods:
                         logger.info(f"→ {subject_id}/{session_id} partially processed, missing: {', '.join(missing_mods)}")
@@ -814,22 +826,21 @@ def main():
                     failed += 1
 
         elif args.mode == 'parallel':
-            logger.info(f"Processing mode: PARALLEL with {args.workers} workers")
-            logger.info(f"Each worker will use {threads_per_worker} thread(s)")
+            logger.info("Processing mode: PARALLEL")
             if args.skip_existing:
                 logger.info("Skip-existing mode: ENABLED")
-                
+
                 # Filter out already processed subjects
                 filtered_args = []
                 skipped_count = 0
-                
+
                 for args_tuple in processing_args:
                     subject_id, session_id = args_tuple[1], args_tuple[2]
-                    
+
                     is_processed, missing_mods = check_subject_processed(
                         args.input_dir, preprocessed_dir, subject_id, session_id, modalities
                     )
-                    
+
                     if is_processed:
                         logger.info(f"⊙ {subject_id}/{session_id} already processed, skipping")
                         all_results.append({
@@ -838,21 +849,46 @@ def main():
                             "success": True,
                             "skipped": True
                         })
-                        successful += 1
+                        skipped += 1
                         skipped_count += 1
                     else:
                         if missing_mods:
                             logger.info(f"→ {subject_id}/{session_id} partially processed, missing: {', '.join(missing_mods)}")
                         filtered_args.append(args_tuple)
-                
+
                 logger.info(f"Skipped {skipped_count} already processed subjects")
                 logger.info(f"Processing {len(filtered_args)} remaining subjects")
-                
-                # Process only remaining subjects
+
                 processing_args = filtered_args
-            
-            if processing_args:  # Only if there are subjects to process
-                with ProcessPoolExecutor(max_workers=args.workers) as executor:
+
+            if processing_args:
+                # Calculate actual parallelism now that we know the real workload
+                actual_workers, threads_per_worker = calculate_optimal_parallelism(
+                    n_subjects=len(processing_args),
+                    cpu_count=cpu_count,
+                    max_workers=args.workers,
+                )
+
+                reason_parts = []
+                if actual_workers < args.workers:
+                    if actual_workers == len(processing_args):
+                        reason_parts.append(f"subjects={len(processing_args)}")
+                    if actual_workers == max(1, cpu_count // 8):
+                        reason_parts.append(f"CPU-optimal={max(1, cpu_count // 8)} for {cpu_count} cores")
+                    reason = f" (cap={args.workers} → {', '.join(reason_parts)})"
+                else:
+                    reason = ""
+
+                logger.info(
+                    f"Workers: {actual_workers}{reason} | "
+                    f"Threads per worker: {threads_per_worker} | "
+                    f"Total threads: {actual_workers * threads_per_worker}/{cpu_count}"
+                )
+
+                # Inject the calculated thread count into every args tuple (last slot)
+                processing_args = [t[:-1] + (threads_per_worker,) for t in processing_args]
+
+                with ProcessPoolExecutor(max_workers=actual_workers) as executor:
                     # Submit all jobs
                     future_to_subject = {
                         executor.submit(process_subject_wrapper, args_tuple): (args_tuple[1], args_tuple[2])
@@ -919,8 +955,8 @@ def main():
         except Exception as e:
             logger.warning(f"Could not remove temp directory: {e}")
         
-        # Calculate metrics
-        total_time = time.time() - pipeline_start_time
+        # Processing time (excludes validation) — used for benchmark metrics
+        processing_time = time.time() - pipeline_start_time
 
         # Save benchmark metrics if enabled
         if args.benchmark and monitor and benchmark_logger:
@@ -938,10 +974,10 @@ def main():
                 total_series=len(subjects),
                 successful=successful,
                 failed=failed,
-                skipped=0,
-                total_time=total_time,
-                time_per_series=total_time / len(subjects) if len(subjects) > 0 else 0,
-                throughput=len(subjects) / total_time if total_time > 0 else 0,
+                skipped=skipped,
+                total_time=processing_time,
+                time_per_series=processing_time / len(subjects) if len(subjects) > 0 else 0,
+                throughput=len(subjects) / processing_time if processing_time > 0 else 0,
                 cpu_avg=system_metrics.get('cpu_avg'),
                 cpu_max=system_metrics.get('cpu_max'),
                 memory_avg_mb=system_metrics.get('memory_avg_mb'),
@@ -1030,6 +1066,7 @@ def main():
         logger.info("=" * 70)
         logger.info(f"Total subjects:    {len(subjects)}")
         logger.info(f"Successful:        {successful}")
+        logger.info(f"Skipped:           {skipped}")
         logger.info(f"Failed:            {failed}")
         logger.info(f"Total time:        {total_time:.1f}s ({total_time/60:.1f} min)")
         if successful > 0:

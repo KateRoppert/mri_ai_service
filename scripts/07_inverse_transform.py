@@ -218,13 +218,7 @@ def main():
     logger.info(f"NIfTI (native):       {nifti_dir}")
     logger.info(f"Transforms:           {transform_dir}")
     logger.info(f"Reference modality:   {args.reference_modality}")
-    logger.info(f"Mode:                 {args.mode}, workers: {args.workers}")
-
-    # Set thread limits
-    if args.mode == "sequential":
-        cpu_count = os.cpu_count() or 4
-        os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = str(cpu_count)
-        os.environ["ANTS_NUMBER_OF_THREADS"] = str(cpu_count)
+    logger.info(f"Mode:                 {args.mode} (max workers: {args.workers})")
 
     # Find masks
     masks = find_masks(args.input_dir, args.max_subjects)
@@ -234,6 +228,8 @@ def main():
         return 1
 
     logger.info(f"Found {len(masks)} mask(s) to process")
+
+    total_found = len(masks)
 
     # Skip existing if requested
     if args.skip_existing:
@@ -255,6 +251,36 @@ def main():
     if not masks:
         logger.info("All masks already processed")
         return 0
+
+    # Auto-tune parallelism.
+    # apply_transforms uses ~4 ANTs threads per call (lighter than full registration).
+    # Reserve 2 cores for the OS/IDE on workstation machines.
+    _OS_RESERVED_CORES = 2
+    cpu_count = os.cpu_count() or 4
+    effective_cpu = max(4, cpu_count - _OS_RESERVED_CORES)
+    if args.mode == "sequential":
+        actual_workers = 1
+        threads = effective_cpu
+        logger.info(f"Workers: 1 | Threads: {threads} (all effective cores, sequential)")
+    else:
+        workers_by_tasks = min(args.workers, len(masks))
+        workers_by_cpu = max(1, effective_cpu // 4)
+        actual_workers = max(1, min(workers_by_tasks, workers_by_cpu))
+        threads = max(1, effective_cpu // actual_workers)
+        reason = ""
+        if actual_workers < args.workers:
+            if workers_by_tasks <= workers_by_cpu:
+                reason = f" (capped by n_masks={len(masks)})"
+            else:
+                reason = f" (capped by effective_cpu//4={workers_by_cpu})"
+        logger.info(
+            f"Workers: {actual_workers}{reason} | "
+            f"Threads per worker: {threads} | "
+            f"Total threads: {actual_workers * threads}/{cpu_count} "
+            f"(reserved {_OS_RESERVED_CORES} for OS)"
+        )
+    os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = str(threads)
+    os.environ["ANTS_NUMBER_OF_THREADS"] = str(threads)
 
     # Performance monitoring
     monitor = None
@@ -284,7 +310,7 @@ def main():
                 failed += 1
                 logger.error(f"  ✗ Failed: {result.get('error', 'unknown')}")
     else:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        with ProcessPoolExecutor(max_workers=actual_workers) as executor:
             future_map = {
                 executor.submit(
                     process_one_mask,
@@ -318,18 +344,18 @@ def main():
         monitor.stop()
         system_metrics = monitor.get_metrics()
 
-        experiment_id = f"inverse_{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        experiment_id = f"inverse_{args.mode}_w{actual_workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         benchmark_logger = BenchmarkLogger(args.results_dir)
 
         metrics = ExperimentMetrics(
             experiment_id=experiment_id,
             timestamp=datetime.now().isoformat(),
             mode=args.mode,
-            workers=args.workers if args.mode == "parallel" else 1,
+            workers=actual_workers,
             total_series=len(masks),
             successful=successful,
             failed=failed,
-            skipped=0,
+            skipped=total_found - len(masks),
             total_time=total_time,
             time_per_series=total_time / len(masks) if masks else 0,
             throughput=len(masks) / total_time if total_time > 0 else 0,

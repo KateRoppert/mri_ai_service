@@ -26,7 +26,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-import numpy
 import torch
 import yaml
 from quart import jsonify, request, send_file, send_from_directory
@@ -53,21 +52,8 @@ torch.set_num_interop_threads(1)
 # CUDA device ordering by PCI bus (so GPU indices match nvidia-smi)
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
-# Patch torch.load for compatibility with old nnUNet v1 checkpoints under
-# PyTorch >= 2.6 (which defaults to weights_only=True)
-try:
-    if hasattr(torch.serialization, "add_safe_globals"):
-        torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
-
-    _original_torch_load = torch.load
-
-    def _patched_torch_load(*args: Any, **kwargs: Any) -> Any:
-        kwargs["weights_only"] = False
-        return _original_torch_load(*args, **kwargs)
-
-    torch.load = _patched_torch_load  # type: ignore[assignment]
-except Exception as e:
-    print(f"WARNING: could not patch torch.load: {e}")
+from common.torch_compat import enable_legacy_checkpoint_loading
+enable_legacy_checkpoint_loading()
 
 
 def _load_server_config() -> dict[str, Any]:

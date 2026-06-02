@@ -1,0 +1,17 @@
+# Shared dependencies for all segmentation services.
+# Reference this file from each service's requirements.txt:
+#   -r ../common/requirements-base.txt
+#
+# Versions are pinned here so Quart/Flask/Hypercorn stay in sync across
+# gbm-seg and ms-seg without manual coordination.
+
+# HTTP server stack
+Quart==0.20.0
+Hypercorn==0.18.0
+Flask==3.1.2
+
+# GPU monitoring (common/gpu_monitor.py; graceful fallback when absent)
+pynvml>=11.5.0
+
+# Config parsing (used by service_base, service_server, server_config loading)
+PyYAML>=6.0

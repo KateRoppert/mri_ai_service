@@ -1,3 +1,7 @@
+# Full pinned dependency list (pip freeze) for reproducible gbm-seg builds.
+# Quart/Hypercorn/Flask/pynvml/PyYAML versions here must stay in sync with
+# services/common/requirements-base.txt — that file is the canonical source.
+# ms-seg references it via -r; gbm-seg keeps the full freeze for stability.
 aiofiles==25.1.0
 batchgenerators==0.25.1
 blinker==1.9.0

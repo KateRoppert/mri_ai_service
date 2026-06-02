@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -89,15 +90,24 @@ def resolve_atlas_path(
     return atlas_path
 
 
-def find_masks(segmentation_dir: Path, max_subjects: Optional[int] = None
-               ) -> List[Tuple[Path, str, str]]:
+def find_masks(segmentation_dir: Path, max_subjects: Optional[int] = None,
+               lesion_type: Optional[str] = None) -> List[Tuple[Path, str, str]]:
     """Find all segmentation masks (excluding native masks)."""
     masks = []
     seen_subjects = set()
+    # Known lesion-type subfolder names used in the new directory structure
+    _known_lesion_types = {'glioblastoma', 'multiple_sclerosis'}
 
     for mask_path in sorted(segmentation_dir.rglob("*_segmask.nii.gz")):
         if "_native_" in mask_path.name:
             continue
+
+        # If new-structure path contains a lesion-type folder, filter by it.
+        # Old-structure paths (no lesion-type folder) are always included.
+        if lesion_type:
+            path_parts = set(mask_path.parent.parts)
+            if path_parts & _known_lesion_types and lesion_type not in path_parts:
+                continue
 
         subject_id = None
         session_id = None
@@ -129,11 +139,17 @@ def process_one_mask(
     atlas_path: Path,
     mapping_path: Path,
     seg_classes: Dict,
-    lesion_type: str
+    lesion_type: str,
+    analyzer: Optional["LobarAnalyzer"] = None,
 ) -> Dict:
-    """Process a single mask — wrapper for parallel execution."""
+    """Process a single mask — wrapper for parallel execution.
+
+    analyzer: pre-loaded LobarAnalyzer to reuse in sequential mode;
+              if None a new one is created (needed per-process in parallel mode).
+    """
     try:
-        analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
+        if analyzer is None:
+            analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
         report = analyzer.analyze_mask(mask_path)
 
         if report is None:
@@ -255,10 +271,10 @@ def main():
     logger.info(f"Output:               {args.output_dir}")
     logger.info(f"Atlas:                {atlas_path.name}")
     logger.info(f"Mapping:              {mapping_path.name}")
-    logger.info(f"Mode:                 {args.mode}, workers: {args.workers}")
+    logger.info(f"Mode:                 {args.mode} (max workers: {args.workers})")
 
     # Find masks
-    masks = find_masks(args.input_dir, args.max_subjects)
+    masks = find_masks(args.input_dir, args.max_subjects, args.lesion_type)
 
     if not masks:
         logger.error("No segmentation masks found")
@@ -267,12 +283,14 @@ def main():
     logger.info(f"Found {len(masks)} mask(s) to process")
 
     # Skip existing
+    skipped = 0
     if args.skip_existing:
         filtered = []
         for mask_path, subj, sess in masks:
             mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
             report_path = args.output_dir / subj / sess / "anat" / args.lesion_type / f"{mask_stem}_lobar_report.json"
             if report_path.exists():
+                skipped += 1
                 logger.info(f"  Skipping {subj}/{sess}: report exists")
             else:
                 filtered.append((mask_path, subj, sess))
@@ -282,6 +300,20 @@ def main():
     if not masks:
         logger.info("All masks already processed")
         return 0
+
+    # Auto-tune parallelism.
+    # Lobar analysis is pure Python/numpy — no ANTs threads, so workers can
+    # use all available cores without thread over-subscription risk.
+    cpu_count = os.cpu_count() or 4
+    if args.mode == "sequential":
+        actual_workers = 1
+        logger.info(f"Workers: 1 (sequential)")
+    else:
+        actual_workers = max(1, min(args.workers, len(masks)))
+        reason = ""
+        if actual_workers < args.workers:
+            reason = f" (capped by n_masks={len(masks)})"
+        logger.info(f"Workers: {actual_workers}{reason} | cpu_count: {cpu_count}")
 
     # Performance monitoring
     monitor = None
@@ -294,12 +326,15 @@ def main():
     failed = 0
 
     if args.mode == "sequential":
+        # Load atlas once and reuse across all masks
+        shared_analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
         for idx, (mask_path, subj, sess) in enumerate(masks, 1):
             logger.info(f"\n[{idx}/{len(masks)}] {subj}/{sess}")
             result = process_one_mask(
                 mask_path, subj, sess, args.output_dir,
                 atlas_path, mapping_path, seg_classes,
                 args.lesion_type,
+                analyzer=shared_analyzer,
             )
             if result["success"]:
                 successful += 1
@@ -308,7 +343,7 @@ def main():
                 failed += 1
                 logger.error(f"  ✗ {result.get('error', 'unknown')}")
     else:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        with ProcessPoolExecutor(max_workers=actual_workers) as executor:
             future_map = {
                 executor.submit(
                     process_one_mask,
@@ -342,14 +377,14 @@ def main():
         benchmark_logger = BenchmarkLogger(args.results_dir)
 
         metrics = ExperimentMetrics(
-            experiment_id=f"lobar_{args.mode}_w{args.workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            experiment_id=f"lobar_{args.mode}_w{actual_workers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             timestamp=datetime.now().isoformat(),
             mode=args.mode,
-            workers=args.workers if args.mode == "parallel" else 1,
+            workers=actual_workers,
             total_series=len(masks),
             successful=successful,
             failed=failed,
-            skipped=0,
+            skipped=skipped,
             total_time=total_time,
             time_per_series=total_time / len(masks) if masks else 0,
             throughput=len(masks) / total_time if total_time > 0 else 0,

@@ -1,7 +1,8 @@
 # Known Issues & Technical Debt
 
 Документ фиксирует все известные проблемы и архитектурные долги, выявленные
-во время рефакторинга MAS-инфраструктуры (ветка `feat/mas-refactor`).
+во время рефакторинга MAS-инфраструктуры (ветка `feat/mas-refactor`) и
+последующих работ.
 Все пункты не блокируют merge в main — это работа на будущие ветки.
 
 Список разделён по областям. Каждый пункт помечен приоритетом и
@@ -11,33 +12,46 @@
 
 ## Pipeline portability (мульти-датасет support)
 
-### KI-001 — Stage 01: `_detect_contrast` слишком жадный
-**Приоритет:** низкий (косметика, не влияет на функциональность)
-**Branch:** `chore/post-mas-cleanup`
+### KI-001 — Stage 01: `_detect_contrast` слишком жадный для FLAIR
+**Приоритет:** низкий (косметика логов)
+**Branch:** `feat/lesion-type-aware-pipeline` (перенесён из `chore/post-mas-cleanup`)
 
 FLAIR-серии в MS-клинических данных размечаются как `contrast=True`.
-Скорее всего из-за того, что ContrastBolusAgent поле читается слишком
-жадно, или пациенту делали FLAIR после контраста и тэги сохранились.
+Скорее всего из-за того, что ContrastBolusAgent читается слишком жадно,
+или пациенту делали FLAIR после контраста и тэги сохранились.
 
 Модальность распознаётся корректно (`t2fl`), но в логах это создаёт
-ложное впечатление. Фикс: уточнить условия `_detect_contrast` — FLAIR
-по природе не контрастная, и contrast=True для неё должен либо
-игнорироваться, либо понижать confidence.
+ложное впечатление.
 
-### KI-002 — Stage 01: `print_summary` хардкодит 4 модальности
+**Перенос обоснован:** контрастный FLAIR — реальный клинический случай,
+не косметический баг. Правильное решение — не игнорировать `contrast=True`
+для FLAIR в логе, а ввести скоринг confidence в `ModalityDetector` и
+осмысленно учитывать его при выборе серии. Это связано с KI-027 и
+делается одной работой в `feat/lesion-type-aware-pipeline`.
+
+### KI-002 — Stage 01: `print_summary` хардкодит 4 модальности ✅ ЗАКРЫТО
 **Приоритет:** низкий (косметика)
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `43cb89c`
 
 Для МС-кейса в выводе будет `t1c: 0 series`, что вводит в заблуждение.
 Сделать список модальностей зависимым от `lesion_type` (по образцу
-`CompletenessChecker`).
+`CompletenessChecker`). В функции три места хардкода: инициализация
+`modality_counts`, инициализация `modality_slices`, цикл вывода.
 
-### KI-003 — Stage 01: фильтр модальностей дублирован
+### KI-003 — Stage 01: фильтр модальностей дублирован ✅ ЗАКРЫТО
 **Приоритет:** низкий
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `6fa72dc`
 
-Константа `{'t1', 't1c', 't2', 't2fl'}` встречается в `process_single_patient`
-и `run_sequential`. Кандидат на вынос в module-level constant.
+Константа `{'t1', 't1c', 't2', 't2fl'}` встречается в:
+- `process_single_patient` (parallel path)
+- `run_sequential` (sequential path)
+- `bids_suffix_map` в `FileOrganizer.copy_series` (третье место,
+  выявлено в ходе анализа Этапа 3)
+
+Кандидат на вынос в единый источник — module-level constant либо
+переиспользование `CompletenessChecker.LESION_TYPE_MODALITIES`.
 
 ### KI-004 — Stage 04 (QA) не проверен на МС
 **Приоритет:** высокий (вероятный блокер для MS-валидации)
@@ -63,23 +77,23 @@ T1c отсутствует, и эта регистрация либо упадё
 
 ## Stage 06 (segmentation)
 
-### KI-006 — Дубликат лога `PROCESSING SUMMARY`
+### KI-006 — Дубликат лога `PROCESSING SUMMARY` ✅ ЗАКРЫТО
 **Приоритет:** низкий (косметика)
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `3efa78a`
 
 `_process_sessions_async` и `run()` оба вызывают `stats.log_summary()`,
 поэтому строка `PROCESSING SUMMARY` печатается дважды в stage_06.log.
 
-### KI-007 — Validation `_scan_output_structure` не учитывает lesion_type subfolder
+### KI-007 — Validation `_scan_output_structure` не учитывает lesion_type subfolder ✅ ЗАКРЫТО
 **Приоритет:** средний
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `3efa78a`
 
 После Сабшага 2.3 outputs организованы под `{lesion_type}/` подпапкой,
 но `_scan_output_structure` ищет на старом уровне. Поэтому в логе всегда:
-```
 Found 0 subjects in output
 Success rate: 0.0%
-```
 
 Фикс: учесть подпапку `{lesion_type}/` при сканировании.
 
@@ -87,9 +101,10 @@ Success rate: 0.0%
 
 ## MAS-сервисы
 
-### KI-008 — torch.load monkey-patch дублирован
+### KI-008 — torch.load monkey-patch дублирован ✅ ЗАКРЫТО
 **Приоритет:** низкий (DRY)
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `29a3984`
 
 Patch для PyTorch 2.6+ (`weights_only=False` + numpy scalar allowlist)
 повторяется идентично в `services/gbm-seg/src/service_server.py` и
@@ -97,9 +112,10 @@ Patch для PyTorch 2.6+ (`weights_only=False` + numpy scalar allowlist)
 `services/common/torch_compat.py` с функцией
 `enable_legacy_checkpoint_loading()`.
 
-### KI-009 — Дрейф версий пакетов между gbm-seg и ms-seg
+### KI-009 — Дрейф версий пакетов между gbm-seg и ms-seg ✅ ЗАКРЫТО
 **Приоритет:** средний
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `e754e2e`
 
 Quart, Hypercorn, Flask и др. указаны в requirements.txt каждого сервиса
 отдельно. Любое расхождение вызывает несовместимости (как в KI-XX).
@@ -148,34 +164,61 @@ local профиль.
 
 ## Backend / Frontend
 
-### KI-013 — История запусков не показывает MS-кейсы
+### KI-013 — Вкладка валидации не показывает MS-датасет ✅ ЗАКРЫТО
 **Приоритет:** высокий (визуальный блокер для пользователя)
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `1f5a370` (`chore/post-mas-cleanup`)
 
-После прогона MS-кейса (verified: ms-seg отработал, Kappa получила
-upload), история запусков в UI не отображает этот run. Скорее всего
-где-то в backend SQL-запросе или frontend фильтре есть хардкод
-`lesion_type = 'glioblastoma'`.
+**Уточнение по ходу диагностики:** изначально проблема была сформулирована
+как «история запусков не показывает MS». Оказалось, что история запусков
+работает корректно — баг был во вкладке **Валидация**, которая видела
+только глио-датасет.
 
-Диагностика:
-```bash
-grep -rn "glioblastoma\|lesion_type" backend/ frontend/src/ | grep -v test
-```
+**Root cause:** `ValidationPanel.jsx::loadLesionTypes` брал первый
+`lesion_type` с `dataset_id` (`types.find(t => t.dataset_id)`) и
+блокировался на нём. UI-переключателя датасетов не существовало —
+`lesionTypes` хранились в state, но нигде не отрисовывались. Backend
+`get_lesion_types()` отдавал оба типа корректно.
 
-### KI-014 — 3D Slicer не загружает маску автоматически для МС
-**Приоритет:** высокий (важная UX-фича, ломается на МС)
+**Fix:** добавлен Antd `<Select>` в `extra` карточки валидации, привязан
+к `selectedDatasetId`. Существующий `useEffect([selectedDatasetId])`
+автоматически подтягивает entities при смене значения. Backend не
+менялся.
+
+### KI-014 — 3D Slicer не загружает маску для multi-patient/multi-session runs ✅ ЗАКРЫТО
+**Приоритет:** высокий (UX-блокер, проявлялся для МС)
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `7f11f2d` (`chore/post-mas-cleanup`)
 
-Slicer plugin раньше автоматически подгружал маску после завершения
-pipeline. После перехода на `/predict` контракт + `{lesion_type}/`
-подпапки эта интеграция перестала работать (хотя бы для МС).
+**Уточнение по ходу диагностики:** изначально проблема была сформулирована
+как «Slicer не работает для MS». На самом деле этот баг существовал
+давно и для глио, но оставался невидимым на типичном single-session
+UPENN-GBM кейсе.
 
-Нужно: проверить какие пути Slicer plugin ожидает, обновить под новую
-структуру output.
+**Root cause:** `/api/slicer/open/{run_id}` делал `record = records[0]`
+после `find_by_run_id(run_id)`, всегда выбирая первого пациента
+независимо от того, какого пользователь открыл в UI. Для MS-кейса с
+двумя сессиями одного пациента (`ses-001` без масок, `ses-002` с
+маской) этот баг сразу проявился: клик на `ses-002` загружал данные
+`ses-001` → пустую историю масок → Slicer без маски.
 
-### KI-015 — Ручной vs автосозданный Kappa-датасет
+**Fix:** эндпоинт принимает опциональный query-параметр `entity_id`.
+Если передан — выбирается соответствующая запись из `find_by_run_id`.
+Если не передан и в run'е больше одной записи — 400. Single-record
+runs сохраняют обратную совместимость (entity_id опционален).
+Фронт `openInSlicer` теперь пробрасывает `entityId` из `ValidationActions`.
+
+**Гипотеза про цветовую легенду MS, отвергнутая по ходу:** изначально
+предполагалось, что маска MS не отображается из-за несовпадения color
+table (4 класса у глио vs 1 у MS). Гипотеза неверна — Slicer не
+получал путь к маске вообще, проблема была чисто в выборе записи. Если
+проблемы с легендой реально появятся при отображении MS-масок — это
+будет уже отдельный пункт для `feat/lesion-type-aware-pipeline`.
+
+### KI-015 — Ручной vs автосозданный Kappa-датасет ✅ ЗАКРЫТО
 **Приоритет:** низкий (operational)
-**Branch:** `chore/post-mas-cleanup` или manual ops
+**Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `a81e073`
 
 KappaUploader автоматически создаёт датасет если в YAML нет записи.
 Это привело к тому, что вручную созданный MS-датасет остался пустым,
@@ -188,13 +231,39 @@ operational footgun.
 Возможно стоит добавить логику синхронизации (при наличии нескольких
 кандидатов спрашивать оператора), но это перебор для текущего масштаба.
 
+### KI-026 — Silent Kappa dedup confuses validation UX
+**Приоритет:** низкий (UX-improvement)
+**Branch:** `feat/prod-readiness`
+
+Pipeline дедуплицирует пациентов по `study_hash` при загрузке в Каппу:
+если пациент уже был загружен в Каппе ранее, текущий run корректно
+завершается, но новых entity не создаёт. Как следствие, для такого
+run'а в UI отсутствует валидационная панель и история масок —
+валидировать в контексте этого run'а нечего.
+
+Поведение корректное (валидация привязана к Каппа-entity, дубликаты не
+создаются), но молчаливое: пользователь видит «нет панели» и думает,
+что что-то сломалось. Это путает даже разработчика (выявлено по ходу
+работы над KI-014).
+
+Предложение:
+- В карточке завершённого run'а без `patient_registry`-записей с
+  `kappa_entity_id` показывать сообщение типа «Этот прогон не содержит
+  новых данных для валидации (все пациенты уже загружены в Каппу ранее)».
+- Опционально — линк на run, в котором эти entity действительно лежат
+  (потребует обратного запроса в `patient_registry` по `study_hash` или
+  по паре `original_patient_id + scan_date`).
+
+Это не баг, это UX-полировка. Откладывается в `feat/prod-readiness`.
+
 ---
 
 ## Архитектурные направления (не баги, future work)
 
-### KI-016 — config-driven lesion_types
+### KI-016 — config-driven lesion_types ⚠️ ЧАСТИЧНО ЗАКРЫТО
 **Приоритет:** средний
 **Branch:** `feat/lesion-type-aware-pipeline`
+**Partial in:** commit `55bee8f` (`chore/post-mas-cleanup`) — `configs/lesion_types.yaml` создан, код не мигрирован
 
 Сейчас `LESION_TYPE_MODALITIES` хардкодится в `CompletenessChecker`,
 а в stage 05 (и других) ещё нет понимания. Чище — вынести в
@@ -220,7 +289,7 @@ multiple_sclerosis:
 CATMIL. MAS-координатор будет выбирать trainer по кейсу. Сейчас
 явно reject (NotImplementedError) если `options.trainer != CATMIL`.
 
-### KI-018 — Cascade/Fallback/Ensemble режимы агентов (твоя идея)
+### KI-018 — Cascade/Fallback/Ensemble режимы агентов
 **Приоритет:** future MAS direction
 **Branch:** `feat/mas-coordinator`
 
@@ -236,8 +305,8 @@ CATMIL. MAS-координатор будет выбирать trainer по ке
 **Приоритет:** высокий (часть MS adaptation)
 **Branch:** `feat/lesion-type-aware-pipeline`
 
-Сейчас клинический отчёт (что бы это ни было — точно проверить в коде)
-заточен под глио (объёмы, доли). Для МС нужны другие метрики:
+Сейчас клинический отчёт заточен под глио (объёмы, доли). Для МС нужны
+другие метрики:
 - Количество очагов
 - Распределение по локализации (перивентрикулярные, юкстакортикальные...)
 - Изменения между сессиями (longitudinal analysis для МС-данных)
@@ -274,14 +343,16 @@ CATMIL. MAS-координатор будет выбирать trainer по ке
 
 ## Performance & ops
 
-### KI-022 — `.pyc` cache footgun в Docker
-**Приоритет:** средний (commit-time protection done, runtime guard pending)
+### KI-022 — `.pyc` cache footgun в Docker ✅ ЗАКРЫТО
+**Приоритет:** средний
 **Branch:** `chore/post-mas-cleanup`
+**Closed in:** commit `8a830e9` (`chore/post-mas-cleanup`)
 
-В ms-seg мы добавили `ENV PYTHONDONTWRITEBYTECODE=1`. В gbm-seg и web
-этого нет. После любой правки скриптов рискуем словить устаревший .pyc.
-
-Решение: добавить `PYTHONDONTWRITEBYTECODE=1` во все Dockerfile.
+**Fix:** в `services/gbm-seg/Dockerfile` и `web.Dockerfile` добавлены
+`ENV PYTHONDONTWRITEBYTECODE=1` и `ENV PYTHONUNBUFFERED=1` (по образцу
+ms-seg, где они уже были). Унифицированно во всех трёх Dockerfile.
+Решение по `PYTHONUNBUFFERED=1` принято по ходу — раз уж унифицируем,
+делаем по полному образцу для согласованности логов в `docker logs`.
 
 ### KI-023 — Benchmark для MAS-метрик
 **Приоритет:** низкий (для MAS Implementation)
@@ -316,6 +387,132 @@ SPEC.md описывает MAS-рефакторинг. Нужна:
 
 ---
 
+## Stage 01 deep-review findings (выявлены при анализе для Этапа 3)
+
+### KI-027 — `_select_best_series` использует упрощённую эвристику
+**Приоритет:** средний (влияет на качество выбранных серий)
+**Branch:** `feat/lesion-type-aware-pipeline`
+
+Сейчас `SeriesDeduplicator._select_best_series` выбирает серию с
+максимальным `slice_count`. Это сильное упрощение.
+
+В клинической практике у пациента в одной сессии может быть:
+- несколько T1 разного качества (с/без contrast, разная толщина срезов);
+- сериа FLAIR с/без motion artifact;
+- "пробные" короткие серии и "полноценные" длинные.
+
+Правильный выбор требует скоринга:
+- разрешение и толщина срезов;
+- наличие ключевых слов в описании (`MPRAGE`, `SPACE`, `optimal`);
+- отсутствие маркеров неудачи (`failed`, `repeat`, `motion`);
+- для t1c — наличие контрастных маркеров;
+- для FLAIR — длинный TI;
+- для МС — особые требования (3D FLAIR predпочтительнее 2D).
+
+Связано с KI-001: контрастный FLAIR — реальный случай, его осмысленная
+обработка требует confidence-скоринга в `ModalityDetector` и
+интеграции скоринга в `_select_best_series`. Делается одной работой.
+
+### KI-028 — `validate_copy` может давать ложные результаты при частичном обновлении
+**Приоритет:** низкий
+**Branch:** `feat/prod-readiness`
+
+`FileOrganizer.validate_copy` сравнивает количества:
+- source: `rglob("*.dcm")` (рекурсивно)
+- target: `glob("*.dcm")` (плоско)
+
+Это правильно для текущего use case (target всегда плоский). Но если
+когда-нибудь добавится режим частичного обновления (заменить только
+одну модальность у пациента), в target могут оказаться файлы от
+предыдущего прогона, и валидация даст ложный результат.
+
+Не критично сейчас, но стоит зафиксировать на этап подготовки к проду.
+
+### KI-029 — Hardcoded `.dcm` extension по всему скрипту
+**Приоритет:** низкий
+**Branch:** `feat/prod-readiness`
+
+`scripts/01_reorganize_folders.py` везде использует `*.dcm` для поиска
+DICOM-файлов. Реальные клинические данные часто бывают:
+- без расширения (`IM-0001-0001`);
+- с расширением `.IMA`, `.dicom`, `.DCM` (case-sensitive на ext4!).
+
+Если придёт центр с такой раскладкой, скрипт молча скажет «no DICOM
+files» и пропустит пациента. Нужно: либо detection через DICM-магию в
+начале файла, либо расширяемый список патернов в конфиге.
+
+### KI-030 — `pydicom force=True` маскирует не-DICOM файлы
+**Приоритет:** низкий
+**Branch:** `feat/prod-readiness`
+
+В `ModalityDetector.detect_modality` используется
+`pydicom.dcmread(..., force=True)`. При этом любой не-DICOM файл
+(`README.txt` переименованный в `series.dcm`) читается как пустой
+Dataset, серия проходит как «NO MATCH». В логах это неинформативно.
+
+Улучшение: проверять `dcm.SOPClassUID` или хотя бы `len(dcm.dir())`
+перед тем как считать файл валидным DICOM-ом.
+
+### KI-031 — `ModalityDetector._cache` бесполезен в parallel-режиме
+**Приоритет:** низкий (performance optimization)
+**Branch:** `feat/prod-readiness` или `feat/mas-coordinator`
+
+Кэш `self._cache: Dict[Path, ...]` живёт внутри инстанса детектора,
+который создаётся в каждом форке заново. Это означает, что повторное
+сканирование одной и той же серии (если бы оно случилось) в разных
+форках не использует кэш.
+
+Не баг (per-process кэш всё равно работает внутри одного процесса),
+но если перейти на shared cache через `mp.Manager` — будет ощутимое
+ускорение при больших датасетах. Кандидат на оптимизацию, когда
+будем работать над prod-readiness.
+
+### KI-032 — Логи в parallel-режиме перемешиваются построчно
+**Приоритет:** низкий (DX)
+**Branch:** `feat/prod-readiness`
+
+В `process_single_patient` создаётся отдельный logger
+`f'patient_{patient_dir.name}'`, но все они в итоге пишут в один
+StreamHandler через root logger. При `workers >= 4` строки разных
+пациентов будут перемежаться в `stdout`.
+
+Решение: `logging.handlers.QueueHandler` + `QueueListener` в основном
+процессе, или per-process логфайлы. Делается одной правкой, но
+требует тестирования.
+
+### KI-033 — Stage 05: N4 bias correction последовательна по модальностям внутри воркера
+**Приоритет:** низкий (performance optimization)
+**Branch:** `feat/prod-readiness` или отдельная `perf/stage05-intra-session-parallel`
+
+Внутри одной сессии N4 bias correction запускается последовательно: t1c → t1 → t2 → t2fl.
+Эти вычисления независимы и могли бы идти параллельно через `ThreadPoolExecutor` внутри воркера.
+
+Ожидаемый выигрыш для 4 модальностей:
+- Сейчас:  t1c(280s) + t1(46s) + t2(7s) + t2fl(154s) ≈ 487s
+- С intra-session parallel: max(280, 46, 7, 154) ≈ 280s (~1.7× быстрее для этого шага)
+
+Ограничение: нельзя реализовать как work-stealing между воркерами (разные сессии — разные
+процессы с изолированными файлами). Только параллелизм внутри одного воркера через потоки.
+
+Зависимость: registration зависит от результата N4 (нужен bias-corrected T1 для регистрации
+к атласу). Параллелить можно только шаг N4, не всю цепочку.
+
+---
+
+### KI-034 — Stage 06: `args` используется как module-level global внутри методов класса
+**Приоритет:** средний (скрытая ошибка при импорте)
+**Branch:** `feat/prod-readiness`
+
+`_create_session` (строка ~603) и `_process_sessions_async` (строки ~1008-1010) обращаются
+к переменной `args` напрямую как к глобальной переменной модуля, а не через `self.args`.
+Это работает только при запуске как `__main__`, когда `args = parse_arguments()` в глобальном
+пространстве имён. При импорте модуля или тестировании `NameError: name 'args' is not defined`.
+
+Правильное решение: заменить все обращения к `args` внутри методов класса `SegmentationRunner`
+на `self.args`.
+
+---
+
 ## Закрытые в этой ветке
 
 Для справки — что было исправлено до merge в main:
@@ -330,6 +527,33 @@ SPEC.md описывает MAS-рефакторинг. Нужна:
 - ✅ Quart/Flask version drift между gbm-seg и ms-seg (синхронизированы)
 - ✅ numpy/scipy ABI mismatch в ms-seg (force-reinstall numpy 2.3+ scipy 1.13+)
 
+Закрытые в `chore/post-mas-cleanup`:
+
+- ✅ KI-013 (commit `1f5a370`) — Validation lesion-type selector
+- ✅ KI-014 (commit `7f11f2d`) — Slicer entity_id selection
+- ✅ KI-022 (commit `8a830e9`) — PYTHONDONTWRITEBYTECODE in all Dockerfiles
+- ✅ KI-002 (commit `43cb89c`) — print_summary lesion-type-aware
+- ✅ KI-003 (commit `6fa72dc`) — modality whitelist centralized
+- ✅ KI-006 (commit `3efa78a`) — duplicate PROCESSING SUMMARY removed
+- ✅ KI-007 (commit `3efa78a`) — _scan_output_structure uses rglob for lesion_type subfolder
+- ✅ KI-008 (commit `29a3984`) — torch_compat extracted to services/common/
+- ✅ KI-009 (commit `e754e2e`) — requirements-base.txt for shared deps
+- ✅ KI-015 (commit `a81e073`) — KappaUploader warns on empty duplicate dataset
+- ⚠️ KI-016 (commit `55bee8f`) — lesion_types.yaml created; code migration in feat/lesion-type-aware-pipeline
+
+Дополнительные исправления (не KI, выявлены в ходе stage survey):
+
+- ✅ Stage 03: dcm2niix artifact cleanup, orchestrator max_subjects fix
+- ✅ Stage 04: skip logic, parallel skipped counter, UPENN tuple, modality parsing (7 bugs)
+- ✅ Stage 05: 6 bugs incl. reference_modality by name, skipped counter, FSL log level
+- ✅ Stage 05/07: auto-tune parallelism + OS core reservation (effective_cpu = cpu_count - 2)
+- ✅ Stage 06: server availability checks correct service URL per lesion_type
+- ✅ Stage 06: GPU retry with backoff on cudaErrorDevicesUnavailable (3 attempts, 30/60s)
+- ✅ Stage 07: thread limits in parallel mode, skipped counter in benchmark
+- ✅ Stage 08: lesion_type filter, skipped counter, atlas reload in parallel mode
+- ✅ Docker: build network:host + proxy args for seg services; pip timeout 120s
+
 ---
 
-*Последнее обновление: финализация ветки `feat/mas-refactor`.*
+*Последнее обновление: расширение Этапа 3 (deep review of Stage 01),
+добавление KI-027..032, перенос KI-001 в `feat/lesion-type-aware-pipeline`.*

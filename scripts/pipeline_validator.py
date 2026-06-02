@@ -142,13 +142,16 @@ class InputOutputValidator:
                 
                 # Find NIfTI files
                 for nifti_file in anat_dir.glob("*.nii.gz"):
-                    # Extract modality from filename
+                    # Extract modality from filename.
                     # Expected format: sub-{patient}_ses-{session}_{modality}.nii.gz
+                    # dcm2niix may append extra suffixes (_Eq_1, _e2, etc.) producing
+                    # sub-{patient}_ses-{session}_{modality}_Eq_1.nii.gz — modality is
+                    # always the 3rd underscore-separated token (index 2), never the last.
                     filename = nifti_file.stem.replace('.nii', '')  # Remove .nii from .nii.gz
                     parts = filename.split('_')
-                    
+
                     if len(parts) >= 3:
-                        modality = parts[-1].lower()  # Last part is modality
+                        modality = parts[2].lower()  # 3rd token: sub-X_ses-Y_{modality}[_extras]
                         structure[patient_id][session_id].add(modality)
         
         return structure

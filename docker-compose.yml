@@ -28,6 +28,12 @@ services:
     build:
       context: ./services
       dockerfile: gbm-seg/Dockerfile
+      network: host   # lets pip reach localhost proxy during build
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        http_proxy: ${HTTP_PROXY:-}
+        https_proxy: ${HTTPS_PROXY:-}
     image: brain-lesion-gbm-seg:demo
     ports:
       - "5000:5000"
@@ -52,6 +58,12 @@ services:
     build:
       context: ./services
       dockerfile: ms-seg/Dockerfile
+      network: host   # lets pip reach localhost proxy during build
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        http_proxy: ${HTTP_PROXY:-}
+        https_proxy: ${HTTPS_PROXY:-}
     image: brain-lesion-ms-seg:demo
     ports:
       - "5001:5001"
