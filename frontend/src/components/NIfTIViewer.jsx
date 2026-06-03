@@ -15,7 +15,6 @@ import { Niivue } from '@niivue/niivue';
 import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl, getEntityRunInfo, getMaskFileUrl } from '../services/api';
 import ValidationActions from './ValidationActions';
 import ClinicalReportContent from './ClinicalReportContent';
-import KappaClinicalReport from './KappaClinicalReport';
 
 /**
  * Создаём кастомную цветовую карту для multi-class сегментации
@@ -684,20 +683,21 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
             </Space>
           </div>
 
-          {/* Клинический отчёт — встроен под визуализацией.
-              В валидации (kappaReport передан) источник — Каппа, не локальные файлы.
-              В запуске/истории — локальные файлы прогона по runId. */}
+          {/* Клинический отчёт — встроен под визуализацией. Один компонент,
+              один стиль. В валидации источник — Каппа (kappaReport →
+              kappaEntityInfo), в запуске/истории — локальные файлы по runId. */}
           {(kappaReport || resolvedRunId) && (
             <div style={{
               marginTop: 24,
               padding: '16px 0',
               borderTop: '2px solid #f0f0f0',
             }}>
-              {kappaReport ? (
-                <KappaClinicalReport entityInfo={kappaReport} lesionType={lesionType} />
-              ) : (
-                <ClinicalReportContent runId={resolvedRunId} autoLoad={true} lesionType={lesionType} />
-              )}
+              <ClinicalReportContent
+                runId={resolvedRunId}
+                autoLoad={true}
+                lesionType={lesionType}
+                kappaEntityInfo={kappaReport}
+              />
             </div>
           )}
         </>

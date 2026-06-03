@@ -547,6 +547,7 @@ class KappaUploader:
                     "lobes": {
                         lobe_id: {
                             "name_ru": lobe_data.get("name_ru"),
+                            "color": lobe_data.get("color"),
                             "cm3": lobe_data.get("total_volume_cm3"),
                             "percent": lobe_data.get("percent_of_lesion"),
                         }

@@ -21,7 +21,82 @@ const sortByPatientSession = (arr) =>
     return (a.session_id || '').localeCompare(b.session_id || '');
   });
 
-const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma' }) => {
+// Glio segmentation class label ↔ name. Shared by the text parser (local
+// source) and the Kappa normalizer so both produce identical class objects.
+const LABEL_NAMES = {
+  1: 'Некротическое ядро (NCR)',
+  2: 'Перитуморальный отёк (ED)',
+  3: 'Неусиливающаяся опухоль (NET)',
+  4: 'Усиливающаяся опухоль (ET)',
+};
+const NAME_TO_LABEL = { NCR: 1, ED: 2, NET: 3, ET: 4 };
+
+// Split a Kappa bids_id ("sub-001_ses-002") into patient and session ids.
+const splitBidsId = (bids) => {
+  const s = bids || '';
+  const i = s.indexOf('_ses-');
+  return i !== -1
+    ? { patient_id: s.slice(0, i), session_id: s.slice(i + 1) }
+    : { patient_id: s, session_id: '' };
+};
+
+// Normalize one Kappa entity's dsEntityInfo into the SAME state shapes the
+// local API produces, so the render path is shared (single source of truth
+// for presentation). Each array holds 0 or 1 entry (one entity = one session).
+const normalizeKappaEntity = (info) => {
+  const { patient_id, session_id } = splitBidsId(info.bids_id);
+
+  const lesionStatsReports = info.lesion_stats
+    ? [{
+        patient_id,
+        session_id,
+        lesion_count: info.lesion_stats.lesion_count,
+        total_volume_cm3: info.lesion_stats.total_volume_cm3,
+        mean_lesion_volume_cm3: info.lesion_stats.mean_lesion_volume_cm3,
+        lesion_volumes_cm3: info.lesion_stats.lesion_volumes_cm3 || [],
+      }]
+    : [];
+
+  const lobarReports = info.lobar_report
+    ? [{
+        patient_id,
+        session_id,
+        atlas_name: info.lobar_report.atlas_name,
+        total_lesion_volume_cm3: info.lobar_report.total_lesion_cm3,
+        lobes: Object.fromEntries(
+          Object.entries(info.lobar_report.lobes || {}).map(([id, l]) => [id, {
+            name_ru: l.name_ru || id,
+            color: l.color,
+            total_volume_cm3: l.cm3,
+            percent_of_lesion: l.percent,
+            classes: {},
+          }]),
+        ),
+      }]
+    : [];
+
+  const volumeReports = info.volume_report
+    ? [{
+        patient_id,
+        session_id,
+        classes: Object.entries(info.volume_report.classes || {}).map(([name, d]) => {
+          const label = NAME_TO_LABEL[name];
+          return {
+            key: label || name,
+            label,
+            name: LABEL_NAMES[label] || name,
+            voxel_count: d.voxels || 0,
+            volume_mm3: (d.cm3 || 0) * 1000,
+            volume_cm3: d.cm3 || 0,
+          };
+        }),
+      }]
+    : [];
+
+  return { volumeReports, lobarReports, lesionStatsReports };
+};
+
+const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma', kappaEntityInfo = null }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [volumeReports, setVolumeReports] = useState([]);
@@ -29,11 +104,25 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   const [lesionStatsReports, setLesionStatsReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
+  // Kappa source (validation): normalize dsEntityInfo into the same state
+  // shapes the local API produces, then the shared render handles it.
   useEffect(() => {
-    if (autoLoad && runId && !loaded) {
+    if (kappaEntityInfo) {
+      const { volumeReports: v, lobarReports: l, lesionStatsReports: s } =
+        normalizeKappaEntity(kappaEntityInfo);
+      setVolumeReports(v);
+      setLobarReports(l);
+      setLesionStatsReports(s);
+      setLoaded(true);
+    }
+  }, [kappaEntityInfo]);
+
+  // Local source (run/history): fetch report files by runId.
+  useEffect(() => {
+    if (!kappaEntityInfo && autoLoad && runId && !loaded) {
       fetchAllData();
     }
-  }, [autoLoad, runId]);
+  }, [autoLoad, runId, kappaEntityInfo]);
 
   const fetchAllData = async () => {
     setLoading(true);
@@ -74,13 +163,6 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     const lines = reportText.split('\n');
     const classes = [];
 
-    const labelNames = {
-      1: 'Некротическое ядро (NCR)',
-      2: 'Перитуморальный отёк (ED)',
-      3: 'Неусиливающаяся опухоль (NET)',
-      4: 'Усиливающаяся опухоль (ET)',
-    };
-
     for (const line of lines) {
       const classMatch = line.match(/^\s+(\d)\.\s+(.+?)\s{2,}(\d+)\s+([\d.]+)\s+([\d.]+)/);
       if (classMatch) {
@@ -88,7 +170,7 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
         classes.push({
           key: label,
           label,
-          name: labelNames[label] || classMatch[2].trim(),
+          name: LABEL_NAMES[label] || classMatch[2].trim(),
           voxel_count: parseInt(classMatch[3]),
           volume_mm3: parseFloat(classMatch[4]),
           volume_cm3: parseFloat(classMatch[5]),
@@ -406,7 +488,8 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   return (
     <>
       {volumeReports.map((report, idx) => {
-        const classes = parseVolumeReport(report.report_text);
+        // Kappa source provides structured classes; local source has report_text.
+        const classes = report.classes || parseVolumeReport(report.report_text || '');
         const clinical = computeClinical(classes);
         const lobar = lobarReports.find(
           lr => lr.patient_id === report.patient_id && lr.session_id === report.session_id
