@@ -30,13 +30,17 @@ from lobar_analysis import LobarAnalyzer
 logger = logging.getLogger(__name__)
 
 
-def compute_lesion_stats(mask_path: Path) -> dict:
+def compute_lesion_stats(mask_path: Path):
     """
     Count connected components (individual lesions) in a binary mask.
     Used for MS where each component = one lesion.
 
-    Returns dict with lesion_count, total_volume_cm3, mean_lesion_volume_cm3,
-    lesion_volumes_cm3.
+    Returns (stats_dict, labeled_array, affine):
+      stats_dict: lesion_count, total_volume_cm3, mean_lesion_volume_cm3,
+                  lesion_volumes_cm3 (sorted desc, for display/table),
+                  lesion_volumes_by_label ({str(label): volume_cm3}, for hover).
+      labeled_array: int array, each lesion its own integer label 1..N.
+      affine: source affine (to save the labeled mask).
     """
     img = nib.load(str(mask_path))
     data = np.asarray(img.dataobj)
@@ -46,20 +50,23 @@ def compute_lesion_stats(mask_path: Path) -> dict:
     binary = (data > 0).astype(np.uint8)
     labeled, n_components = ndimage_label(binary)
 
-    lesion_volumes = []
+    volumes_by_label = {}
     for i in range(1, n_components + 1):
         voxel_count = int(np.sum(labeled == i))
-        lesion_volumes.append(round(voxel_count * voxel_vol_cm3, 4))
+        volumes_by_label[str(i)] = round(voxel_count * voxel_vol_cm3, 4)
 
-    total = round(sum(lesion_volumes), 4)
+    volumes = list(volumes_by_label.values())
+    total = round(sum(volumes), 4)
     mean = round(total / n_components, 4) if n_components > 0 else 0.0
 
-    return {
+    stats = {
         "lesion_count": n_components,
         "total_volume_cm3": total,
         "mean_lesion_volume_cm3": mean,
-        "lesion_volumes_cm3": sorted(lesion_volumes, reverse=True),
+        "lesion_volumes_cm3": sorted(volumes, reverse=True),
+        "lesion_volumes_by_label": volumes_by_label,
     }
+    return stats, labeled.astype(np.int16), img.affine
 
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
@@ -208,9 +215,9 @@ def process_one_mask(
 
         analyzer.save_report(report, report_path)
 
-        # For MS: compute and save per-lesion statistics
+        # For MS: compute per-lesion statistics + save labeled mask for hover
         if lesion_type == 'multiple_sclerosis':
-            stats = compute_lesion_stats(mask_path)
+            stats, labeled, affine = compute_lesion_stats(mask_path)
             stats["patient_id"] = subject_id
             stats["session_id"] = session_id
             stats_path = report_path.parent / report_path.name.replace(
@@ -218,9 +225,18 @@ def process_one_mask(
             )
             with open(stats_path, 'w', encoding='utf-8') as f:
                 json.dump(stats, f, indent=2, ensure_ascii=False)
+
+            # Save labeled mask alongside the binary segmask so the viewer can
+            # read a per-lesion label under the cursor and show its volume.
+            labels_path = mask_path.parent / mask_path.name.replace(
+                "_segmask.nii.gz", "_segmask_labels.nii.gz"
+            )
+            nib.save(nib.Nifti1Image(labeled, affine), str(labels_path))
+
             logger.info(
                 f"Lesion stats: {stats['lesion_count']} lesions, "
-                f"{stats['total_volume_cm3']:.3f} cm³ → {stats_path.name}"
+                f"{stats['total_volume_cm3']:.3f} cm³ → {stats_path.name}; "
+                f"labels → {labels_path.name}"
             )
 
         affected = len(report.get("lobes", {}))
