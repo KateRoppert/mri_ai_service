@@ -277,6 +277,7 @@ class LesionStatsReport(BaseModel):
     total_volume_cm3: float
     mean_lesion_volume_cm3: float
     lesion_volumes_cm3: List[float]
+    lesion_volumes_by_label: Dict[str, float] = Field(default_factory=dict)
 
 class LesionStatsListResponse(BaseModel):
     total: int

@@ -69,8 +69,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   // Ref to the currently selected file — niivue callbacks close over the init
   // render, so they must read the latest value via a ref rather than state.
   const selectedFileRef = useRef(null);
-  useEffect(() => { selectedFileRef.current = selectedFile; }, [selectedFile]);
-  
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [files, setFiles] = useState([]);
@@ -83,6 +82,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const [activeMaskLabel, setActiveMaskLabel] = useState(null); // для отображения выбранной версии
   // Tooltip: per-lesion volume shown when cursor hovers a labeled voxel (MS only)
   const [hoverVolume, setHoverVolume] = useState(null); // { cm3: number } | null
+
+  // Keep the ref in sync so niivue's onLocationChange reads the latest file.
+  useEffect(() => { selectedFileRef.current = selectedFile; }, [selectedFile]);
 
   /**
    * Резолвим runId: если передан напрямую — используем,
@@ -307,14 +309,6 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   };
 
   /**
-   * Обработчик изменения позиции курсора
-   */
-  const handleLocationChange = (data) => {
-    // Можно добавить отображение координат
-    console.log('Позиция:', data);
-  };
-
-  /**
    * Изменение выбранного файла
    */
   const handleFileChange = (value) => {
@@ -413,6 +407,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
     if (!nvRef.current || !versionInfo?.maskUrl) return;
 
     const nv = nvRef.current;
+    // Versioned masks are binary (no per-lesion label map) — drop any hover tooltip
+    // so it can't show a stale/misleading per-lesion volume over this mask.
+    setHoverVolume(null);
     setLoading(true);
     setError(null);
 
