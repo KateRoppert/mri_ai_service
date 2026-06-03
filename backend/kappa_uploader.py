@@ -229,6 +229,7 @@ class KappaUploader:
                 "volume_report": None,
                 "lobar_report": None,
                 "lesion_stats_report": None,
+                "lesion_labels_mask": None,
             })
             sessions[session_key]["preprocessed"].append(nifti)
 
@@ -274,6 +275,12 @@ class KappaUploader:
             session_key = self._extract_session_key(ls)
             if session_key and session_key in sessions:
                 sessions[session_key]["lesion_stats_report"] = ls
+
+        # Find labeled lesion masks (МС — для hover объёма очага)
+        for lbl in sorted(segmentation_dir.rglob("*_segmask_labels.nii.gz")):
+            session_key = self._extract_session_key(lbl)
+            if session_key and session_key in sessions:
+                sessions[session_key]["lesion_labels_mask"] = lbl
 
         logger.info("Discovered %d sessions", len(sessions))
         for sk, sd in sessions.items():
@@ -405,6 +412,10 @@ class KappaUploader:
             if "_native_" not in m.name
         ]
         file_paths.extend(main_masks)
+
+        # Include the labeled lesion mask so validation hover works Kappa-only
+        if session_data.get("lesion_labels_mask"):
+            file_paths.append(session_data["lesion_labels_mask"])
 
         if not file_paths:
             return {"session": session_key, "success": False, "error": "no files"}
@@ -567,7 +578,10 @@ class KappaUploader:
                     "total_volume_cm3": ls.get("total_volume_cm3"),
                     "mean_lesion_volume_cm3": ls.get("mean_lesion_volume_cm3"),
                     "lesion_volumes_cm3": ls.get("lesion_volumes_cm3", []),
+                    "lesion_volumes_by_label": ls.get("lesion_volumes_by_label", {}),
                 }
+                if session_data.get("lesion_labels_mask"):
+                    info["lesion_labels_file"] = session_data["lesion_labels_mask"].name
             except Exception as e:
                 logger.warning("Failed to read lesion stats report: %s", e)
 
