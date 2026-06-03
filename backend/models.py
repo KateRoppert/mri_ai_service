@@ -35,6 +35,10 @@ class NIfTIFile(BaseModel):
     mask_url: str = Field(..., description="URL для получения маски")
     native_image_url: Optional[str] = Field(None, description="URL нативного изображения из nifti/")
     native_mask_url: Optional[str] = Field(None, description="URL нативной маски сегментации")
+    # Labeled mask (MS only) — each voxel carries its lesion's integer label
+    mask_labels_url: Optional[str] = None
+    # Map label→volume_cm3 for hover tooltip (one entry per lesion)
+    lesion_volumes_by_label: Optional[Dict[str, float]] = None
 
 class NIfTIFilesResponse(BaseModel):
     """Список доступных NIfTI файлов"""

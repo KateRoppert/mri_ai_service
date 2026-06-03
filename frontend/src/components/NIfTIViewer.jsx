@@ -66,6 +66,10 @@ const fileLabel = (f) =>
 const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null, lesionType = 'glioblastoma', kappaReport = null }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
+  // Ref to the currently selected file — niivue callbacks close over the init
+  // render, so they must read the latest value via a ref rather than state.
+  const selectedFileRef = useRef(null);
+  useEffect(() => { selectedFileRef.current = selectedFile; }, [selectedFile]);
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -77,6 +81,8 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const [viewMode, setViewMode] = useState('atlas'); // 'atlas' or 'native'
   const [resolvedRunId, setResolvedRunId] = useState(null);
   const [activeMaskLabel, setActiveMaskLabel] = useState(null); // для отображения выбранной версии
+  // Tooltip: per-lesion volume shown when cursor hovers a labeled voxel (MS only)
+  const [hoverVolume, setHoverVolume] = useState(null); // { cm3: number } | null
 
   /**
    * Резолвим runId: если передан напрямую — используем,
@@ -126,6 +132,24 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           });
           
           nvRef.current = nv;
+
+          // Per-lesion hover tooltip: read the labeled voxel under the cursor
+          // and look up its volume in the per-session map.
+          nv.onLocationChange = (location) => {
+            const file = selectedFileRef.current;
+            const byLabel = file?.lesion_volumes_by_label;
+            const values = location?.values || [];
+            // The mask overlay is always the last loaded volume
+            const labelVal = values.length
+              ? Math.round(values[values.length - 1].value)
+              : 0;
+            if (byLabel && labelVal > 0 && byLabel[String(labelVal)] != null) {
+              setHoverVolume({ cm3: byLabel[String(labelVal)] });
+            } else {
+              setHoverVolume(null);
+            }
+          };
+
           nv.attachToCanvas(canvasRef.current);
           
           console.log('Niivue инициализирован успешно');
@@ -247,7 +271,15 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           opacity: 1.0,
         },
         {
-          url: maskUrl,
+          // For MS, prefer the labeled mask (each voxel = lesion instance label)
+          // so the hover handler can look up per-lesion volumes. Visual output is
+          // unchanged because cal_max:1 clamps all labels ≥1 to the single green
+          // colormap entry. For GBM the binary segmask is used as before.
+          url: (lesionType === 'multiple_sclerosis' && file.mask_labels_url)
+            ? (file.mask_labels_url.startsWith('http')
+                ? file.mask_labels_url
+                : getNIfTIFileUrl(file.mask_labels_url))
+            : maskUrl,
           name: file.mask_filename,
           colormap: 'seg_custom',
           opacity: maskOpacity,
@@ -574,23 +606,35 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           </div>
 
           {/* Canvas для niivue */}
-          <div style={{ 
-            border: '1px solid #d9d9d9', 
+          <div style={{
+            position: 'relative',  // needed so the hover tooltip badge is positioned inside
+            border: '1px solid #d9d9d9',
             borderRadius: 4,
             overflow: 'hidden',
             background: '#000',
             marginBottom: 8,
-            width: '100%',    // ← Добавь
-            height: '85vh'    // ← Добавь
+            width: '100%',
+            height: '85vh',
           }}>
             <canvas
               ref={canvasRef}
-              style={{ 
-                width: '100%', 
+              style={{
+                width: '100%',
                 height: '100%',  // 100% от родительского div
                 display: 'block'
               }}
             />
+            {/* Per-lesion volume tooltip — appears when cursor hovers an MS lesion */}
+            {hoverVolume && (
+              <div style={{
+                position: 'absolute', top: 8, right: 8, zIndex: 5,
+                background: 'rgba(0,0,0,0.75)', color: '#fff',
+                padding: '4px 10px', borderRadius: 4, fontSize: 13,
+                pointerEvents: 'none',
+              }}>
+                Очаг: {hoverVolume.cm3.toFixed(3)} см³
+              </div>
+            )}
           </div>
 
           {/* Панель валидации */}

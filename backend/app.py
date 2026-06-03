@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
+import json
 import logging
 import subprocess
 import uvicorn
@@ -645,6 +646,24 @@ async def get_nifti_files_list(
                         native_mask_url = f"/api/nifti/{run_id}/segmentation/{native_mask_name}"
                         break
                     
+                    # Resolve labeled mask (MS: one label per lesion instance)
+                    labels_name = mask_filename.replace("_segmask.nii.gz", "_segmask_labels.nii.gz")
+                    mask_labels_url = None
+                    for labels_path in segmentation_dir.rglob(labels_name):
+                        mask_labels_url = f"/api/nifti/{run_id}/segmentation/{labels_name}"
+                        break
+
+                    # Resolve per-lesion volume map from the lesion stats JSON
+                    volumes_by_label = None
+                    stats_name = f"{base_name}_lesion_stats_report.json"
+                    for stats_p in segmentation_dir.rglob(stats_name):
+                        try:
+                            with open(stats_p, "r", encoding="utf-8") as sf:
+                                volumes_by_label = json.load(sf).get("lesion_volumes_by_label")
+                        except Exception:
+                            volumes_by_label = None
+                        break
+
                     nifti_files.append(NIfTIFile(
                         filename=prep_filename,
                         mask_filename=mask_filename,
@@ -655,6 +674,8 @@ async def get_nifti_files_list(
                         mask_url=f"/api/nifti/{run_id}/segmentation/{mask_filename}",
                         native_image_url=native_image_url,
                         native_mask_url=native_mask_url,
+                        mask_labels_url=mask_labels_url,
+                        lesion_volumes_by_label=volumes_by_label,
                     ))
                     
                     logger.info(f"Добавлен файл: {prep_filename} с маской {mask_filename}"

@@ -52,6 +52,12 @@ const buildCustomFiles = (entity, datasetId) => {
   const maskFileId = fileIdByName[maskFileName];
   const maskUrl = maskFileId ? getValidationFileUrl(datasetId, maskFileId) : null;
 
+  // Labeled mask (MS only) and per-lesion volume map for hover tooltip
+  const labelsFileName = info.lesion_labels_file;
+  const labelsFileId = labelsFileName ? fileIdByName[labelsFileName] : null;
+  const maskLabelsUrl = labelsFileId ? getValidationFileUrl(datasetId, labelsFileId) : null;
+  const volumesByLabel = info.lesion_stats?.lesion_volumes_by_label || null;
+
   // bids_id в Каппе включает сессию ("sub-001_ses-002"). Разделяем на
   // пациента и сессию, чтобы метка визуализатора была согласована с
   // секциями Запуск/История (пациент / сессия / модальность).
@@ -78,6 +84,8 @@ const buildCustomFiles = (entity, datasetId) => {
         modality: modality.toUpperCase(),
         image_url: getValidationFileUrl(datasetId, fileId),
         mask_url: maskUrl,
+        mask_labels_url: maskLabelsUrl,
+        lesion_volumes_by_label: volumesByLabel,
       };
     })
     .filter(Boolean);
