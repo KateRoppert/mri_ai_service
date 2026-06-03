@@ -95,6 +95,7 @@ const ValidationPanel = () => {
   const [viewerFiles, setViewerFiles] = useState([]);
   const [viewerEntityRef, setViewerEntityRef] = useState(null);
   const [viewerLesionType, setViewerLesionType] = useState('glioblastoma');
+  const [viewerEntityInfo, setViewerEntityInfo] = useState(null);
 
   useEffect(() => {
     loadLesionTypes();
@@ -146,6 +147,7 @@ const ValidationPanel = () => {
       dataset_id: selectedDatasetId,
     });
     setViewerLesionType(entity.dsEntityInfo?.lesion_type || 'glioblastoma');
+    setViewerEntityInfo(entity.dsEntityInfo || null);
     setViewerOpen(true);
   };
 
@@ -284,6 +286,7 @@ const ValidationPanel = () => {
         customFiles={viewerFiles}
         validationRef={viewerEntityRef}
         lesionType={viewerLesionType}
+        kappaReport={viewerEntityInfo}
       />
     </>
   );

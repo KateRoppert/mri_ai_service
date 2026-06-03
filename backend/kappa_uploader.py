@@ -228,6 +228,7 @@ class KappaUploader:
                 "quality_reports": [],
                 "volume_report": None,
                 "lobar_report": None,
+                "lesion_stats_report": None,
             })
             sessions[session_key]["preprocessed"].append(nifti)
 
@@ -267,6 +268,12 @@ class KappaUploader:
             session_key = self._extract_session_key(lr)
             if session_key and session_key in sessions:
                 sessions[session_key]["lobar_report"] = lr
+
+        # Находим lesion_stats reports (МС — количество и объёмы очагов)
+        for ls in sorted(segmentation_dir.rglob("*_lesion_stats_report.json")):
+            session_key = self._extract_session_key(ls)
+            if session_key and session_key in sessions:
+                sessions[session_key]["lesion_stats_report"] = ls
 
         logger.info("Discovered %d sessions", len(sessions))
         for sk, sd in sessions.items():
@@ -539,6 +546,7 @@ class KappaUploader:
                     "total_lesion_cm3": lr.get("total_lesion_volume_cm3"),
                     "lobes": {
                         lobe_id: {
+                            "name_ru": lobe_data.get("name_ru"),
                             "cm3": lobe_data.get("total_volume_cm3"),
                             "percent": lobe_data.get("percent_of_lesion"),
                         }
@@ -547,6 +555,20 @@ class KappaUploader:
                 }
             except Exception as e:
                 logger.warning("Failed to read lobar report: %s", e)
+
+        # Lesion stats report (МС — количество и объёмы очагов)
+        if session_data.get("lesion_stats_report"):
+            try:
+                with open(session_data["lesion_stats_report"], "r") as f:
+                    ls = json.load(f)
+                info["lesion_stats"] = {
+                    "lesion_count": ls.get("lesion_count"),
+                    "total_volume_cm3": ls.get("total_volume_cm3"),
+                    "mean_lesion_volume_cm3": ls.get("mean_lesion_volume_cm3"),
+                    "lesion_volumes_cm3": ls.get("lesion_volumes_cm3", []),
+                }
+            except Exception as e:
+                logger.warning("Failed to read lesion stats report: %s", e)
 
         return info
 
