@@ -23,9 +23,9 @@ const sortByPatientSession = (arr) =>
 
 // MS lesion size bands (pragmatic; a ~3 mm punctate lesion ≈ 0.014 см³).
 const LESION_SIZE_BANDS = [
-  { key: 'large',  label: 'крупные ≥0.1 см³',  bg: '#f6ffed', border: '#b7eb8f', color: '#389e0d', test: (v) => v >= 0.1 },
-  { key: 'medium', label: 'средние 0.01–0.1',  bg: '#fcffe6', border: '#eaff8f', color: '#7cb305', test: (v) => v >= 0.01 && v < 0.1 },
-  { key: 'small',  label: 'точечные <0.01',    bg: '#fafafa', border: '#e8e8e8', color: '#8c8c8c', test: (v) => v < 0.01 },
+  { key: 'large',  label: 'крупные ≥0.1 см³',      bg: '#f6ffed', border: '#b7eb8f', color: '#389e0d', test: (v) => v >= 0.1 },
+  { key: 'medium', label: 'средние 0.01–0.1 см³',  bg: '#fcffe6', border: '#eaff8f', color: '#7cb305', test: (v) => v >= 0.01 && v < 0.1 },
+  { key: 'small',  label: 'точечные <0.01 см³',    bg: '#fafafa', border: '#e8e8e8', color: '#8c8c8c', test: (v) => v < 0.01 },
 ];
 
 const countLesionBands = (volumes) =>
