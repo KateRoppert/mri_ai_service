@@ -52,6 +52,18 @@ const buildCustomFiles = (entity, datasetId) => {
   const maskFileId = fileIdByName[maskFileName];
   const maskUrl = maskFileId ? getValidationFileUrl(datasetId, maskFileId) : null;
 
+  // bids_id в Каппе включает сессию ("sub-001_ses-002"). Разделяем на
+  // пациента и сессию, чтобы метка визуализатора была согласована с
+  // секциями Запуск/История (пациент / сессия / модальность).
+  const bids = info.bids_id || entity.dsEntityName || '';
+  let patientId = bids;
+  let sessionId = '';
+  const sesIdx = bids.indexOf('_ses-');
+  if (sesIdx !== -1) {
+    patientId = bids.slice(0, sesIdx);
+    sessionId = bids.slice(sesIdx + 1);
+  }
+
   // Для каждой модальности — отдельный объект файла
   return dataFileNames
     .map((fileName) => {
@@ -61,8 +73,8 @@ const buildCustomFiles = (entity, datasetId) => {
       return {
         filename: fileName,
         mask_filename: maskFileName,
-        patient_id: info.bids_id || entity.dsEntityName,
-        session_id: '',
+        patient_id: patientId,
+        session_id: sessionId,
         modality: modality.toUpperCase(),
         image_url: getValidationFileUrl(datasetId, fileId),
         mask_url: maskUrl,

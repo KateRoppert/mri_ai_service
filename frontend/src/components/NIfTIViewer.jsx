@@ -44,6 +44,25 @@ const createMsColormap = () => ({
   A: [0, 255],
 });
 
+// Canonical modality order for display/sorting (not alphabetical).
+const MODALITY_ORDER = { T1: 0, T1C: 1, T2: 2, T2FL: 3 };
+
+// Sort files by patient, then session (chronological — ses-001 is earliest),
+// then canonical modality order. Used so viewers and reports are consistent.
+const sortNiftiFiles = (arr) =>
+  [...arr].sort((a, b) => {
+    const p = (a.patient_id || '').localeCompare(b.patient_id || '');
+    if (p !== 0) return p;
+    const s = (a.session_id || '').localeCompare(b.session_id || '');
+    if (s !== 0) return s;
+    return (MODALITY_ORDER[a.modality] ?? 99) - (MODALITY_ORDER[b.modality] ?? 99);
+  });
+
+// Build a full, unambiguous label: patient / session / modality.
+// Skips empty parts so validation (session folded into patient_id) stays clean.
+const fileLabel = (f) =>
+  [f.patient_id, f.session_id, f.modality].filter(Boolean).join(' / ');
+
 const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null, lesionType = 'glioblastoma' }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
@@ -136,6 +155,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         const data = await getNIfTIFiles(runId);
         filesData = data.files || [];
       }
+      filesData = sortNiftiFiles(filesData);
       setFiles(filesData);
       
       // Ждём пока Niivue инициализируется
@@ -477,7 +497,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                     onChange={handleFileChange}
                     style={{ width: '100%' }}
                     options={files.map(f => ({
-                      label: `${f.patient_id} - ${f.modality}`,
+                      label: fileLabel(f),
                       value: f.filename,
                     }))}
                   />

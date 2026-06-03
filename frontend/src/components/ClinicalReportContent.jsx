@@ -12,6 +12,15 @@ import { MedicineBoxOutlined, ExperimentOutlined, EnvironmentOutlined } from '@a
 import { getVolumeReports, getLobarReports, getLesionStatsReports } from '../services/api';
 import LongitudinalTimeline from './LongitudinalTimeline';
 
+// Sort report blocks by patient, then session (chronological — ses-001
+// is earliest). Critical for MS where session order carries meaning.
+const sortByPatientSession = (arr) =>
+  [...(arr || [])].sort((a, b) => {
+    const p = (a.patient_id || '').localeCompare(b.patient_id || '');
+    if (p !== 0) return p;
+    return (a.session_id || '').localeCompare(b.session_id || '');
+  });
+
 const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma' }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -38,10 +47,10 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
         fetches.push(getLesionStatsReports(runId).catch(() => ({ reports: [] })));
       }
       const results = await Promise.all(fetches);
-      setVolumeReports(results[0].reports || []);
+      setVolumeReports(sortByPatientSession(results[0].reports));
       setLobarReports(results[1].reports || []);
       if (lesionType === 'multiple_sclerosis') {
-        setLesionStatsReports(results[2]?.reports || []);
+        setLesionStatsReports(sortByPatientSession(results[2]?.reports));
       }
       setLoaded(true);
     } catch (err) {
