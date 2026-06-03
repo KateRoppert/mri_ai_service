@@ -7,7 +7,7 @@
  * Секция 3: Анатомическая локализация по долям мозга
  */
 import { useEffect, useState } from 'react';
-import { Table, Space, Spin, Alert, Tag, Tooltip, Row, Col, Statistic, Divider } from 'antd';
+import { Table, Space, Spin, Alert, Tag, Tooltip, Row, Col, Statistic, Divider, Collapse } from 'antd';
 import { MedicineBoxOutlined, ExperimentOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import { getVolumeReports, getLobarReports, getLesionStatsReports } from '../services/api';
 import LongitudinalTimeline from './LongitudinalTimeline';
@@ -20,6 +20,16 @@ const sortByPatientSession = (arr) =>
     if (p !== 0) return p;
     return (a.session_id || '').localeCompare(b.session_id || '');
   });
+
+// MS lesion size bands (pragmatic; a ~3 mm punctate lesion ≈ 0.014 см³).
+const LESION_SIZE_BANDS = [
+  { key: 'large',  label: 'крупные ≥0.1 см³',  bg: '#f6ffed', border: '#b7eb8f', color: '#389e0d', test: (v) => v >= 0.1 },
+  { key: 'medium', label: 'средние 0.01–0.1',  bg: '#fcffe6', border: '#eaff8f', color: '#7cb305', test: (v) => v >= 0.01 && v < 0.1 },
+  { key: 'small',  label: 'точечные <0.01',    bg: '#fafafa', border: '#e8e8e8', color: '#8c8c8c', test: (v) => v < 0.01 },
+];
+
+const countLesionBands = (volumes) =>
+  LESION_SIZE_BANDS.map((b) => ({ ...b, count: (volumes || []).filter(b.test).length }));
 
 // Glio segmentation class label ↔ name. Shared by the text parser (local
 // source) and the Kappa normalizer so both produce identical class objects.
@@ -54,6 +64,7 @@ const normalizeKappaEntity = (info) => {
         total_volume_cm3: info.lesion_stats.total_volume_cm3,
         mean_lesion_volume_cm3: info.lesion_stats.mean_lesion_volume_cm3,
         lesion_volumes_cm3: info.lesion_stats.lesion_volumes_cm3 || [],
+        lesion_volumes_by_label: info.lesion_stats.lesion_volumes_by_label || {},
       }]
     : [];
 
@@ -412,74 +423,84 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     if (!loaded || lesionStatsReports.length === 0) return null;
     return (
       <>
-        {lesionStatsReports.map((stats, idx) => (
-          <div key={idx} style={{ marginBottom: 32 }}>
-            <div style={{ marginBottom: 16 }}>
-              <Tag>{stats.patient_id}</Tag>
-              <Tag>{stats.session_id}</Tag>
-            </div>
+        {lesionStatsReports.map((stats, idx) => {
+          const bands = countLesionBands(stats.lesion_volumes_cm3);
+          const perLesionRows = (stats.lesion_volumes_cm3 || []).map((v, i) => ({
+            key: i, n: i + 1, cm3: v,
+          }));
+          return (
+            <div key={idx} style={{ marginBottom: 32 }}>
+              <div style={{ marginBottom: 16 }}>
+                <Tag>{stats.patient_id}</Tag>
+                <Tag>{stats.session_id}</Tag>
+              </div>
 
-            <Divider orientation="left" style={{ fontSize: 14 }}>
-              <Space><MedicineBoxOutlined /> Показатели МС</Space>
-            </Divider>
+              {/* Очаговая нагрузка */}
+              <Divider orientation="left" style={{ fontSize: 14 }}>
+                <Space><MedicineBoxOutlined /> Очаговая нагрузка</Space>
+              </Divider>
+              <Row gutter={32} style={{ marginBottom: 16 }}>
+                <Col>
+                  <Statistic title="Количество очагов" value={stats.lesion_count}
+                    valueStyle={{ color: '#1890ff' }} />
+                </Col>
+                <Col>
+                  <Statistic title="Суммарный объём поражения" value={stats.total_volume_cm3}
+                    precision={3} suffix="см³" valueStyle={{ color: '#52c41a' }} />
+                </Col>
+                <Col>
+                  <Statistic title="Средний объём очага" value={stats.mean_lesion_volume_cm3}
+                    precision={3} suffix="см³" />
+                </Col>
+              </Row>
 
-            <Row gutter={32} style={{ marginBottom: 16 }}>
-              <Col>
-                <Statistic
-                  title="Суммарный объём очагов"
-                  value={stats.total_volume_cm3}
-                  precision={3}
-                  suffix="см³"
-                  valueStyle={{ color: '#52c41a' }}
-                />
-              </Col>
-              <Col>
-                <Statistic
-                  title="Количество очагов"
-                  value={stats.lesion_count}
-                  valueStyle={{ color: '#1890ff' }}
-                />
-              </Col>
-              <Col>
-                <Statistic
-                  title="Средний объём очага"
-                  value={stats.mean_lesion_volume_cm3}
-                  precision={3}
-                  suffix="см³"
-                />
-              </Col>
-            </Row>
+              {/* Характер поражения */}
+              <Divider orientation="left" style={{ fontSize: 14 }}>
+                <Space><ExperimentOutlined /> Характер поражения</Space>
+              </Divider>
+              <Row gutter={12} style={{ marginBottom: 16, maxWidth: 460 }}>
+                {bands.map((b) => (
+                  <Col span={8} key={b.key}>
+                    <div style={{
+                      textAlign: 'center', background: b.bg, border: `1px solid ${b.border}`,
+                      borderRadius: 6, padding: '10px 4px',
+                    }}>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: b.color }}>{b.count}</div>
+                      <div style={{ fontSize: 11, color: '#888' }}>{b.label}</div>
+                    </div>
+                  </Col>
+                ))}
+              </Row>
 
-            {(() => {
-              const lobar = lobarReports.find(
-                lr => lr.patient_id === stats.patient_id && lr.session_id === stats.session_id
-              );
-              return lobar ? (
-                <>
-                  <Divider orientation="left" style={{ fontSize: 14 }}>
-                    <Space><EnvironmentOutlined /> Анатомическая локализация</Space>
-                  </Divider>
+              {/* Объёмы всех очагов — свёрнуто, для протокола */}
+              <Collapse ghost style={{ marginBottom: 8 }} items={[{
+                key: 'lesions',
+                label: `Объёмы всех очагов (${perLesionRows.length}) — для протокола`,
+                children: (
                   <Table
-                    columns={lobarColumns}
-                    dataSource={getLobarTableData(lobar)}
+                    columns={[
+                      { title: '№', dataIndex: 'n', key: 'n', width: 60 },
+                      { title: 'Объём (см³)', dataIndex: 'cm3', key: 'cm3', align: 'right',
+                        render: (v) => v.toFixed(4) },
+                    ]}
+                    dataSource={perLesionRows}
                     pagination={false}
                     size="small"
                     bordered
-                    style={{ marginBottom: 24 }}
+                    scroll={{ y: 220 }}
+                    style={{ maxWidth: 300 }}
                   />
-                </>
-              ) : null;
-            })()}
+                ),
+              }]} />
 
-            <Divider orientation="left" style={{ fontSize: 14 }}>
-              <Space>📈 Динамика между сессиями</Space>
-            </Divider>
-            <LongitudinalTimeline
-              patientId={stats.patient_id}
-              lesionType="multiple_sclerosis"
-            />
-          </div>
-        ))}
+              {/* Динамика между сессиями */}
+              <Divider orientation="left" style={{ fontSize: 14 }}>
+                <Space>📈 Динамика между сессиями</Space>
+              </Divider>
+              <LongitudinalTimeline patientId={stats.patient_id} lesionType="multiple_sclerosis" />
+            </div>
+          );
+        })}
       </>
     );
   }
