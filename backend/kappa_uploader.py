@@ -500,6 +500,7 @@ class KappaUploader:
             "file_count": (
                 len(session_data["preprocessed"])
                 + len([m for m in session_data["masks"] if "_native_" not in m.name])
+                + (1 if session_data.get("lesion_labels_mask") else 0)
             ),
             "data_files": [
                 f.name for f in session_data["preprocessed"]
