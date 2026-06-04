@@ -44,6 +44,9 @@ const createMsColormap = () => ({
   A: [0, 255],
 });
 
+// Default niivue render scale — 3D volume tile kept in proportion with slices.
+const DEFAULT_VIEW_SCALE = 1.5;
+
 // Canonical modality order for display/sorting (not alphabetical).
 const MODALITY_ORDER = { T1: 0, T1C: 1, T2: 2, T2FL: 3 };
 
@@ -314,9 +317,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
       nv.opts.crosshairGap = 2;
       nv.opts.multiplanarForceRender = true;
       nv.opts.isRadiologicalConvention = false;
-      // Scale 1.0 = default fit; the 3D render then matches the slice tiles
-      // instead of opening zoomed-in (was 2.0).
-      nv.setScale(1.0);
+      // 1.5 keeps the 3D render in proportion with the slice tiles (2.0 was
+      // too large, 1.0 too small).
+      nv.setScale(DEFAULT_VIEW_SCALE);
       nv.drawScene();
       
     } catch (err) {
@@ -415,10 +418,14 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const resetView = () => {
     const nv = nvRef.current;
     if (!nv) return;
-    // Restore the default layout AND zoom — previously only the slice type was
-    // reset, so the button appeared to do nothing once the user had zoomed.
+    // Full reset to the initial state: layout, zoom, and the slice/crosshair
+    // position. The user may have scrolled slices (wheel) or clicked to move
+    // the crosshair — recentre it (slices follow the crosshair).
     nv.setSliceType(nv.sliceTypeMultiplanar);
-    nv.setScale(1.0);
+    nv.setScale(DEFAULT_VIEW_SCALE);
+    if (nv.scene) {
+      nv.scene.crosshairPos = [0.5, 0.5, 0.5]; // fractional volume centre
+    }
     nv.drawScene();
   };
 
