@@ -30,41 +30,61 @@ from lobar_analysis import LobarAnalyzer
 logger = logging.getLogger(__name__)
 
 
+# Components smaller than this are treated as noise for counting purposes —
+# they are excluded from lesion_count, the per-lesion list, and hover lookup.
+# They still contribute to total_volume_cm3 (full lesion burden). A ~3 mm³
+# threshold removes only single/double-voxel specks (voxels are ~1 mm³ in
+# atlas space). See KI-037 for the upstream determinism that this mitigates.
+MIN_LESION_VOLUME_MM3 = 3.0
+
+
 def compute_lesion_stats(mask_path: Path):
     """
     Count connected components (individual lesions) in a binary mask.
     Used for MS where each component = one lesion.
 
+    Components below MIN_LESION_VOLUME_MM3 are treated as noise: excluded from
+    lesion_count / lesion_volumes_cm3 / lesion_volumes_by_label, but their
+    volume is still included in total_volume_cm3 (full burden).
+
     Returns (stats_dict, labeled_array, affine):
       stats_dict: lesion_count, total_volume_cm3, mean_lesion_volume_cm3,
-                  lesion_volumes_cm3 (sorted desc, for display/table),
-                  lesion_volumes_by_label ({str(label): volume_cm3}, for hover).
-      labeled_array: int array, each lesion its own integer label 1..N.
+                  lesion_volumes_cm3 (sorted desc, kept lesions, for display/table),
+                  lesion_volumes_by_label ({str(label): volume_cm3}, kept, for hover).
+      labeled_array: int array, EVERY component its own integer label 1..N
+                     (not filtered — the saved mask keeps all blobs; only the
+                     stats/hover map drop sub-threshold ones).
       affine: source affine (to save the labeled mask).
     """
     img = nib.load(str(mask_path))
     data = np.asarray(img.dataobj)
     voxel_vol_mm3 = float(np.prod(np.abs(np.diag(img.affine[:3, :3]))))
     voxel_vol_cm3 = voxel_vol_mm3 / 1000.0
+    min_cm3 = MIN_LESION_VOLUME_MM3 / 1000.0
 
     binary = (data > 0).astype(np.uint8)
     labeled, n_components = ndimage_label(binary)
 
-    volumes_by_label = {}
+    # Volume of every component (used for the full-burden total).
+    all_volumes = {}
     for i in range(1, n_components + 1):
         voxel_count = int(np.sum(labeled == i))
-        volumes_by_label[str(i)] = round(voxel_count * voxel_vol_cm3, 4)
+        all_volumes[str(i)] = round(voxel_count * voxel_vol_cm3, 4)
 
-    volumes = list(volumes_by_label.values())
-    total = round(sum(volumes), 4)
-    mean = round(total / n_components, 4) if n_components > 0 else 0.0
+    total = round(sum(all_volumes.values()), 4)  # full burden, unfiltered
+
+    # Kept lesions (≥ threshold) drive count, the per-lesion list, and hover.
+    kept_by_label = {lbl: v for lbl, v in all_volumes.items() if v >= min_cm3}
+    kept_volumes = sorted(kept_by_label.values(), reverse=True)
+    count = len(kept_volumes)
+    mean = round(sum(kept_volumes) / count, 4) if count > 0 else 0.0
 
     stats = {
-        "lesion_count": n_components,
+        "lesion_count": count,
         "total_volume_cm3": total,
         "mean_lesion_volume_cm3": mean,
-        "lesion_volumes_cm3": sorted(volumes, reverse=True),
-        "lesion_volumes_by_label": volumes_by_label,
+        "lesion_volumes_cm3": kept_volumes,
+        "lesion_volumes_by_label": kept_by_label,
     }
     return stats, labeled.astype(np.int16), img.affine
 
