@@ -1454,6 +1454,8 @@ async def open_in_slicer(
         if not run:
             raise HTTPException(status_code=404, detail="Запуск не найден")
         output_path = Path(run.output_path)
+        # Capture lesion_type while the session is open (avoid DetachedInstance).
+        slicer_lesion_type = getattr(run, "lesion_type", None) or "glioblastoma"
     finally:
         db.close()
 
@@ -1551,6 +1553,7 @@ async def open_in_slicer(
         "run_id": run_id,
         "segmentation_dir": str(segmentation_dir),
         "kappa_session_id": session_id or "",
+        "lesion_type": slicer_lesion_type,
     }
 
     try:

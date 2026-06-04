@@ -117,6 +117,7 @@ class SlicerOpenRequest(BaseModel):
     run_id: str = ""
     segmentation_dir: str = ""
     kappa_session_id: str = ""
+    lesion_type: str = "glioblastoma"
 
 
 class SlicerStatusResponse(BaseModel):
@@ -196,6 +197,7 @@ async def open_in_slicer(request: SlicerOpenRequest):
         "dataset_id": request.dataset_id,
         "run_id": request.run_id,
         "segmentation_dir": request.segmentation_dir,
+        "lesion_type": request.lesion_type,
     }
 
     # Сохраняем параметры во временный файл
@@ -238,6 +240,7 @@ def _load_patient_data():
         mask_path = params.get("mask_path", "")
         ai_masks = params.get("ai_masks", [])
         expert_masks = params.get("expert_masks", [])
+        lesion_type = params.get("lesion_type", "glioblastoma")
         patient_id = params.get("patient_id", "")
         
         print(f"Loading patient data: {{patient_id}}")
@@ -286,12 +289,19 @@ def _load_patient_data():
             # Именуем сегменты и задаём цвета по фактическим label values
             # Slicer создаёт сегменты в порядке возрастания label values,
             # пропуская отсутствующие классы
-            segment_config = {{
-                1: ("NCR", (1.0, 0.0, 0.0)),      # красный
-                2: ("ED",  (0.0, 0.8, 0.0)),       # зелёный
-                3: ("NET", (1.0, 1.0, 0.0)),        # жёлтый
-                4: ("ET",  (0.0, 0.0, 1.0)),        # синий
-            }}
+            if lesion_type == "multiple_sclerosis":
+                # РС: бинарная маска, один класс — очаг (зелёный)
+                segment_config = {{
+                    1: ("Очаг РС", (0.32, 0.77, 0.10)),
+                }}
+            else:
+                # Глио: 4 класса
+                segment_config = {{
+                    1: ("NCR", (1.0, 0.0, 0.0)),      # красный
+                    2: ("ED",  (0.0, 0.8, 0.0)),       # зелёный
+                    3: ("NET", (1.0, 1.0, 0.0)),        # жёлтый
+                    4: ("ET",  (0.0, 0.0, 1.0)),        # синий
+                }}
             segmentation = seg_node.GetSegmentation()
             num_segments = segmentation.GetNumberOfSegments()
             for i in range(num_segments):
@@ -381,6 +391,7 @@ def _add_upload_button(params, seg_node):
         """Экспортировать сегментацию и отправить на сервер."""
         try:
             import urllib.request, urllib.parse, urllib.error, tempfile
+            lesion_type = params.get("lesion_type", "glioblastoma")
             
             # Находим сегментацию
             seg_nodes = slicer.util.getNodesByClass("vtkMRMLSegmentationNode")
@@ -411,7 +422,10 @@ def _add_upload_button(params, seg_node):
             # ExportVisibleSegments назначает labels 1,2,3,... по порядку сегментов,
             # но нам нужно: NCR=1, ED=2, NET=3, ET=4
             import numpy
-            name_to_label = {{"NCR": 1, "ED": 2, "NET": 3, "ET": 4}}
+            if lesion_type == "multiple_sclerosis":
+                name_to_label = {{"Очаг РС": 1}}
+            else:
+                name_to_label = {{"NCR": 1, "ED": 2, "NET": 3, "ET": 4}}
             segmentation = active_seg.GetSegmentation()
             
             # Строим маппинг: exported_label → correct_label
