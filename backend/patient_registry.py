@@ -199,6 +199,23 @@ def find_by_bids_id(bids_id: str) -> List[Dict[str, Any]]:
         db.close()
 
 
+def find_by_bids_subject(subject: str) -> List[Dict[str, Any]]:
+    """
+    Найти все записи BIDS-субъекта (все его сессии).
+
+    bids_id хранится как "sub-001_ses-002" (субъект + сессия). Лонгитюд
+    оперирует субъектом "sub-001", поэтому матчим по префиксу "{subject}_".
+    Реестр небольшой — фильтруем на стороне Python, без LIKE-экранирования.
+    """
+    db = SessionLocal()
+    try:
+        records = db.query(PatientRegistry).all()
+        prefix = f"{subject}_"
+        return [_to_dict(r) for r in records if (r.bids_id or "").startswith(prefix)]
+    finally:
+        db.close()
+
+
 def find_by_kappa_entity(kappa_entity_id: str) -> Optional[Dict[str, Any]]:
     """Найти запись по ID сущности в Каппе."""
     db = SessionLocal()

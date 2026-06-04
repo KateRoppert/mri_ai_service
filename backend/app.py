@@ -793,36 +793,47 @@ async def get_longitudinal(
     patient_id — original_patient_id (напр. "P000915").
     Матчинг: bids_id в registry == patient_id в stats файле (оба "sub-P000915").
     """
-    from patient_registry import find_by_patient_id, find_by_bids_id
+    from patient_registry import (
+        find_by_patient_id, find_by_bids_id, find_by_bids_subject,
+    )
 
-    # stats files store the BIDS ID (e.g. "sub-001"); frontend passes that.
-    # Registry is keyed by original_patient_id but bids_id is also indexed.
-    # Try original_patient_id first, then fall back to bids_id.
+    # The frontend passes the BIDS subject ("sub-001"). The registry stores
+    # original_patient_id ("P000915") and a per-session bids_id ("sub-001_ses-002").
+    # Resolve in order: original_patient_id → exact bids_id → bids subject prefix
+    # (the last one is what actually matches "sub-001" → its ses-* records).
     all_records = find_by_patient_id(patient_id)
     if not all_records:
         all_records = find_by_bids_id(patient_id)
+    if not all_records:
+        all_records = find_by_bids_subject(patient_id)
 
     records = [r for r in all_records if r.get("lesion_type") == lesion_type]
 
     if not records:
         raise HTTPException(status_code=404, detail="No sessions found for this patient/lesion_type")
 
-    # Collect all stats across unique run_ids, match by bids_id == patient_id in stats
-    seen_run_ids: set = set()
+    # Each registry record is one session. A single run can hold several
+    # sessions, so iterate every record (not unique run_ids) and cache each
+    # run's stats to avoid re-reading. Match a stats entry to a record by the
+    # full session key: stats files store patient_id="sub-001" + session_id
+    # ="ses-002", whereas the registry bids_id is the combined "sub-001_ses-002".
+    run_stats_cache: dict = {}
     all_stats = []
     for record in records:
-        # patient_registry stores run_id under key "pipeline_run_id"
-        run_id = record.get("pipeline_run_id")
-        if not run_id or run_id in seen_run_ids:
+        run_id = record.get("pipeline_run_id")  # registry key for the run
+        if not run_id:
             continue
-        seen_run_ids.add(run_id)
-        run = get_pipeline_run(db, run_id)
-        if run and run.output_path:
-            stats_list = pipeline_manager.get_lesion_stats_reports(run.output_path) or []
-            bids_id = record.get("bids_id", "")
-            for s in stats_list:
-                if s.get("patient_id") == bids_id:
-                    all_stats.append({**s, "_scan_date": record.get("scan_date")})
+        if run_id not in run_stats_cache:
+            run = get_pipeline_run(db, run_id)
+            run_stats_cache[run_id] = (
+                pipeline_manager.get_lesion_stats_reports(run.output_path) or []
+                if run and run.output_path else []
+            )
+        bids_id = record.get("bids_id", "")
+        for s in run_stats_cache[run_id]:
+            session_key = f"{s.get('patient_id')}_{s.get('session_id')}"
+            if session_key == bids_id:
+                all_stats.append({**s, "_scan_date": record.get("scan_date")})
 
     # Deduplicate by session_id, sort by scan_date
     seen_sessions: set = set()

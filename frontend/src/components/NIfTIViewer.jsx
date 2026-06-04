@@ -69,6 +69,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   // Ref to the currently selected file — niivue callbacks close over the init
   // render, so they must read the latest value via a ref rather than state.
   const selectedFileRef = useRef(null);
+  // True only while the displayed mask is the per-lesion LABELED mask (MS, atlas
+  // space). Hover lookup is valid only then — the native/binary mask has no labels.
+  const labeledMaskActiveRef = useRef(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -140,12 +143,17 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           nv.onLocationChange = (location) => {
             const file = selectedFileRef.current;
             const byLabel = file?.lesion_volumes_by_label;
+            // Only valid when the labeled mask is the one on screen.
+            if (!labeledMaskActiveRef.current || !byLabel) {
+              setHoverVolume(null);
+              return;
+            }
+            // Read the MASK volume's value by name (robust to an atlas overlay
+            // being added as a third volume, which would shift "last").
             const values = location?.values || [];
-            // The mask overlay is always the last loaded volume
-            const labelVal = values.length
-              ? Math.round(values[values.length - 1].value)
-              : 0;
-            if (byLabel && labelVal > 0 && byLabel[String(labelVal)] != null) {
+            const maskVal = values.find((v) => v.name === file.mask_filename);
+            const labelVal = maskVal ? Math.round(maskVal.value) : 0;
+            if (labelVal > 0 && byLabel[String(labelVal)] != null) {
               setHoverVolume({ cm3: byLabel[String(labelVal)] });
             } else {
               setHoverVolume(null);
@@ -263,6 +271,23 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         : createSegmentationColormap();
       nv.addColormap('seg_custom', segColormap);
 
+      // For MS in ATLAS space, display the labeled mask (each voxel = lesion
+      // instance label) so the hover handler can look up per-lesion volumes.
+      // The labeled mask exists only in atlas space — in native space it would
+      // be misaligned, so there we keep the (native) binary mask and disable
+      // hover. Visual output is unchanged because cal_max:1 clamps all labels
+      // ≥1 to the single green colormap entry. GBM always uses the binary mask.
+      const useLabeled =
+        lesionType === 'multiple_sclerosis' &&
+        !!file.mask_labels_url &&
+        mode !== 'native';
+      labeledMaskActiveRef.current = useLabeled;
+      const maskVolumeUrl = useLabeled
+        ? (file.mask_labels_url.startsWith('http')
+            ? file.mask_labels_url
+            : getNIfTIFileUrl(file.mask_labels_url))
+        : maskUrl;
+
       // Загружаем в niivue. Передаём name для определения формата,
       // т.к. URL из прокси не содержит расширения .nii.gz
       await nv.loadVolumes([
@@ -273,15 +298,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           opacity: 1.0,
         },
         {
-          // For MS, prefer the labeled mask (each voxel = lesion instance label)
-          // so the hover handler can look up per-lesion volumes. Visual output is
-          // unchanged because cal_max:1 clamps all labels ≥1 to the single green
-          // colormap entry. For GBM the binary segmask is used as before.
-          url: (lesionType === 'multiple_sclerosis' && file.mask_labels_url)
-            ? (file.mask_labels_url.startsWith('http')
-                ? file.mask_labels_url
-                : getNIfTIFileUrl(file.mask_labels_url))
-            : maskUrl,
+          url: maskVolumeUrl,
           name: file.mask_filename,
           colormap: 'seg_custom',
           opacity: maskOpacity,
@@ -407,8 +424,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
     if (!nvRef.current || !versionInfo?.maskUrl) return;
 
     const nv = nvRef.current;
-    // Versioned masks are binary (no per-lesion label map) — drop any hover tooltip
-    // so it can't show a stale/misleading per-lesion volume over this mask.
+    // Versioned masks are binary (no per-lesion label map) — disable hover lookup
+    // and drop any tooltip so it can't show a stale/misleading per-lesion volume.
+    labeledMaskActiveRef.current = false;
     setHoverVolume(null);
     setLoading(true);
     setError(null);
