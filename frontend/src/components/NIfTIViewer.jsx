@@ -314,7 +314,9 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
       nv.opts.crosshairGap = 2;
       nv.opts.multiplanarForceRender = true;
       nv.opts.isRadiologicalConvention = false;
-      nv.setScale(2.0);
+      // Scale 1.0 = default fit; the 3D render then matches the slice tiles
+      // instead of opening zoomed-in (was 2.0).
+      nv.setScale(1.0);
       nv.drawScene();
       
     } catch (err) {
@@ -411,9 +413,13 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
    * Сброс вида
    */
   const resetView = () => {
-    if (nvRef.current) {
-      nvRef.current.setSliceType(nvRef.current.sliceTypeMultiplanar);
-    }
+    const nv = nvRef.current;
+    if (!nv) return;
+    // Restore the default layout AND zoom — previously only the slice type was
+    // reset, so the button appeared to do nothing once the user had zoomed.
+    nv.setSliceType(nv.sliceTypeMultiplanar);
+    nv.setScale(1.0);
+    nv.drawScene();
   };
 
   /**
