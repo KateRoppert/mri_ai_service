@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 
 # Components smaller than this are treated as noise for counting purposes —
 # they are excluded from lesion_count, the per-lesion list, and hover lookup.
-# They still contribute to total_volume_cm3 (full lesion burden). A ~3 mm³
-# threshold removes only single/double-voxel specks (voxels are ~1 mm³ in
-# atlas space). See KI-037 for the upstream determinism that this mitigates.
-MIN_LESION_VOLUME_MM3 = 3.0
+# They still contribute to total_volume_cm3 (full lesion burden). 5 mm³ matches
+# what is visually counted as a discrete lesion (sub-visible 3-4 voxel specks
+# are dropped); see KI-037 for the upstream determinism this mitigates.
+MIN_LESION_VOLUME_MM3 = 5.0
 
 
 def compute_lesion_stats(mask_path: Path):
