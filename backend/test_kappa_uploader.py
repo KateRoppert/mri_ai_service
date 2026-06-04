@@ -57,7 +57,7 @@ async def main():
         info = uploader._build_entity_info(sk, sd)
         print(f"\n  {sk}:")
         print(f"    modalities: {info.get('modalities')}")
-        print(f"    file_count: {info.get('file_count')}")
+        print(f"    data_files: {len(info.get('data_files', []))}")
         print(f"    study_hash: {info.get('study_hash')}")
         if info.get("quality_reports"):
             for qr in info["quality_reports"]:

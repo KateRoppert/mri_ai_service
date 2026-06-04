@@ -497,11 +497,9 @@ class KappaUploader:
                 f.stem.replace(".nii", "").split("_")[-1]
                 for f in session_data["preprocessed"]
             ],
-            "file_count": (
-                len(session_data["preprocessed"])
-                + len([m for m in session_data["masks"] if "_native_" not in m.name])
-                + (1 if session_data.get("lesion_labels_mask") else 0)
-            ),
+            # Note: no file_count here on purpose — it would be a stale snapshot.
+            # Expert mask versions accumulate as new entity files over time, so
+            # the live entity.files list is the only correct source of the count.
             "data_files": [
                 f.name for f in session_data["preprocessed"]
             ],
