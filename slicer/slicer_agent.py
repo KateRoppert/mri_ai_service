@@ -494,8 +494,11 @@ def _add_upload_button(params, seg_node):
             url = f"{{agent_url}}?{{query}}"
             
             req = urllib.request.Request(url, method="POST", data=b"")
+            # Bypass any system http_proxy — this is a localhost call to the
+            # agent; routing it through an external proxy returns 502.
+            _opener = urllib.request.build_opener(urllib.request.ProxyHandler({{}}))
             try:
-                resp = urllib.request.urlopen(req, timeout=60)
+                resp = _opener.open(req, timeout=60)
                 result = resp.read().decode()
             except urllib.error.HTTPError as http_err:
                 error_body = http_err.read().decode() if http_err.fp else ""
@@ -641,8 +644,12 @@ async def upload_mask_from_slicer(
                 "run_id": run_id,
             }
 
+            # trust_env=False: this is an internal localhost call. Otherwise httpx
+            # would route it through any http_proxy from the environment, which
+            # cannot proxy localhost and returns 502 Bad Gateway.
             async with httpx_client.AsyncClient(
                 timeout=httpx_client.Timeout(30.0, read=120.0, write=120.0),
+                trust_env=False,
             ) as client:
                 response = await client.post(
                     f"{BACKEND_URL}/api/validation/upload-mask",
