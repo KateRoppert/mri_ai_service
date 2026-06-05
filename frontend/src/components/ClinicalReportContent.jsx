@@ -128,17 +128,25 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     }
   }, [kappaEntityInfo]);
 
-  // Reset stale data whenever the source changes. NIfTIViewer stays mounted
-  // between pipeline runs (visibility is controlled via a prop, not conditional
-  // rendering), so the inner ClinicalReportContent keeps loaded=true from the
-  // previous run and never re-fetches when runId changes. Explicit reset fixes this.
+  // Reset stale LOCAL data when runId changes. NIfTIViewer stays mounted between
+  // pipeline runs (visibility via prop, not conditional render), so this component
+  // would keep loaded=true from the previous run and never re-fetch.
+  //
+  // IMPORTANT: dependency is [runId] only, NOT [kappaEntityInfo].
+  // The Kappa effect above also depends on kappaEntityInfo and is declared first.
+  // React fires effects in declaration order within the same render. If this reset
+  // effect also listed kappaEntityInfo, it would fire AFTER the Kappa effect on
+  // every kappaEntityInfo change and silently undo the Kappa data — leaving the
+  // validation report blank.
   useEffect(() => {
-    setLoaded(false);
-    setVolumeReports([]);
-    setLobarReports([]);
-    setLesionStatsReports([]);
-    setError(null);
-  }, [runId, kappaEntityInfo]);
+    if (!kappaEntityInfo) {
+      setLoaded(false);
+      setVolumeReports([]);
+      setLobarReports([]);
+      setLesionStatsReports([]);
+      setError(null);
+    }
+  }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Local source (run/history): fetch report files by runId.
   // The !loaded guard is kept but the reset above ensures it fires on source change.
