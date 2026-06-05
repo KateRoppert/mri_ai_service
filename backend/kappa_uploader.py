@@ -603,7 +603,10 @@ class KappaUploader:
                     result["classes"]["NET"] = self._parse_volume_line(line)
                 elif line.startswith("4. ET"):
                     result["classes"]["ET"] = self._parse_volume_line(line)
-                elif line.startswith("TOTAL TUMOR"):
+                elif line.startswith("TUMOR CORE") or line.startswith("TOTAL TUMOR"):
+                    # "TOTAL TUMOR" was renamed to "TUMOR CORE (NCR+NET+ET)" to
+                    # match the clinical definition (TC, without edema). Keep the
+                    # old prefix as a fallback for existing reports.
                     result["total_tumor_cm3"] = self._parse_volume_line(line).get("cm3")
 
             return result if result["classes"] else None

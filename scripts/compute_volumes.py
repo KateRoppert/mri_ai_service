@@ -85,54 +85,10 @@ def compute_volumes(mask_path: Path) -> dict:
         "total_tumor": {},
     }
 
-    total_voxels = 0
-
     for label, name in LABEL_MAP.items():
         count = int(np.sum(data == label))
         vol_mm3 = count * voxel_vol_mm3
         vol_cm3 = vol_mm3 / 1000.0
-        total_voxels += count
-
-        # Clinical metrics (RANO-style)
-        ce_pos_voxels = results["classes"].get(4, {}).get("voxel_count", 0)  # ET
-        ncr_voxels = results["classes"].get(1, {}).get("voxel_count", 0)     # NCR
-        net_voxels = results["classes"].get(3, {}).get("voxel_count", 0)     # NET
-        ed_voxels = results["classes"].get(2, {}).get("voxel_count", 0)      # ED
-        
-        ce_neg_voxels = ncr_voxels + net_voxels
-        tumor_core_voxels = ce_pos_voxels + ce_neg_voxels
-        
-        results["clinical"] = {
-            "ce_positive": {
-                "name": "CE+ (Enhancing)",
-                "name_ru": "Контраст-позитивная (CE+)",
-                "voxel_count": ce_pos_voxels,
-                "volume_mm3": round(ce_pos_voxels * voxel_vol_mm3, 2),
-                "volume_cm3": round(ce_pos_voxels * voxel_vol_mm3 / 1000, 4),
-            },
-            "ce_negative": {
-                "name": "CE− (Non-enhancing)",
-                "name_ru": "Контраст-негативная (CE−)",
-                "voxel_count": ce_neg_voxels,
-                "volume_mm3": round(ce_neg_voxels * voxel_vol_mm3, 2),
-                "volume_cm3": round(ce_neg_voxels * voxel_vol_mm3 / 1000, 4),
-            },
-            "tumor_core": {
-                "name": "Total tumor (CE+ + CE−)",
-                "name_ru": "Суммарная опухоль (CE+ + CE−)",
-                "voxel_count": tumor_core_voxels,
-                "volume_mm3": round(tumor_core_voxels * voxel_vol_mm3, 2),
-                "volume_cm3": round(tumor_core_voxels * voxel_vol_mm3 / 1000, 4),
-            },
-            "edema": {
-                "name": "Peritumoral edema",
-                "name_ru": "Перитуморальный отёк",
-                "voxel_count": ed_voxels,
-                "volume_mm3": round(ed_voxels * voxel_vol_mm3, 2),
-                "volume_cm3": round(ed_voxels * voxel_vol_mm3 / 1000, 4),
-            },
-        }
-
         results["classes"][label] = {
             "name": name,
             "voxel_count": count,
@@ -140,11 +96,67 @@ def compute_volumes(mask_path: Path) -> dict:
             "volume_cm3": round(vol_cm3, 4),
         }
 
-    total_mm3 = total_voxels * voxel_vol_mm3
+    # Clinical metrics computed AFTER the loop so all classes are populated.
+    # ET (label 4) was missing on the last iteration when clinical was inside
+    # the loop, causing CE+ to be always 0 (bug).
+    #
+    # RANO / BraTS nomenclature:
+    #   ET  (label 4) = Enhancing Tumor = CE+
+    #   NCR (label 1) + NET (label 3) = CE-
+    #   Tumor Core (TC) = ET + NCR + NET  — the clinical "tumor volume"
+    #   ED  (label 2) = Peritumoral edema — reported separately, not in TC
+    #
+    # "Total tumor" here means TC (without edema), consistent with RANO and
+    # with what the frontend shows as "Суммарная опухоль".
+    def _v(label_int):
+        return results["classes"].get(label_int, {}).get("voxel_count", 0)
+
+    et_vox  = _v(4)   # ET  — CE+
+    ncr_vox = _v(1)   # NCR — CE- component
+    net_vox = _v(3)   # NET — CE- component
+    ed_vox  = _v(2)   # ED  — edema, separate metric
+
+    ce_neg_vox      = ncr_vox + net_vox
+    tumor_core_vox  = et_vox + ce_neg_vox   # TC = ET+NCR+NET
+
+    results["clinical"] = {
+        "ce_positive": {
+            "name": "CE+ (Enhancing)",
+            "name_ru": "Контраст-позитивная (CE+)",
+            "voxel_count": et_vox,
+            "volume_mm3": round(et_vox * voxel_vol_mm3, 2),
+            "volume_cm3": round(et_vox * voxel_vol_mm3 / 1000, 4),
+        },
+        "ce_negative": {
+            "name": "CE− (Non-enhancing)",
+            "name_ru": "Контраст-негативная (CE−)",
+            "voxel_count": ce_neg_vox,
+            "volume_mm3": round(ce_neg_vox * voxel_vol_mm3, 2),
+            "volume_cm3": round(ce_neg_vox * voxel_vol_mm3 / 1000, 4),
+        },
+        "tumor_core": {
+            "name": "Total tumor (CE+ + CE−)",
+            "name_ru": "Суммарная опухоль (CE+ + CE−)",
+            "voxel_count": tumor_core_vox,
+            "volume_mm3": round(tumor_core_vox * voxel_vol_mm3, 2),
+            "volume_cm3": round(tumor_core_vox * voxel_vol_mm3 / 1000, 4),
+        },
+        "edema": {
+            "name": "Peritumoral edema",
+            "name_ru": "Перитуморальный отёк",
+            "voxel_count": ed_vox,
+            "volume_mm3": round(ed_vox * voxel_vol_mm3, 2),
+            "volume_cm3": round(ed_vox * voxel_vol_mm3 / 1000, 4),
+        },
+    }
+
+    # total_tumor = Tumor Core (TC), without edema — this is what RANO
+    # and the frontend refer to as "Суммарная опухоль".
+    tc_mm3 = tumor_core_vox * voxel_vol_mm3
     results["total_tumor"] = {
-        "voxel_count": total_voxels,
-        "volume_mm3": round(total_mm3, 2),
-        "volume_cm3": round(total_mm3 / 1000.0, 4),
+        "voxel_count": tumor_core_vox,
+        "volume_mm3": round(tc_mm3, 2),
+        "volume_cm3": round(tc_mm3 / 1000.0, 4),
     }
 
     return results
@@ -183,7 +195,7 @@ def format_report(volumes: dict) -> str:
     lines.append("-" * 60)
     total = volumes["total_tumor"]
     lines.append(
-        f"  {'TOTAL TUMOR':<34} {total['voxel_count']:>8}  "
+        f"  {'TUMOR CORE (NCR+NET+ET)':<34} {total['voxel_count']:>8}  "
         f"{total['volume_mm3']:>12.2f}  {total['volume_cm3']:>10.4f}"
     )
 

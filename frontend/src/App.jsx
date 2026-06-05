@@ -69,7 +69,8 @@ function App() {
     setHistoryValidationRef(null);
     setShowHistoryVisualization(true);
 
-    // Загружаем связку с Каппой
+    // Keep all_entities so the viewer can correct the entity when the
+    // user switches patients/sessions in a multi-patient run.
     try {
       const result = await getEntitiesForRun(runId);
       if (result.entities && result.entities.length > 0) {
@@ -77,6 +78,7 @@ function App() {
         setHistoryValidationRef({
           entity_id: e.entity_id,
           dataset_id: e.dataset_id,
+          all_entities: result.entities,
         });
       }
     } catch (err) {
@@ -234,6 +236,9 @@ function App() {
                 onClose={() => setShowHistoryVisualization(false)}
                 validationRef={historyValidationRef}
                 lesionType={historyVisualizationLesionType}
+                onValidationRefChange={(ref) =>
+                  setHistoryValidationRef((prev) => ({ ...prev, ...ref }))
+                }
               />
             )}
             {showHistoryClinicalReport && (

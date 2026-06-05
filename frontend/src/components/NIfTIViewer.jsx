@@ -66,7 +66,7 @@ const sortNiftiFiles = (arr) =>
 const fileLabel = (f) =>
   [f.patient_id, f.session_id, f.modality].filter(Boolean).join(' / ');
 
-const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null, lesionType = 'glioblastoma', kappaReport = null }) => {
+const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRef = null, lesionType = 'glioblastoma', kappaReport = null, onValidationRefChange = null }) => {
   const canvasRef = useRef(null);
   const nvRef = useRef(null);
   // Ref to the currently selected file — niivue callbacks close over the init
@@ -339,6 +339,18 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
       setSelectedFile(file);
       setActiveMaskLabel(null);
       loadNIfTI(file);
+      // For multi-patient runs the validationRef (entity_id for Slicer) must
+      // track the selected patient. If the parent provided a callback and the
+      // validationRef carries all_entities, resolve the correct entity.
+      if (onValidationRefChange && validationRef?.all_entities) {
+        const subject = file.patient_id; // e.g. "sub-003"
+        const match = validationRef.all_entities.find(
+          (e) => e.bids_id && (e.bids_id === subject || e.bids_id.startsWith(subject + '_'))
+        );
+        if (match) {
+          onValidationRefChange({ entity_id: match.entity_id, dataset_id: match.dataset_id });
+        }
+      }
     }
   };
 

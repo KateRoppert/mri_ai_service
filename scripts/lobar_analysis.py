@@ -125,9 +125,14 @@ class LobarAnalyzer:
                 if atlas_data is None:
                     return None
 
-            # Overall lesion stats
-            lesion_mask = mask_data > 0
-            total_lesion_voxels = int(lesion_mask.sum())
+            # Tumor Core mask (TC = all non-zero labels EXCEPT edema label 2).
+            # Using TC here means total_lesion and percent_of_lesion are consistent
+            # with the RANO "tumor volume" definition — edema is tracked per-class
+            # in the breakdown but does NOT inflate the totals/percentages.
+            # For non-glio masks (e.g. MS binary label 1) this makes no difference.
+            ED_LABEL = 2
+            core_mask = (mask_data > 0) & (mask_data != ED_LABEL)
+            total_lesion_voxels = int(core_mask.sum())
 
             if total_lesion_voxels == 0:
                 logger.warning(f"No lesion voxels in {mask_path.name}")
@@ -141,14 +146,10 @@ class LobarAnalyzer:
                 # Create binary mask for this lobe
                 lobe_mask = np.isin(atlas_data, list(atlas_labels))
 
-                # Overlap with full lesion
-                overlap = lesion_mask & lobe_mask
-                lobe_voxels = int(overlap.sum())
+                # Overlap with Tumor Core (TC) for totals and percentages
+                lobe_core_voxels = int((core_mask & lobe_mask).sum())
 
-                if lobe_voxels == 0:
-                    continue
-
-                # Per-class breakdown
+                # Per-class breakdown includes ALL classes (even ED for reference)
                 class_breakdown = {}
                 for cls_label, cls_info in self.seg_classes.items():
                     cls_mask = (mask_data == cls_label) & lobe_mask
@@ -162,14 +163,17 @@ class LobarAnalyzer:
                             "volume_cm3": round(cls_voxels * mask_voxel_volume / 1000, 4),
                         }
 
+                if lobe_core_voxels == 0 and not class_breakdown:
+                    continue
+
                 lobe_results[lobe_name] = {
                     "name_en": lobe_info["name_en"],
                     "name_ru": lobe_info["name_ru"],
                     "color": lobe_info["color"],
-                    "total_voxels": lobe_voxels,
-                    "total_volume_mm3": round(lobe_voxels * mask_voxel_volume, 2),
-                    "total_volume_cm3": round(lobe_voxels * mask_voxel_volume / 1000, 4),
-                    "percent_of_lesion": round(lobe_voxels / total_lesion_voxels * 100, 2),
+                    "total_voxels": lobe_core_voxels,
+                    "total_volume_mm3": round(lobe_core_voxels * mask_voxel_volume, 2),
+                    "total_volume_cm3": round(lobe_core_voxels * mask_voxel_volume / 1000, 4),
+                    "percent_of_lesion": round(lobe_core_voxels / total_lesion_voxels * 100, 2),
                     "classes": class_breakdown,
                 }
 

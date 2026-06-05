@@ -91,14 +91,16 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
    * Открыть 3D визуализацию
    */
   const handleShowVisualization = async () => {
-    // Загружаем validationRef перед открытием
     try {
       const result = await getEntitiesForRun(runId);
       if (result.entities && result.entities.length > 0) {
         const e = result.entities[0];
+        // Keep all_entities so the viewer can correct the entity when the
+        // user switches patients/sessions in a multi-patient run.
         setValidationRef({
           entity_id: e.entity_id,
           dataset_id: e.dataset_id,
+          all_entities: result.entities,
         });
       }
     } catch (err) {
@@ -268,6 +270,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
         onClose={handleCloseVisualization}
         validationRef={validationRef}
         lesionType={lesionType}
+        onValidationRefChange={setValidationRef}
       />
       <ClinicalReport
         runId={runId}
