@@ -128,12 +128,25 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     }
   }, [kappaEntityInfo]);
 
+  // Reset stale data whenever the source changes. NIfTIViewer stays mounted
+  // between pipeline runs (visibility is controlled via a prop, not conditional
+  // rendering), so the inner ClinicalReportContent keeps loaded=true from the
+  // previous run and never re-fetches when runId changes. Explicit reset fixes this.
+  useEffect(() => {
+    setLoaded(false);
+    setVolumeReports([]);
+    setLobarReports([]);
+    setLesionStatsReports([]);
+    setError(null);
+  }, [runId, kappaEntityInfo]);
+
   // Local source (run/history): fetch report files by runId.
+  // The !loaded guard is kept but the reset above ensures it fires on source change.
   useEffect(() => {
     if (!kappaEntityInfo && autoLoad && runId && !loaded) {
       fetchAllData();
     }
-  }, [autoLoad, runId, kappaEntityInfo]);
+  }, [autoLoad, runId, kappaEntityInfo, loaded]);
 
   const fetchAllData = async () => {
     setLoading(true);
