@@ -32,7 +32,7 @@ MS-клиническом кейсе.
 
 ---
 
-## □ Этап 4: Post-MAS Cleanup
+## ✅ Этап 4: Post-MAS Cleanup
 
 **Ветка:** `chore/post-mas-cleanup`
 **Зависит от:** Этапов 1-3
@@ -54,7 +54,7 @@ MS-клиническом кейсе.
 
 ---
 
-## □ Этап 5: MS Adaptation
+## ✅ Этап 5: MS Adaptation
 
 **Ветка:** `feat/lesion-type-aware-pipeline`
 **Зависит от:** Этапа 4
@@ -248,10 +248,15 @@ push.
 
 ## Текущий фокус
 
-🎯 **СЕЙЧАС:** финализация `feat/mas-refactor` и merge в main.
+✅ **Завершено:** `feat/lesion-type-aware-pipeline` → merge в main (июнь 2026).
+MS-pipeline first-class citizen: lesion-type-aware stages 01/04/05/06/08,
+МС-отчёт (нагрузка, hover, лонгитюд), RANO-фикс, Kappa-only валидация,
+Slicer-фиксы, viewer-полировка.
 
-➡️ **ДАЛЬШЕ:** новый чат + ветка `chore/post-mas-cleanup`.
+➡️ **СЛЕДУЮЩИЙ ЭТАП:** `feat/prod-readiness` (Этап 6) — Production Readiness v1.
+Параллельно можно рассмотреть `feat/ms-clinical-metrics` (МС локализация
+по Макдональду + детекция новых очагов) как self-contained research-ветку.
 
 ---
 
-*Последнее обновление: финализация ветки `feat/mas-refactor`.*
+*Последнее обновление: завершение `feat/lesion-type-aware-pipeline`, июнь 2026.*
