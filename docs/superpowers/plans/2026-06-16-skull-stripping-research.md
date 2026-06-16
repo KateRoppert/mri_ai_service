@@ -860,17 +860,22 @@ git commit -m "feat(ss): add config-driven dispatcher with availability fallback
 
 ---
 
-### Task 1.4: Mask-integrity validation gate + fallback (ADD-2)
+### Task 1.4: Cascade + mask-integrity validation gate (ADD-2)
 
 **Files:**
 - Create: `scripts/preprocessing_steps/skull_stripping/validation.py`
-- Modify: `scripts/preprocessing_steps/skull_stripping/dispatcher.py` (call validation after `strip()`)
+- Modify: `scripts/preprocessing_steps/skull_stripping/dispatcher.py` (cascade loop + validation after `strip()`)
 - Test: `scripts/preprocessing_steps/skull_stripping/tests/test_validation.py`
+- Test: `scripts/preprocessing_steps/skull_stripping/tests/test_cascade.py`
 
-> Inspired by NeuroAgent's Generate-Execute-**Validate** engine (lit review §2.10). After a stripper
-> produces a mask, the dispatcher validates integrity (plausible brain-volume range + a single
-> dominant connected component). If invalid, it logs a WARNING and triggers the fallback stripper.
-> This strengthens the MAS story (validated, self-correcting selection) and is part of the ADD-3 narrative.
+> Inspired by NeuroAgent's Generate-Execute-**Validate** engine (lit review §2.10) and the user's MAS
+> cascade idea. This unifies **fault tolerance** (unavailable tool → next agent) and **validate-retry**
+> (mask fails integrity thresholds → next agent) into one ordered **cascade**. Config gives an ordered
+> list `cascade: [hdbet, synthstrip, bet]`; the dispatcher tries each available stripper in order,
+> validates its mask, and accepts the first that passes. This is the runtime backbone of the MAS story
+> (per-subject, self-correcting selection) and complements ADD-3 (lesion-type routing) / ADD-5
+> (characteristic analysis). Adaptive runtime selection by data characteristics is explicitly out of
+> scope here (future work, Этап 7).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -971,46 +976,93 @@ def validate_mask(mask_path: Path, min_ml: float = 700.0, max_ml: float = 1900.0
             "dominant_fraction": dominant_fraction}
 ```
 
-- [ ] **Step 4: Wire validation into the dispatcher**
+- [ ] **Step 4: Write the failing cascade test**
 
-In `dispatcher.py`, after a successful `stripper.strip(...)` in `process_subject_skull_stripping`,
-validate the produced mask; on failure, retry once with the fallback stripper. Add near the top:
+`scripts/preprocessing_steps/skull_stripping/tests/test_cascade.py`:
 ```python
-from .validation import validate_mask
+from preprocessing_steps.skull_stripping import dispatcher
+from preprocessing_steps.skull_stripping.base import SkullStripperBase
+
+
+def test_build_cascade_orders_method_first_then_cascade():
+    order = dispatcher.build_cascade_order(
+        {"method": "hdbet", "cascade": ["synthstrip", "hdbet", "bet"]})
+    assert order == ["hdbet", "synthstrip", "bet"]   # method first, dedup, preserve order
+
+
+def test_build_cascade_falls_back_to_single_fallback_method():
+    order = dispatcher.build_cascade_order({"method": "hdbet", "fallback_method": "bet"})
+    assert order == ["hdbet", "bet"]
+
+
+def test_build_cascade_method_only():
+    assert dispatcher.build_cascade_order({"method": "bet"}) == ["bet"]
 ```
-Replace the reference-modality strip block with:
+
+- [ ] **Step 5: Wire cascade + validation into the dispatcher**
+
+In `dispatcher.py` add near the top: `from .validation import validate_mask`. Add the cascade builder
+and rewrite the reference-modality block of `process_subject_skull_stripping` to iterate the cascade,
+accepting the first available stripper whose mask passes validation:
 ```python
-    strip_result = stripper.strip(ref_file, ref_output, mask_path, params)
-    if strip_result.get("success") and mask_path.exists():
-        vcfg = params.get("validation", {})
-        check = validate_mask(mask_path, **vcfg) if vcfg else validate_mask(mask_path)
-        if not check["valid"]:
-            logger.warning("Mask integrity check failed (%s); trying fallback.", check["reason"])
-            fb_method = params.get("fallback_method")
-            if fb_method and fb_method != stripper.name:
-                fb = get_stripper(fb_method)
-                if fb.is_available():
-                    stripper = fb
-                    strip_result = fb.strip(ref_file, ref_output, mask_path, params)
-            strip_result["mask_validation"] = check
+def build_cascade_order(params: dict) -> list[str]:
+    """Ordered, de-duplicated cascade: primary method first, then cascade/fallback chain."""
+    method = params.get("method", "bet")
+    chain = params.get("cascade") or (
+        [params["fallback_method"]] if params.get("fallback_method") else [])
+    order, seen = [], set()
+    for name in [method, *chain]:
+        if name and name not in seen:
+            order.append(name); seen.add(name)
+    return order
+```
+Replace the single-strip reference block with the cascade loop:
+```python
+    order = build_cascade_order(params)
+    vcfg = params.get("validation", {})
+    strip_result, used = None, None
+    for name in order:
+        try:
+            cand = get_stripper(name)
+        except ValueError:
+            logger.warning("Cascade: unknown stripper '%s', skipping", name); continue
+        if not cand.is_available():
+            logger.warning("Cascade: '%s' unavailable, trying next", name); continue
+        res = cand.strip(ref_file, ref_output, mask_path, params)
+        if res.get("success") and mask_path.exists():
+            check = validate_mask(mask_path, **vcfg) if vcfg else validate_mask(mask_path)
+            res["mask_validation"] = check
+            if check["valid"]:
+                strip_result, used = res, name
+                break
+            logger.warning("Cascade: '%s' mask invalid (%s), trying next", name, check["reason"])
+        else:
+            logger.warning("Cascade: '%s' failed (%s), trying next", name, res.get("error"))
+        strip_result, used = res, name   # keep last attempt for reporting
+    if strip_result is None:
+        return {"success": False, "error": f"No usable stripper in cascade {order}"}
+    logger.info("Skull stripper used: %s", used)
     results[reference_modality] = strip_result
     if not strip_result.get("success"):
         logger.error(f"Failed to create brain mask on {reference_modality}")
         return results
 ```
+Remove the now-superseded `resolve_stripper(params)` call at the top of the function (keep the
+`resolve_stripper` function itself for backward compatibility / other callers).
 
-- [ ] **Step 5: Run tests (must pass)**
+- [ ] **Step 6: Run tests (must pass)**
 
-Run: `cd /home/e.roppert/work/mri_ai_service && python -m pytest scripts/preprocessing_steps/skull_stripping/tests/test_validation.py scripts/preprocessing_steps/skull_stripping/tests/test_dispatcher.py -v`
-Expected: PASS (validation tests + dispatcher tests still green).
+Run: `cd /home/e.roppert/work/mri_ai_service && python -m pytest scripts/preprocessing_steps/skull_stripping/tests/test_validation.py scripts/preprocessing_steps/skull_stripping/tests/test_cascade.py scripts/preprocessing_steps/skull_stripping/tests/test_dispatcher.py -v`
+Expected: PASS (validation + cascade + dispatcher tests green).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add scripts/preprocessing_steps/skull_stripping/validation.py \
         scripts/preprocessing_steps/skull_stripping/dispatcher.py \
-        scripts/preprocessing_steps/skull_stripping/tests/test_validation.py
-git commit -m "feat(ss): mask-integrity validation gate with fallback (ADD-2)"
+        scripts/preprocessing_steps/skull_stripping/tests/test_validation.py \
+        scripts/preprocessing_steps/skull_stripping/tests/test_cascade.py
+git commit -m "feat(ss): cascade selection + mask-integrity validation (ADD-2)"
 ```
 
 ---
@@ -1043,10 +1095,12 @@ def _skull_params():
     return step["params"]
 
 
-def test_config_has_method_and_fallback():
+def test_config_has_method_and_cascade():
     p = _skull_params()
     assert p["method"] in dispatcher.STRIPPER_REGISTRY
-    assert "fallback_method" in p
+    assert isinstance(p["cascade"], list) and len(p["cascade"]) >= 1
+    # every cascade entry is a known stripper
+    assert all(name in dispatcher.STRIPPER_REGISTRY for name in p["cascade"])
 
 
 def test_config_method_resolves_to_a_stripper():
@@ -1059,7 +1113,7 @@ def test_config_method_resolves_to_a_stripper():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd /home/e.roppert/work/mri_ai_service && python -m pytest scripts/preprocessing_steps/skull_stripping/tests/test_stage05_config.py -v`
-Expected: FAIL — `fallback_method` key missing.
+Expected: FAIL — `cascade` key missing.
 
 - [ ] **Step 3: Extend the config**
 
@@ -1068,15 +1122,19 @@ In `configs/preprocessing_config.yaml`, replace the `skull_stripping` step param
   - name: skull_stripping
     enabled: true
     params:
-      method: "bet"                 # bet | hdbet | synthstrip | mni_mask | sam | deepbet
+      method: "bet"                 # bet | hdbet | synthstrip | brainmage | mni_mask | sam | deepbet
       reference_modality: "t1"
       fractional_intensity: 0.35    # BET -f
       vertical_gradient: -0.1       # BET -g
       apply_to_all: true
       cleanup: true
-      fallback_method: "bet"        # used if primary method is unavailable
+      cascade: ["bet"]              # ordered MAS cascade; e.g. ["hdbet","synthstrip","bet"]
+      validation: {}                # mask-integrity thresholds; {} = adult defaults
       tool_params: {}               # tool-specific overrides (from manifest tuning)
 ```
+
+> Production stays `cascade: ["bet"]` (BET-only, current behavior). The cascade mechanism is exercised
+> by setting a multi-tool list. `build_cascade_order` also accepts the legacy `fallback_method` key.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -3164,6 +3222,152 @@ git commit -m "feat(ss-research): manifest-driven selection experiment (ADD-3)"
 
 ---
 
+### Task 9.4: Input-characteristic → tool analysis (ADD-5, analysis only)
+
+**Files:**
+- Create: `research/skull_stripping_benchmark/characteristic_analysis.py`
+- Test: `research/skull_stripping_benchmark/tests/test_characteristic_analysis.py`
+
+> Answers "which input characteristics influence the best tool?" as an **offline analysis** (no runtime
+> selector — that is deferred to Этап 7 future work). Reuses the **Stage 04 quality metrics already
+> computed by the pipeline** ([scripts/quality_metrics/](../../../scripts/quality_metrics/): SNR, CNR,
+> EFC, FBER, gradient sharpness, anisotropy, …) plus cheap metadata (lesion type, modalities present,
+> voxel anisotropy). For each subject it finds the winning tool (max DSC) and reports how characteristics
+> differ across winners. Feeds the paper's MAS-routing justification and the PhD.
+
+- [ ] **Step 1: Write the failing test**
+
+`research/skull_stripping_benchmark/tests/test_characteristic_analysis.py`:
+```python
+import pandas as pd
+import characteristic_analysis as ca
+
+
+def test_winning_tool_per_subject():
+    metrics = pd.DataFrame([
+        {"subject": "s1", "dataset": "gbm", "tool": "A", "dsc": 0.90},
+        {"subject": "s1", "dataset": "gbm", "tool": "B", "dsc": 0.95},
+        {"subject": "s2", "dataset": "ms", "tool": "A", "dsc": 0.88},
+        {"subject": "s2", "dataset": "ms", "tool": "B", "dsc": 0.70},
+    ])
+    win = ca.winning_tool(metrics)
+    assert win.set_index("subject")["tool"].to_dict() == {"s1": "B", "s2": "A"}
+
+
+def test_feature_summary_by_winner():
+    win = pd.DataFrame([{"subject": "s1", "tool": "B"}, {"subject": "s2", "tool": "A"}])
+    feats = pd.DataFrame([
+        {"subject": "s1", "snr": 10.0, "cnr": 2.0},
+        {"subject": "s2", "snr": 30.0, "cnr": 5.0},
+    ])
+    summary = ca.feature_summary_by_winner(win, feats, feature_cols=["snr", "cnr"])
+    # one row per (tool) with mean feature values
+    assert set(summary["tool"]) == {"A", "B"}
+    assert "snr" in summary.columns and "cnr" in summary.columns
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd /home/e.roppert/work/mri_ai_service && python -m pytest research/skull_stripping_benchmark/tests/test_characteristic_analysis.py -v`
+Expected: FAIL — module missing.
+
+- [ ] **Step 3: Write `characteristic_analysis.py`**
+
+`research/skull_stripping_benchmark/characteristic_analysis.py`:
+```python
+"""Input-characteristic -> best-tool analysis (ADD-5, offline).
+
+Joins per-subject winning tool (from raw_metrics.csv) with per-subject input
+characteristics (Stage 04 quality metrics + light metadata) and summarises how
+characteristics differ across winners. Analysis only; no runtime selector.
+"""
+
+import argparse
+from pathlib import Path
+
+import pandas as pd
+
+
+def winning_tool(metrics: pd.DataFrame) -> pd.DataFrame:
+    """Per subject, the tool with the highest DSC."""
+    idx = metrics.groupby("subject")["dsc"].idxmax()
+    return metrics.loc[idx, ["subject", "tool"]].reset_index(drop=True)
+
+
+def feature_summary_by_winner(win: pd.DataFrame, feats: pd.DataFrame,
+                              feature_cols: list[str]) -> pd.DataFrame:
+    """Mean of each characteristic grouped by the tool that won on that subject."""
+    merged = win.merge(feats, on="subject", how="inner")
+    return merged.groupby("tool")[feature_cols].mean().reset_index()
+
+
+def correlate_features_with_winner(win: pd.DataFrame, feats: pd.DataFrame,
+                                   feature_cols: list[str]) -> pd.DataFrame:
+    """Kruskal-Wallis p-value per feature across winner groups (which features matter)."""
+    from scipy import stats
+    merged = win.merge(feats, on="subject", how="inner")
+    rows = []
+    for col in feature_cols:
+        groups = [g[col].dropna().values for _, g in merged.groupby("tool")]
+        groups = [g for g in groups if len(g) > 0]
+        if len(groups) >= 2:
+            try:
+                stat, p = stats.kruskal(*groups)
+            except ValueError:
+                stat, p = float("nan"), 1.0
+        else:
+            stat, p = float("nan"), 1.0
+        rows.append({"feature": col, "kruskal_stat": float(stat), "p_value": float(p)})
+    return pd.DataFrame(rows).sort_values("p_value")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--metrics", type=Path,
+                    default=Path(__file__).parent / "results" / "raw_metrics.csv")
+    ap.add_argument("--features", type=Path, required=True,
+                    help="CSV of per-subject Stage 04 quality metrics + metadata")
+    ap.add_argument("--out", type=Path,
+                    default=Path(__file__).parent / "results" / "characteristic_analysis.csv")
+    args = ap.parse_args()
+    metrics = pd.read_csv(args.metrics)
+    feats = pd.read_csv(args.features)
+    feature_cols = [c for c in feats.columns if c != "subject"]
+    win = winning_tool(metrics)
+    summary = feature_summary_by_winner(win, feats, feature_cols)
+    corr = correlate_features_with_winner(win, feats, feature_cols)
+    summary.to_csv(args.out, index=False)
+    corr.to_csv(args.out.with_name("characteristic_importance.csv"), index=False)
+    print("Feature summary by winning tool:\n", summary)
+    print("\nWhich characteristics matter (Kruskal-Wallis):\n", corr)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run tests (must pass)**
+
+Run: `cd /home/e.roppert/work/mri_ai_service && python -m pytest research/skull_stripping_benchmark/tests/test_characteristic_analysis.py -v`
+Expected: PASS (2 tests).
+
+- [ ] **Step 5: Verify the Stage 04 features source (manual)**
+
+Confirm where Stage 04 writes per-subject quality metrics (run a pipeline through Stage 04 and inspect
+its output, e.g. a quality CSV/JSON under the run's output dir). Add a small adapter (or document the
+column mapping) so `--features` receives `subject` + numeric quality columns. Record the path in
+`DEVLOG.md`. This step depends on real pipeline output and is run when benchmark data exists.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add research/skull_stripping_benchmark/characteristic_analysis.py \
+        research/skull_stripping_benchmark/tests/test_characteristic_analysis.py
+git commit -m "feat(ss-research): input-characteristic -> tool analysis (ADD-5)"
+```
+
+---
+
 ## Phase 10 — Documentation, completion, integration
 
 ### Task 10.1: Benchmark README
@@ -3319,9 +3523,10 @@ git commit -m "docs(ss-research): mark Этап 5.5 in progress; log implementat
 | `DEVLOG.md` up to date | Tasks 0.1, 3.x, 4.2, 5.1, 10.3 |
 | 2 production winners identified | Output of running 7–9 on real data (post-implementation) |
 | ADD-1: BrainMaGe as 8th tool | Task 3.3 |
-| ADD-2: mask-integrity validation + fallback | Task 1.4 |
+| ADD-2: cascade + mask-integrity validation | Task 1.4 |
 | ADD-3: manifest-driven selection experiment | Task 9.3 |
 | ADD-4: worst-case DSC + reproducibility | Task 9.1 (Step 4b), Task 7.1 (Step 4b) |
+| ADD-5: input-characteristic → tool analysis | Task 9.4 |
 | Branch merged to main | After full benchmark run + paper fill (use finishing-a-development-branch) |
 
 > **Note (2026-06-16):** literature review (Task 0.3) repositioned the contribution to

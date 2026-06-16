@@ -274,11 +274,21 @@ tool across the combined cohort.*
 
 **Adopted additions (confirmed with KR 2026-06-16)**
 - **ADD-1:** BrainMaGe added as an 8th tool (wrapper + manifest).
-- **ADD-2:** mask-integrity validation in the dispatcher (plausible brain-volume range + largest
-  connected component) triggering fallback.
+- **ADD-2:** **cascade** selection with mask-integrity validation in the dispatcher — an ordered tool
+  chain (`cascade: [hdbet, synthstrip, bet]`) unifying **fault tolerance** (unavailable tool → next
+  agent) and **validate-retry** (mask fails plausible-volume + single-connected-component thresholds →
+  next agent). Each stripper = an agent; first one passing validation wins.
 - **ADD-3:** explicit "manifest-driven agent selection" experiment (route GBM→X, MS→Y; beat any
   single fixed tool on the combined cohort).
 - **ADD-4:** worst-case / reproducibility DSC as a first-class metric.
+- **ADD-5:** offline **input-characteristic → best-tool analysis**, reusing Stage 04 quality metrics
+  (SNR/CNR/EFC/FBER/…) + metadata, to identify which characteristics influence tool choice. Justifies
+  MAS routing; a runtime adaptive selector is deferred to Этап 7 (future work).
+
+> **MAS framing note (KR PhD):** the runtime backbone is the **cascade of validated stripper agents**
+> (ADD-2) with lesion-type routing (ADD-3); ADD-5 supplies the evidence base for *which* characteristics
+> should drive a future adaptive selector. Adaptive runtime selection by characteristics is explicitly
+> out of scope for this stage.
 
 **Figures worth reproducing in the paper** (save into `figures/` when assembling):
 - Thakur 2020: modality-agnostic training schematic + per-architecture DSC/HD95 table (PMC7597856).
