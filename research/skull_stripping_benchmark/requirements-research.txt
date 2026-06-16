@@ -1,0 +1,14 @@
+# Statistical analysis + plotting for the skull stripping benchmark.
+# Install into the project venv: pip install -r research/skull_stripping_benchmark/requirements-research.txt
+scipy>=1.11
+pingouin>=0.5.4
+statsmodels>=0.14
+pandas>=2.0
+matplotlib>=3.7
+seaborn>=0.13
+numpy>=1.24
+nibabel>=5.0
+scikit-image>=0.22        # surface distance / HD95
+psutil>=5.9               # RAM measurement
+pynvml>=11.5              # VRAM measurement (optional at runtime)
+jupyter>=1.0
