@@ -11,8 +11,9 @@
   prior art ranks strippers on glioma (Thakur 2020) but not on MS or a combined clinical cohort,
   and never *selects* among competing tools.
 - Contributions:
-  (1) a **manifest-driven, lesion-type-aware selection component** for skull stripping with
-      **integrity-validated fallback** — MAS-ready, reusable (the headline contribution);
+  (1) a **manifest-driven, lesion-type-aware selection component** for skull stripping built as a
+      **cascade of validated stripper agents** (fault-tolerant: unavailable/invalid → next agent;
+      mask-integrity validation gates each step) — MAS-ready, reusable (the headline contribution);
   (2) the first **combined GBM + MS** comparison on a **heterogeneous clinical multi-center**
       cohort, including the under-studied MS arm;
   (3) a **cost/quality** analysis (GPU DL tools vs a dilated atlas mask) for production deployment;
