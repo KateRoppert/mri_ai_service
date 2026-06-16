@@ -7,13 +7,28 @@
 
 ## 1. Introduction
 - Clinical context: automated brain-lesion diagnosis pipeline (GBM + MS), multi-center.
-- Problem: skull stripping currently FSL BET, chosen empirically; may not generalize.
-- Contributions: (1) systematic 7-tool comparison on lesion data; (2) plugin
-  architecture making the tool config-driven and MAS-ready; (3) evidence-based
-  selection of 2 production tools.
+- Problem: skull stripping currently FSL BET, chosen empirically; may not generalize, and
+  prior art ranks strippers on glioma (Thakur 2020) but not on MS or a combined clinical cohort,
+  and never *selects* among competing tools.
+- Contributions:
+  (1) a **manifest-driven, lesion-type-aware selection component** for skull stripping with
+      **integrity-validated fallback** — MAS-ready, reusable (the headline contribution);
+  (2) the first **combined GBM + MS** comparison on a **heterogeneous clinical multi-center**
+      cohort, including the under-studied MS arm;
+  (3) a **cost/quality** analysis (GPU DL tools vs a dilated atlas mask) for production deployment;
+  (4) evidence-based selection of production tools, reported with **worst-case** robustness, not
+      only mean DSC.
 
 ## 2. Related Work
-<<From literature_notes.md: BET, HD-BET, SynthStrip, SAM-derived, DeepBET, atlas masking.>>
+<<Prose from `literature_review.md`. Structure:
+  - Individual tools: FSL BET (Smith 2002), HD-BET (Isensee 2019), SynthStrip (Hoopes 2022),
+    deepbet (Fisch 2024, T1-only), SAM-based (2023), BrainMaGe (Thakur 2020).
+  - Comparison benchmarks: Thakur 2020 (glioma, nearest competitor), pediatric T2 (2025),
+    purely-synthetic (2025); context: "is brain extraction still necessary?" (2022).
+  - MAS / agentic: NeuroAgent (2026), Training-Free Agentic Neuro-Radiology (2026),
+    Virtual Neuroscientist (2026), co-evolving agentic (2025), mAIstro.
+  Position vs each: we add MS + combined cohort + per-cohort *selection* + MAS; agentic systems
+  invoke a *fixed* stripper, we *select* among competitors with validated fallback.>>
 
 ## 3. Methods
 ### 3.1 Datasets
