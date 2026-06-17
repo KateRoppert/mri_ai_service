@@ -83,7 +83,7 @@ Every stripper returns a dict with exactly these keys from `strip()`:
 
 **Benchmark** (`research/skull_stripping_benchmark/`): `README.md`, `DEVLOG.md`, `requirements-research.txt`, `prepare_data.py`, `metrics.py`, `run_benchmark.py`, `tuning.py`, `report.py`, `results/` (csv + figures + notebook), `tests/`.
 
-**Paper** (`docs/papers/skull_stripping_comparison/`): `paper_skeleton.md`, `literature_notes.md`, `figures/`.
+**Paper** (`docs/papers/skull_stripping_comparison/`): `paper_skeleton.md` (EN) + `paper_skeleton_ru.md` (RU, kept in sync), `literature_review.md`, `literature_notes.md` (pointer), `figures/`. Whenever results fill the paper (Tasks 9.x, 10.3), update **both** the EN and RU skeletons.
 
 ---
 
