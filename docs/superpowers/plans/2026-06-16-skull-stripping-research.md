@@ -3065,7 +3065,8 @@ Expected: executes without errors; figures appear in `results/figures/`.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add research/skull_stripping_benchmark/results/statistical_analysis.ipynb
+# results/ is gitignored (data outputs), so force-add the notebook (code):
+git add -f research/skull_stripping_benchmark/results/statistical_analysis.ipynb
 git commit -m "feat(ss-research): statistical analysis notebook"
 ```
 

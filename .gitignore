@@ -74,3 +74,10 @@ services/*/weights/
 data/MS_5/
 data/UPENN-GBM/
 .superpowers/
+
+# Skull-stripping research: track test CODE despite the blanket `tests/` ignore.
+# (results/ data outputs stay ignored; the analysis notebook is force-added in Task 9.2.)
+!scripts/preprocessing_steps/skull_stripping/tests/
+!scripts/preprocessing_steps/skull_stripping/tests/**
+!research/skull_stripping_benchmark/tests/
+!research/skull_stripping_benchmark/tests/**
