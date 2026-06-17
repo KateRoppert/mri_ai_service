@@ -2,8 +2,10 @@
 
 > Status: skeleton. `<<...>>` markers are placeholders filled from benchmark results.
 
+> Bilingual: keep this EN skeleton and `paper_skeleton_ru.md` (RU) in sync as results arrive.
+
 ## Abstract
-<<One paragraph: motivation, 7 tools, 4 datasets (GBM + MS), key finding, 2 winners.>>
+<<One paragraph: motivation, 8 tools, 4 datasets (GBM + MS), key finding, 2 winners.>>
 
 ## 1. Introduction
 - Clinical context: automated brain-lesion diagnosis pipeline (GBM + MS), multi-center.
@@ -68,6 +70,8 @@ Friedman. Research questions table.>>
 ### 4.4 Leakage / over-stripping <<leakage_comparison.png>>
 ### 4.5 Qualitative examples <<visual_examples/>>
 ### 4.6 Statistical tests <<from statistical_analysis.ipynb>>
+### 4.7 Agent-selection experiment (ADD-3) <<routed vs fixed; selection_experiment.csv>>
+### 4.8 Characteristic → tool analysis (ADD-5) <<which characteristics matter>>
 
 ## 5. Discussion
 - Limitations: atlas pseudo-GT imperfect under GBM mass effect.
