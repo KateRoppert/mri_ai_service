@@ -34,15 +34,21 @@ def resolve_stripper(params: dict) -> SkullStripperBase:
         return primary
 
     fallback_method = params.get("fallback_method")
-    logger.warning(
-        f"Skull stripper '{method}' unavailable; "
-        f"falling back to '{fallback_method}'."
-    )
     if not fallback_method or fallback_method == method:
         raise RuntimeError(
             f"Skull stripper '{method}' unavailable and no usable fallback configured."
         )
-    fallback = get_stripper(fallback_method)
+    logger.warning(
+        f"Skull stripper '{method}' unavailable; "
+        f"falling back to '{fallback_method}'."
+    )
+    try:
+        fallback = get_stripper(fallback_method)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Skull stripper '{method}' unavailable and fallback '{fallback_method}' "
+            f"is not registered. {exc}"
+        ) from exc
     if not fallback.is_available():
         raise RuntimeError(
             f"Neither '{method}' nor fallback '{fallback_method}' is available."

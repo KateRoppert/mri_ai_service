@@ -2,8 +2,7 @@
 FSL BET skull stripping — verbatim port from the original skull_stripping.py module.
 
 Contains: FSL_DIR/FSL_BIN_DIR globals, setup_fsl_environment, get_fsl_env,
-get_bet_command, check_fsl_installed, run_bet, process_subject_skull_stripping,
-and the BetStripper class.
+get_bet_command, check_fsl_installed, run_bet, and the BetStripper class.
 """
 
 import logging

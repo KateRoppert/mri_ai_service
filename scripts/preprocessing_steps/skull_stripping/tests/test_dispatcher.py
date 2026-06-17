@@ -44,3 +44,9 @@ def test_resolve_raises_when_primary_and_fallback_unavailable(monkeypatch):
     monkeypatch.setitem(dispatcher.STRIPPER_REGISTRY, "fake_bad", _FakeUnavailable)
     with pytest.raises(RuntimeError):
         dispatcher.resolve_stripper({"method": "fake_bad", "fallback_method": "fake_bad"})
+
+
+def test_resolve_raises_runtime_error_for_unknown_fallback(monkeypatch):
+    monkeypatch.setitem(dispatcher.STRIPPER_REGISTRY, "fake_bad", _FakeUnavailable)
+    with pytest.raises(RuntimeError):
+        dispatcher.resolve_stripper({"method": "fake_bad", "fallback_method": "no_such_tool"})
