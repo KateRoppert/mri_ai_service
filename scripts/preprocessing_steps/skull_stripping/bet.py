@@ -12,7 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .base import SkullStripperBase, apply_brain_mask
+from .base import SkullStripperBase
 
 logger = logging.getLogger(__name__)
 
@@ -275,120 +275,6 @@ def run_bet(
             "success": False,
             "error": str(e)
         }
-
-
-def process_subject_skull_stripping(
-    subject_dir: Path,
-    output_dir: Path,
-    transform_dir: Path,
-    modalities: list,
-    params: dict
-) -> dict:
-    """
-    Process all modalities for a subject (skull stripping step).
-
-    Workflow:
-    1. Create brain mask on reference modality (e.g., T1c)
-    2. Apply mask to all modalities
-
-    Args:
-        subject_dir: Path to subject directory (BIDS structure)
-        output_dir: Path to output directory for skull-stripped images
-        modalities: List of modality suffixes to process
-        params: Skull stripping parameters
-
-    Returns:
-        dict: Processing results for each modality
-    """
-    results = {}
-
-    # Extract subject and session from path
-    subject_id = subject_dir.parent.parent.name  # sub-XXX
-    session_id = subject_dir.parent.name          # ses-XXX
-
-    logger.info(f"Processing {subject_id}/{session_id} - Skull Stripping")
-
-    reference_modality = params.get("reference_modality", "t1c")
-
-    # Step 1: Create brain mask on reference modality
-    logger.info(f"Step 1: Creating brain mask on {reference_modality}")
-
-    ref_pattern = f"{subject_id}_{session_id}_{reference_modality}.nii.gz"
-    ref_files = list(subject_dir.glob(ref_pattern))
-
-    if not ref_files:
-        error_msg = f"Reference modality {reference_modality} not found"
-        logger.error(error_msg)
-        return {"success": False, "error": error_msg}
-
-    ref_file = ref_files[0]
-
-    # Output paths
-    ref_output = output_dir / subject_id / session_id / "anat" / ref_pattern
-
-    # Save brain mask to transformations directory
-    mask_pattern = f"{subject_id}_{session_id}_brain_mask.nii.gz"
-    mask_path = transform_dir / subject_id / session_id / "anat" / mask_pattern
-
-    # Run BET on reference modality
-    bet_result = run_bet(
-        input_path=ref_file,
-        output_path=ref_output,
-        mask_path=mask_path,
-        fractional_intensity=params.get("fractional_intensity", 0.5),
-        vertical_gradient=params.get("vertical_gradient", 0.0),
-        generate_mask=True
-    )
-
-    results[reference_modality] = bet_result
-
-    if not bet_result["success"]:
-        logger.error(f"Failed to create brain mask on {reference_modality}")
-        return results
-
-    # Step 2: Apply mask to other modalities
-    logger.info("Step 2: Applying brain mask to other modalities")
-
-    apply_to_all = params.get("apply_to_all", True)
-
-    if apply_to_all:
-        for modality in modalities:
-            if modality == reference_modality:
-                continue  # Already processed
-
-            modal_pattern = f"{subject_id}_{session_id}_{modality}.nii.gz"
-            modal_files = list(subject_dir.glob(modal_pattern))
-
-            if not modal_files:
-                logger.warning(f"Modality {modality} not found, skipping")
-                results[modality] = {"success": False, "error": "File not found"}
-                continue
-
-            modal_file = modal_files[0]
-            modal_output = output_dir / subject_id / session_id / "anat" / modal_pattern
-
-            # Apply mask
-            mask_result = apply_brain_mask(
-                input_path=modal_file,
-                mask_path=mask_path,
-                output_path=modal_output
-            )
-
-            results[modality] = mask_result
-
-    # Optional cleanup
-    if params.get("cleanup", True):
-        # Remove temporary BET files (e.g., _mesh files)
-        cleanup_patterns = ["*_mesh.vtk", "*_skull.nii.gz", "*_outskin_mesh.off"]
-        for pattern in cleanup_patterns:
-            for temp_file in subject_dir.parent.rglob(pattern):
-                try:
-                    temp_file.unlink()
-                    logger.debug(f"Cleaned up {temp_file}")
-                except:
-                    pass
-
-    return results
 
 
 class BetStripper(SkullStripperBase):

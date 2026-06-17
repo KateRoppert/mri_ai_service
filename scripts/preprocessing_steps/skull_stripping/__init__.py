@@ -15,9 +15,15 @@ from .bet import (
     check_fsl_installed,
     get_bet_command,
     get_fsl_env,
-    process_subject_skull_stripping,
     run_bet,
     setup_fsl_environment,
+)
+# Import dispatcher last to avoid circular imports (dispatcher imports from base and bet).
+from .dispatcher import (
+    STRIPPER_REGISTRY,
+    get_stripper,
+    process_subject_skull_stripping,
+    resolve_stripper,
 )
 
 __all__ = [
@@ -29,7 +35,10 @@ __all__ = [
     "check_fsl_installed",
     "get_bet_command",
     "get_fsl_env",
-    "process_subject_skull_stripping",
     "run_bet",
     "setup_fsl_environment",
+    "STRIPPER_REGISTRY",
+    "get_stripper",
+    "process_subject_skull_stripping",
+    "resolve_stripper",
 ]
