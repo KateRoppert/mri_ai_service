@@ -1,0 +1,26 @@
+name: bet
+version: "1.0"
+tool_type: skull_stripping
+compute:
+  requires_gpu: false
+  gpu_memory_gb: 0
+  ram_gb: 2
+  cpu_fallback: true
+lesion_type_preference:
+  glioma: medium
+  ms: medium
+  metastases: medium
+modality_support:
+  primary: [t1, t1c]
+  apply_to: [t1, t1c, t2, t2fl]
+quality_notes: >
+  Classical baseline (Smith 2002). Current production default, chosen empirically.
+install:
+  method: system
+  package: fsl
+  model_download: none
+tuned_params: {}
+mas_metadata:
+  agent_type: skull_stripper
+  cascade_priority: 5
+  fallback_to: null
