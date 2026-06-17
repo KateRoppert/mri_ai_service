@@ -12,7 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .base import SkullStripperBase, apply_brain_mask, get_gpu_memory_mb
+from .base import SkullStripperBase, apply_brain_mask
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +410,9 @@ class BetStripper(SkullStripperBase):
             vertical_gradient=params.get("vertical_gradient", 0.0),
             generate_mask=True,
         )
+        # Normalize to the SkullStripperBase contract even on the failure path.
         result.setdefault("processing_time", time.perf_counter() - start)
-        result["vram_used_gb"] = 0.0
+        result.setdefault("output_path", None)
+        result.setdefault("mask_path", None)
+        result["vram_used_gb"] = 0.0  # TODO: measure VRAM via base.get_gpu_memory_mb for GPU tools
         return result

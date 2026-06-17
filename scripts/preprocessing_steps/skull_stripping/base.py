@@ -19,7 +19,7 @@ def load_manifest(name: str) -> dict:
     """Load services/skull-stripping/<name>/manifest.yaml; return {} if absent."""
     manifest_path = _MANIFEST_ROOT / name / "manifest.yaml"
     if not manifest_path.exists():
-        logger.warning(f"Manifest not found for '{name}': {manifest_path}")
+        logger.debug(f"Manifest not found for '{name}': {manifest_path}")
         return {}
     with open(manifest_path, "r") as f:
         return yaml.safe_load(f) or {}

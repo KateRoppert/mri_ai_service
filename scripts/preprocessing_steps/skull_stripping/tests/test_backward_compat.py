@@ -21,3 +21,22 @@ def test_legacy_helpers_still_exported():
     assert callable(run_bet)
     assert callable(apply_brain_mask)
     assert callable(compare_before_after_stripping)
+
+
+import pytest
+from preprocessing_steps.skull_stripping import SkullStripperBase, BetStripper
+
+
+def test_cannot_instantiate_abstract_base():
+    with pytest.raises(TypeError):
+        SkullStripperBase()
+
+
+def test_bet_stripper_name():
+    assert BetStripper().name == "bet"
+
+
+def test_bet_stripper_unavailable_when_fsl_missing(monkeypatch):
+    monkeypatch.setattr("preprocessing_steps.skull_stripping.bet.check_fsl_installed",
+                        lambda: False)
+    assert BetStripper().is_available() is False
