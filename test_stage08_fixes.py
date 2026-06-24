@@ -1,5 +1,5 @@
 """
-Tests for auto-tune parallelism in stage 08 (08_lobar_localization.py).
+Tests for auto-tune parallelism in stage 08 (08_anatomical_analysis.py).
 
 Stage 08 (LobarAnalyzer) is pure Python/numpy — no ANTs threads.
 Auto-tune: actual_workers = min(configured_workers, n_masks).
@@ -32,6 +32,8 @@ if "lobar_analysis" not in sys.modules:
     sys.modules["lobar_analysis"] = MagicMock()
 if "ants" not in sys.modules:
     sys.modules["ants"] = MagicMock()
+if "lesion_stats" not in sys.modules:
+    sys.modules["lesion_stats"] = MagicMock()
 
 
 def _load_module(filename: str, module_name: str):
@@ -42,7 +44,7 @@ def _load_module(filename: str, module_name: str):
     return mod
 
 
-loc_mod = _load_module("08_lobar_localization.py", "loc08")
+loc_mod = _load_module("08_anatomical_analysis.py", "loc08")
 find_masks_08 = loc_mod.find_masks
 
 
@@ -110,7 +112,7 @@ def _run_main_08(tmp_path: Path, mode: str, workers: int,
     mock_result = {"success": True, "affected_lobes": 2, "report_path": "/tmp/r.json"}
 
     argv = [
-        "08_lobar_localization.py",
+        "08_anatomical_analysis.py",
         str(seg_dir), str(out_dir),
         "--config", str(lobar_cfg),
         "--preprocessing-config", str(preproc_cfg),
