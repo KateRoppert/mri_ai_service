@@ -41,6 +41,8 @@ def create_test_config() -> dict:
             'stage_05_data': 'preprocessed',
             'stage_05_transforms': 'transforms',
             'stage_06': 'segmentation',
+            'stage_07': 'segmentation',
+            'stage_08': 'segmentation',
             'logs': 'logs',
             'reports': 'reports'
         },

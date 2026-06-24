@@ -47,6 +47,8 @@ def create_minimal_valid_config() -> dict:
             'stage_05_data': 'preprocessed',
             'stage_05_transforms': 'transforms',
             'stage_06': 'segmentation',
+            'stage_07': 'segmentation',
+            'stage_08': 'segmentation',
             'logs': 'logs',
             'reports': 'reports'
         },
@@ -80,6 +82,16 @@ def create_minimal_valid_config() -> dict:
                 'enabled': True,
                 'script': 'scripts/06_segmentation.py',
                 'args': {}
+            },
+            'stage_07_inverse_transform': {
+                'enabled': True,
+                'script': 'scripts/07_inverse_transform.py',
+                'args': {}
+            },
+            'stage_08_lobar_localization': {
+                'enabled': True,
+                'script': 'scripts/08_lobar_localization.py',
+                'args': {}
             }
         }
     }
@@ -97,7 +109,9 @@ def create_script_files(tmp_path: Path) -> Path:
         '03_convert_to_nifti.py',
         '04_assess_quality.py',
         '05_preprocessing.py',
-        '06_segmentation.py'
+        '06_segmentation.py',
+        '07_inverse_transform.py',
+        '08_lobar_localization.py'
     ]
     
     for script_name in script_names:
@@ -212,7 +226,8 @@ def test_get_stage_input_dir():
         'output_structure': {
             'stage_01': 'bids',
             'stage_03': 'nifti',
-            'stage_05_data': 'preprocessed'
+            'stage_05_data': 'preprocessed',
+            'stage_06': 'segmentation'
         }
     }
     
@@ -241,10 +256,12 @@ def test_get_stage_output_dir():
             'stage_03': 'nifti',
             'stage_04': 'quality',
             'stage_05_data': 'preprocessed',
-            'stage_06': 'segmentation'
+            'stage_06': 'segmentation',
+            'stage_07': 'segmentation',
+            'stage_08': 'segmentation'
         }
     }
-    
+
     assert get_stage_output_dir('stage_01_reorganize', config) == Path('/tmp/output/bids')
     assert get_stage_output_dir('stage_02_metadata', config) == Path('/tmp/output/metadata')
     assert get_stage_output_dir('stage_06_segmentation', config) == Path('/tmp/output/segmentation')
@@ -259,7 +276,9 @@ def test_get_enabled_stages():
             'stage_03_convert': {'enabled': True},
             'stage_04_quality': {'enabled': False},
             'stage_05_preprocessing': {'enabled': True},
-            'stage_06_segmentation': {'enabled': True}
+            'stage_06_segmentation': {'enabled': True},
+            'stage_07_inverse_transform': {'enabled': False},
+            'stage_08_lobar_localization': {'enabled': False}
         }
     }
     
