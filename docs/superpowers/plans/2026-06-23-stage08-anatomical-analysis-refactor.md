@@ -494,9 +494,10 @@ git commit -m "refactor(stage08): rename 08_lobar_localization.py to 08_anatomic
 - Modify: `pipeline_config.yaml:136,138`
 - Modify: `utils/config_loader.py:112,214,243,267`
 - Modify: `orchestrator.py:69`
+- Modify: `test_config_loader.py:91,93,114,281` (test fixtures — these `stage_08_lobar_localization` references were added in a prior baseline-fix commit, before this plan was written; they must be renamed in this same task or Step 7's repo-wide grep will fail)
 
 **Interfaces:**
-- Produces: stage key `stage_08_anatomical_analysis` (replaces `stage_08_lobar_localization`) used consistently across config, loader, and orchestrator.
+- Produces: stage key `stage_08_anatomical_analysis` (replaces `stage_08_lobar_localization`) used consistently across config, loader, orchestrator, and the config-loader test fixtures.
 
 - [ ] **Step 1: Update `pipeline_config.yaml`**
 
@@ -610,20 +611,66 @@ to:
     ):
 ```
 
-- [ ] **Step 7: Confirm no stale references remain anywhere in the repo**
+- [ ] **Step 7: Update `test_config_loader.py` fixtures**
+
+In `test_config_loader.py`, `create_minimal_valid_config()` has a stage entry (line 91-95):
+
+```python
+            'stage_08_lobar_localization': {
+                'enabled': True,
+                'script': 'scripts/08_lobar_localization.py',
+                'args': {}
+            }
+```
+
+Change to:
+
+```python
+            'stage_08_anatomical_analysis': {
+                'enabled': True,
+                'script': 'scripts/08_anatomical_analysis.py',
+                'args': {}
+            }
+```
+
+In `create_script_files()`'s `script_names` list (line 114), change:
+
+```python
+        '08_lobar_localization.py'
+```
+
+to:
+
+```python
+        '08_anatomical_analysis.py'
+```
+
+In `test_get_enabled_stages()`'s local `stages` dict (line 281), change:
+
+```python
+            'stage_08_lobar_localization': {'enabled': False}
+```
+
+to:
+
+```python
+            'stage_08_anatomical_analysis': {'enabled': False}
+```
+
+- [ ] **Step 8: Confirm no stale references remain anywhere in the repo**
 
 Run: `cd /home/ubuntu/mri_ai_service && grep -rn "stage_08_lobar_localization\|08_lobar_localization" --include="*.py" --include="*.yaml" --include="*.yml" . 2>/dev/null | grep -v venv | grep -v node_modules`
 Expected: no output (empty)
 
-- [ ] **Step 8: Run the existing config/orchestrator test suites**
+- [ ] **Step 9: Run the existing config/orchestrator test suites**
 
 Run: `cd /home/ubuntu/mri_ai_service && python -m pytest test_config_loader.py test_real_config.py test_orchestrator.py -v`
 Expected: all pass (these tests validate `pipeline_config.yaml` structure and stage ordering — they must keep passing unchanged since only the *name* of the stage changed, not its position or shape)
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add pipeline_config.yaml utils/config_loader.py orchestrator.py
+git add pipeline_config.yaml utils/config_loader.py orchestrator.py test_config_loader.py
 git commit -m "refactor(pipeline): rename stage_08_lobar_localization to stage_08_anatomical_analysis"
 ```
 
