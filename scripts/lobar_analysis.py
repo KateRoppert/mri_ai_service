@@ -12,10 +12,12 @@ import nibabel as nib
 from pathlib import Path
 from typing import Dict, Optional
 
+from anatomical_analyzer_base import AnatomicalAnalyzerBase
+
 logger = logging.getLogger(__name__)
 
 
-class LobarAnalyzer:
+class LobarAnalyzer(AnatomicalAnalyzerBase):
     """Analyzes anatomical localization of lesions using a lobar atlas."""
 
     def __init__(self, atlas_path: Path, mapping_path: Path, 
