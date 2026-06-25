@@ -71,13 +71,14 @@ const LongitudinalTimeline = ({ patientId, lesionType }) => {
           p => p.from_session_id === prevSessionId && p.to_session_id === record.session_id
         );
         if (!pair) return <span style={{ color: '#bbb' }}>н/д</span>;
-        if (pair.new_count === 0 && pair.growing_count === 0) {
+        if (pair.new_count === 0 && pair.growing_count === 0 && pair.resolved_count === 0) {
           return <Tag color="green">стабильно</Tag>;
         }
         return (
           <Space size={4}>
             {pair.new_count > 0 && <Tag color="red">{pair.new_count} новых</Tag>}
             {pair.growing_count > 0 && <Tag color="orange">{pair.growing_count} растёт</Tag>}
+            {pair.resolved_count > 0 && <Tag color="blue">{pair.resolved_count} исчезло</Tag>}
           </Space>
         );
       },
