@@ -32,6 +32,21 @@ from lesion_stats import compute_lesion_stats
 logger = logging.getLogger(__name__)
 
 
+def build_analyzer(lesion_type: str, atlas_path: Path, mapping_path: Path,
+                    seg_classes: Dict, ms_zone_atlas_paths: Optional[Dict]):
+    """Build the AnatomicalAnalyzerBase implementation for this lesion type."""
+    if lesion_type == "multiple_sclerosis":
+        from ms_localization import MSZoneAnalyzer
+        return MSZoneAnalyzer(**ms_zone_atlas_paths)
+    return LobarAnalyzer(atlas_path, mapping_path, seg_classes)
+
+
+REPORT_SUFFIX_BY_LESION_TYPE = {
+    "glioblastoma": "_lobar_report.json",
+    "multiple_sclerosis": "_mcdonald_report.json",
+}
+
+
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     """Setup logging configuration."""
     root_logger = logging.getLogger()
@@ -146,7 +161,8 @@ def process_one_mask(
     mapping_path: Path,
     seg_classes: Dict,
     lesion_type: str,
-    analyzer: Optional["LobarAnalyzer"] = None,
+    ms_zone_atlas_paths: Optional[Dict] = None,
+    analyzer: Optional["AnatomicalAnalyzerBase"] = None,
 ) -> Dict:
     """Process a single mask — wrapper for parallel execution.
 
@@ -155,7 +171,7 @@ def process_one_mask(
     """
     try:
         if analyzer is None:
-            analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
+            analyzer = build_analyzer(lesion_type, atlas_path, mapping_path, seg_classes, ms_zone_atlas_paths)
         report = analyzer.analyze_mask(mask_path)
 
         if report is None:
@@ -168,7 +184,7 @@ def process_one_mask(
 
         # Save report
         mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-        report_name = f"{mask_stem}_lobar_report.json"
+        report_name = f"{mask_stem}{REPORT_SUFFIX_BY_LESION_TYPE[lesion_type]}"
         # Lobar report goes into the same lesion_type subfolder as the source mask
         report_path = (output_dir / subject_id / session_id / "anat" / lesion_type / report_name)
 
@@ -245,6 +261,8 @@ def main():
                         help="Path to lobar_atlas_config.yaml")
     parser.add_argument("--preprocessing-config", type=Path, required=True,
                         help="Path to preprocessing_config.yaml (to read atlas.name)")
+    parser.add_argument("--ms-zones-config", type=Path, default=None,
+                        help="Path to ms_zones_config.yaml (required when --lesion-type multiple_sclerosis)")
     parser.add_argument(
         "--lesion-type",
         type=str,
@@ -288,6 +306,26 @@ def main():
     if not mapping_path.exists():
         logger.error(f"Mapping file not found: {mapping_path}")
         return 1
+
+    ms_zone_atlas_paths = None
+    if args.lesion_type == "multiple_sclerosis":
+        if not args.ms_zones_config or not args.ms_zones_config.exists():
+            logger.error("multiple_sclerosis requires --ms-zones-config pointing to a valid ms_zones_config.yaml")
+            return 1
+        with open(args.ms_zones_config, 'r') as f:
+            ms_zones_config = yaml.safe_load(f)
+        template_name = preprocessing_config.get("atlas", {}).get("name", "SRI24")
+        zone_templates = ms_zones_config.get("templates", {})
+        if template_name not in zone_templates:
+            logger.error(f"No MS zone atlases registered for template '{template_name}'. "
+                         f"Available: {list(zone_templates.keys())}")
+            return 1
+        ms_zone_atlas_paths = {
+            "ventricle_atlas_path": project_root / zone_templates[template_name]["ventricle_atlas"],
+            "cortex_atlas_path": atlas_path,  # reuse the already-resolved cortical atlas
+            "infratentorial_atlas_path": project_root / zone_templates[template_name]["infratentorial_atlas"],
+            "dilation_voxels": ms_zones_config.get("dilation_voxels", 1),
+        }
 
     # Parse segmentation classes from config
     seg_classes = {}
@@ -357,13 +395,14 @@ def main():
 
     if args.mode == "sequential":
         # Load atlas once and reuse across all masks
-        shared_analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
+        shared_analyzer = build_analyzer(args.lesion_type, atlas_path, mapping_path, seg_classes, ms_zone_atlas_paths)
         for idx, (mask_path, subj, sess) in enumerate(masks, 1):
             logger.info(f"\n[{idx}/{len(masks)}] {subj}/{sess}")
             result = process_one_mask(
                 mask_path, subj, sess, args.output_dir,
                 atlas_path, mapping_path, seg_classes,
                 args.lesion_type,
+                ms_zone_atlas_paths=ms_zone_atlas_paths,
                 analyzer=shared_analyzer,
             )
             if result["success"]:
@@ -380,6 +419,7 @@ def main():
                     mask_path, subj, sess, args.output_dir,
                     atlas_path, mapping_path, seg_classes,
                     args.lesion_type,
+                    ms_zone_atlas_paths,
                 ): (subj, sess)
                 for mask_path, subj, sess in masks
             }

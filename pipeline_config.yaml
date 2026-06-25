@@ -139,6 +139,7 @@ stages:
     args:
       config: configs/lobar_atlas_config.yaml
       preprocessing-config: configs/preprocessing_config.yaml
+      ms-zones-config: configs/ms_zones_config.yaml
       mode: parallel
       workers: 14
       skip-existing: true

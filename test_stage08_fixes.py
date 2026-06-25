@@ -32,7 +32,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 # other test modules in the same pytest process (e.g. test_lesion_stats.py,
 # test_anatomical_analyzer_base.py) still get the real modules.
 _INJECTED_MOCK_MODULES = []
-for _mod_name in ("lobar_analysis", "ants", "lesion_stats"):
+for _mod_name in ("lobar_analysis", "ants", "lesion_stats", "ms_localization"):
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
         _INJECTED_MOCK_MODULES.append(_mod_name)
