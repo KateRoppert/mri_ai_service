@@ -200,7 +200,7 @@ def process_one_mask(
             stats["patient_id"] = subject_id
             stats["session_id"] = session_id
             stats_path = report_path.parent / report_path.name.replace(
-                "_lobar_report.json", "_lesion_stats_report.json"
+                REPORT_SUFFIX_BY_LESION_TYPE[lesion_type], "_lesion_stats_report.json"
             )
             with open(stats_path, 'w', encoding='utf-8') as f:
                 json.dump(stats, f, indent=2, ensure_ascii=False)
@@ -356,7 +356,7 @@ def main():
         filtered = []
         for mask_path, subj, sess in masks:
             mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-            report_path = args.output_dir / subj / sess / "anat" / args.lesion_type / f"{mask_stem}_lobar_report.json"
+            report_path = args.output_dir / subj / sess / "anat" / args.lesion_type / f"{mask_stem}{REPORT_SUFFIX_BY_LESION_TYPE[args.lesion_type]}"
             if report_path.exists():
                 skipped += 1
                 logger.info(f"  Skipping {subj}/{sess}: report exists")
