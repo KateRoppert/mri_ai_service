@@ -95,6 +95,16 @@ export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sc
 };
 
 /**
+ * Детекция новых/растущих/разрешившихся очагов между сессиями (МС)
+ */
+export const getLongitudinalDiff = async (patientId, lesionType = 'multiple_sclerosis') => {
+  const response = await apiClient.get(`/longitudinal/${patientId}/diff`, {
+    params: { lesion_type: lesionType },
+  });
+  return response.data;
+};
+
+/**
  * Получить список доступных NIfTI файлов для визуализации
  */
 export const getNIfTIFiles = async (runId) => {
@@ -316,6 +326,7 @@ export default {
   getMcdonaldReports,
   getLesionStatsReports,
   getLongitudinalReport,
+  getLongitudinalDiff,
   getNIfTIFiles,
   getNIfTIFileUrl,
   getLesionTypes,
