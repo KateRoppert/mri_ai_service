@@ -532,8 +532,11 @@ class KappaUploader:
                 except Exception as e:
                     logger.warning("Failed to read quality report %s: %s", qr_path, e)
 
-        # Volume report
-        if session_data["volume_report"]:
+        # Volume report (GBM-specific NCR/ED/NET/ET tumor-subregion breakdown —
+        # not meaningful for MS binary lesion masks, which carry no such
+        # distinction; MS volumes are already reported correctly via
+        # lesion_stats_report/mcdonald_report)
+        if self.lesion_type != "multiple_sclerosis" and session_data["volume_report"]:
             vr_path = session_data["volume_report"]
             if vr_path.suffix == ".json":
                 try:

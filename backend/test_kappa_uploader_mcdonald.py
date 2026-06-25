@@ -83,3 +83,26 @@ def test_build_entity_info_includes_mcdonald_report(tmp_path):
 
     assert info["mcdonald_report"]["total_lesion_count"] == 1
     assert info["mcdonald_report"]["zones"]["spinal_cord"] == {"supported": False}
+
+
+def test_build_entity_info_omits_volume_report_for_ms(tmp_path):
+    seg_dir = _build_session_dirs(tmp_path, "sub-001", "ses-001")
+    volume_data = {
+        "mask_file": "sub-001_ses-001_t1_segmask.nii.gz",
+        "classes": {
+            "1": {"name": "NCR (Necrotic core)", "voxel_count": 1895,
+                  "volume_mm3": 1895.0, "volume_cm3": 1.895},
+        },
+        "total_tumor": {"voxel_count": 1895, "volume_mm3": 1895.0, "volume_cm3": 1.895},
+    }
+    (seg_dir / "sub-001_ses-001_t1_volume_report.json").write_text(
+        json.dumps(volume_data), encoding="utf-8"
+    )
+
+    uploader = _make_uploader(tmp_path)
+    sessions = uploader._discover_sessions()
+    # Discovery still finds the file path (harmless) ...
+    assert sessions["sub-001_ses-001"]["volume_report"] is not None
+    # ... but entity info must NOT surface its GBM-shaped content for MS.
+    info = uploader._build_entity_info("sub-001_ses-001", sessions["sub-001_ses-001"])
+    assert "volume_report" not in info
