@@ -133,9 +133,9 @@ stages:
       reference-modality: t1
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_07
 
-  stage_08_lobar_localization:
+  stage_08_anatomical_analysis:
     enabled: true
-    script: scripts/08_lobar_localization.py
+    script: scripts/08_anatomical_analysis.py
     args:
       config: configs/lobar_atlas_config.yaml
       preprocessing-config: configs/preprocessing_config.yaml

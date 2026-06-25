@@ -88,9 +88,9 @@ def create_minimal_valid_config() -> dict:
                 'script': 'scripts/07_inverse_transform.py',
                 'args': {}
             },
-            'stage_08_lobar_localization': {
+            'stage_08_anatomical_analysis': {
                 'enabled': True,
-                'script': 'scripts/08_lobar_localization.py',
+                'script': 'scripts/08_anatomical_analysis.py',
                 'args': {}
             }
         }
@@ -111,7 +111,7 @@ def create_script_files(tmp_path: Path) -> Path:
         '05_preprocessing.py',
         '06_segmentation.py',
         '07_inverse_transform.py',
-        '08_lobar_localization.py'
+        '08_anatomical_analysis.py'
     ]
     
     for script_name in script_names:
@@ -278,7 +278,7 @@ def test_get_enabled_stages():
             'stage_05_preprocessing': {'enabled': True},
             'stage_06_segmentation': {'enabled': True},
             'stage_07_inverse_transform': {'enabled': False},
-            'stage_08_lobar_localization': {'enabled': False}
+            'stage_08_anatomical_analysis': {'enabled': False}
         }
     }
     
