@@ -15,6 +15,14 @@ two independently-deployed layers (a long-running FastAPI service vs. a
 per-run pipeline subprocess) and the project does not cross-import between
 them anywhere today. It is the same clinical noise-floor concept in both
 places — keep the two literals in sync if the value ever changes.
+
+Caveat on previous_volume_cm3: it is a per-lesion attribution, not a
+partition of prior burden. If dilation_voxels bridges two current lesions
+into the same previous lesion (more likely at higher dilation_voxels), that
+previous lesion's volume is summed into both current lesions independently
+— matched_prev_labels still marks it matched once, so new/stable/resolved
+counts stay correct, but summing previous_volume_cm3 across a session pair's
+lesions can double-count and will not reconcile to the true prior total.
 """
 
 import logging

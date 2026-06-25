@@ -17,5 +17,9 @@ growth_threshold_absolute_cm3: 0.03
 # boundaries by 1-2 voxels between runs. At dilation_voxels=1 this caused
 # genuinely stable small lesions to be misclassified as new+resolved pairs;
 # empirically, 3 voxels absorbs that jitter across repeated runs of the same
-# input while staying well below typical inter-lesion spacing in MS.
+# input while staying well below typical inter-lesion spacing in MS. This is
+# a provisional value (pending more real longitudinal cases), same status as
+# the growth thresholds above — it mitigates the symptom, not the underlying
+# segmentation non-determinism, which is tracked separately as KI-037 in
+# KNOWN_ISSUES.md.
 dilation_voxels: 3
