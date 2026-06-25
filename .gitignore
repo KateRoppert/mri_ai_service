@@ -74,4 +74,5 @@ services/*/weights/
 data/MS_5/
 data/UPENN-GBM/
 data/templates/ms_zones_raw/
+data/templates/ms_zones_work/
 .superpowers/
