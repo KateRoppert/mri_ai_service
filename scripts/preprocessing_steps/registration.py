@@ -263,7 +263,7 @@ def apply_transform(
             fixed=fixed,
             moving=moving,
             transformlist=[str(transform_path)],
-            interpolator=interpolation.lower(),
+            interpolator=interpolation,
             whichtoinvert=[False]
         )
         
