@@ -36,6 +36,7 @@ from models import (
     NIfTIFilesResponse,
     VolumeReportListResponse,
     LobarReportListResponse,
+    McDonaldReportListResponse,
     LesionStatsReport,
     LesionStatsListResponse,
     LongitudinalPoint,
@@ -754,6 +755,39 @@ async def get_lobar_reports(
     logger.info(f"Найдено {len(reports)} лобарных отчётов для run_id: {run_id}")
     
     return LobarReportListResponse(
+        total=len(reports),
+        reports=reports
+    )
+
+@app.get("/api/mcdonald-reports/{run_id}", response_model=McDonaldReportListResponse)
+async def get_mcdonald_reports(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить отчёты о McDonald-классификации очагов МС (зональная локализация)
+    """
+    logger.info(f"Запрос McDonald-отчётов для run_id: {run_id}")
+
+    run = get_pipeline_run(db, run_id)
+
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    if run.current_stage < 7:
+        raise HTTPException(
+            status_code=400,
+            detail="Anatomical analysis stage not yet completed"
+        )
+
+    reports = pipeline_manager.get_mcdonald_reports(run.output_path)
+
+    if not reports:
+        raise HTTPException(status_code=404, detail="McDonald reports not found (MS only)")
+
+    logger.info(f"Найдено {len(reports)} McDonald-отчётов для run_id: {run_id}")
+
+    return McDonaldReportListResponse(
         total=len(reports),
         reports=reports
     )
