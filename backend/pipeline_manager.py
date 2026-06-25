@@ -464,7 +464,48 @@ class PipelineManager:
         
         logger.info(f"Успешно загружено {len(reports)} лобарных отчётов")
         return reports
-    
+
+    def get_mcdonald_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Получить все отчёты о McDonald-классификации очагов МС из segmentation/
+
+        Структура: segmentation/sub-XXX/ses-XXX/anat/multiple_sclerosis/*_mcdonald_report.json
+
+        Returns:
+            Список словарей с отчётами
+        """
+        seg_dir = Path(output_path) / "segmentation"
+
+        if not seg_dir.exists():
+            logger.warning(f"Директория сегментации не найдена: {seg_dir}")
+            return None
+
+        report_files = list(seg_dir.rglob("*_mcdonald_report.json"))
+
+        if not report_files:
+            logger.warning(f"McDonald-отчёты не найдены в {seg_dir}")
+            return None
+
+        logger.info(f"Найдено {len(report_files)} McDonald-отчётов")
+
+        reports = []
+        for report_file in report_files:
+            try:
+                with open(report_file, 'r', encoding='utf-8') as f:
+                    report_data = json.load(f)
+                reports.append(report_data)
+                logger.info(f"McDonald-отчёт загружен: {report_file.name}, очагов: {report_data.get('total_lesion_count')}")
+            except Exception as e:
+                logger.error(f"Ошибка чтения McDonald-отчёта {report_file}: {e}")
+                continue
+
+        if not reports:
+            logger.warning("Не удалось загрузить ни одного McDonald-отчёта")
+            return None
+
+        logger.info(f"Успешно загружено {len(reports)} McDonald-отчётов")
+        return reports
+
     def get_lesion_stats_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
         """
         Read lesion_stats_report.json files produced by Stage 08 for MS cases.

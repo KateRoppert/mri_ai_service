@@ -3,7 +3,7 @@ Pydantic модели для API
 """
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 from datetime import datetime
 from enum import Enum
 
@@ -102,6 +102,31 @@ class LobarReportListResponse(BaseModel):
     """Список лобарных отчётов"""
     total: int = Field(..., description="Количество отчётов")
     reports: List[LobarReportResponse] = Field(..., description="Список отчётов")
+
+class McDonaldZoneResult(BaseModel):
+    """Результат классификации очагов МС по одной McDonald-зоне"""
+    lesion_count: int = Field(..., description="Количество очагов в зоне")
+    total_volume_cm3: float = Field(..., description="Суммарный объём очагов в зоне, см³")
+
+class McDonaldSpinalCordStatus(BaseModel):
+    """Зона spinal cord не реализована в этой версии — явный статус, не пропуск поля"""
+    supported: bool = Field(False, description="Всегда False — зона не поддерживается")
+
+class McDonaldReportResponse(BaseModel):
+    """Отчёт о McDonald-классификации очагов МС для одной маски"""
+    mask_file: str = Field(..., description="Имя файла маски")
+    patient_id: str = Field(..., description="ID пациента")
+    session_id: str = Field(..., description="ID сессии")
+    total_lesion_count: int = Field(..., description="Всего очагов")
+    zones: Dict[str, Union[McDonaldZoneResult, McDonaldSpinalCordStatus]] = Field(
+        ..., description="Результаты по зонам, включая spinal_cord как {'supported': false}"
+    )
+    lesion_zones_by_label: Dict[str, str] = Field(default_factory=dict, description="Зона для каждого очага по его label")
+
+class McDonaldReportListResponse(BaseModel):
+    """Список McDonald-отчётов"""
+    total: int = Field(..., description="Количество отчётов")
+    reports: List[McDonaldReportResponse] = Field(..., description="Список отчётов")
 
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
