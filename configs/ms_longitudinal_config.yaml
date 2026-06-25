@@ -1,0 +1,17 @@
+# MS longitudinal lesion-diff config (Этап 5.6, part B).
+# Growth threshold: a matched lesion (overlapping a prior-session lesion,
+# within dilation_voxels tolerance) is classified "growing" if EITHER
+# condition holds — relative-only would miss large lesions growing by a
+# clinically significant absolute amount but a small percentage; absolute-only
+# would miss small lesions growing by a large percentage. This is a
+# provisional default pending clinician input — McDonald 2017 itself only
+# defines "new T2 lesion" as a criterion, not a growth threshold for
+# existing ones.
+growth_threshold_relative: 0.20
+growth_threshold_absolute_cm3: 0.03
+
+# Voxel dilation tolerance for matching a lesion across sessions (registration
+# jitter). Same value/rationale as McDonald zone classification's
+# dilation_voxels, kept as an independent knob here since the two features
+# can be tuned separately.
+dilation_voxels: 1
