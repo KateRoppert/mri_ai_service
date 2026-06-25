@@ -173,3 +173,31 @@ def test_save_report_writes_json(tmp_path, zone_atlases):
 
     assert analyzer.save_report(report, out_path) is True
     assert out_path.exists()
+
+
+def test_shares_lesion_count_and_labels_with_lesion_stats_when_precomputed(tmp_path, zone_atlases):
+    from lesion_stats import compute_lesion_stats
+
+    mask = np.zeros((20, 20, 20), dtype=np.uint8)
+    mask[0, 0, 0] = 1  # 1 voxel = 1mm3 noise speck, below the 5mm3 threshold
+    mask[14:16, 14:16, 14:16] = 1  # 8 voxels = 8mm3, kept; far from all 3 zones
+    mask_path = tmp_path / "sub-007_ses-001_t1_segmask.nii.gz"
+    _save(mask_path, mask)
+
+    stats, labeled, affine, kept_labels = compute_lesion_stats(mask_path)
+    assert stats["lesion_count"] == 1  # only the 8mm3 blob counted; speck filtered
+
+    analyzer = MSZoneAnalyzer(
+        ventricle_atlas_path=zone_atlases["ventricle"],
+        cortex_atlas_path=zone_atlases["cortex"],
+        infratentorial_atlas_path=zone_atlases["infratentorial"],
+        dilation_voxels=1,
+    )
+    report = analyzer.analyze_mask(mask_path, labeled=labeled, kept_labels=kept_labels)
+
+    # The two sibling reports must agree exactly on lesion count when sharing
+    # the same labeling — this is the bug the final whole-branch review caught.
+    assert report["total_lesion_count"] == stats["lesion_count"] == 1
+    assert report["zones"]["deep_white_matter"]["lesion_count"] == 1
+    # The noise-speck label must not appear in the McDonald report's per-label map.
+    assert set(report["lesion_zones_by_label"].keys()) == {str(min(kept_labels))}

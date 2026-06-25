@@ -22,7 +22,7 @@ from scipy.ndimage import label as ndimage_label
 MIN_LESION_VOLUME_MM3 = 5.0
 
 
-def compute_lesion_stats(mask_path: Path) -> Tuple[dict, np.ndarray, np.ndarray]:
+def compute_lesion_stats(mask_path: Path) -> Tuple[dict, np.ndarray, np.ndarray, set]:
     """
     Count connected components (individual lesions) in a binary mask.
     Used for MS where each component = one lesion.
@@ -31,7 +31,7 @@ def compute_lesion_stats(mask_path: Path) -> Tuple[dict, np.ndarray, np.ndarray]
     lesion_count / lesion_volumes_cm3 / lesion_volumes_by_label, but their
     volume is still included in total_volume_cm3 (full burden).
 
-    Returns (stats_dict, labeled_array, affine):
+    Returns (stats_dict, labeled_array, affine, kept_labels):
       stats_dict: lesion_count, total_volume_cm3, mean_lesion_volume_cm3,
                   lesion_volumes_cm3 (sorted desc, kept lesions, for display/table),
                   lesion_volumes_by_label ({str(label): volume_cm3}, kept, for hover).
@@ -39,6 +39,10 @@ def compute_lesion_stats(mask_path: Path) -> Tuple[dict, np.ndarray, np.ndarray]
                      (not filtered — the saved mask keeps all blobs; only the
                      stats/hover map drop sub-threshold ones).
       affine: source affine (to save the labeled mask).
+      kept_labels: set[int] of label IDs that passed the volume filter — the
+                   single source of truth for "what counts as a lesion," shared
+                   with MSZoneAnalyzer so the sibling *_mcdonald_report.json
+                   agrees exactly on lesion counts and label numbering.
     """
     img = nib.load(str(mask_path))
     data = np.asarray(img.dataobj)
@@ -68,4 +72,5 @@ def compute_lesion_stats(mask_path: Path) -> Tuple[dict, np.ndarray, np.ndarray]
         "lesion_volumes_cm3": kept_volumes,
         "lesion_volumes_by_label": kept_by_label,
     }
-    return stats, labeled.astype(np.int16), img.affine
+    kept_labels = {int(lbl) for lbl in kept_by_label}
+    return stats, labeled.astype(np.int16), img.affine, kept_labels

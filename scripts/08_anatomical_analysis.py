@@ -172,7 +172,17 @@ def process_one_mask(
     try:
         if analyzer is None:
             analyzer = build_analyzer(lesion_type, atlas_path, mapping_path, seg_classes, ms_zone_atlas_paths)
-        report = analyzer.analyze_mask(mask_path)
+
+        stats = labeled = affine = None
+        if lesion_type == 'multiple_sclerosis':
+            # Compute connected-component labeling + noise filtering ONCE here
+            # and hand the exact same labeled array / kept-label set to
+            # MSZoneAnalyzer, so total_lesion_count and per-lesion label IDs
+            # agree exactly with this mask's *_lesion_stats_report.json.
+            stats, labeled, affine, kept_labels = compute_lesion_stats(mask_path)
+            report = analyzer.analyze_mask(mask_path, labeled=labeled, kept_labels=kept_labels)
+        else:
+            report = analyzer.analyze_mask(mask_path)
 
         if report is None:
             return {
@@ -194,9 +204,8 @@ def process_one_mask(
 
         analyzer.save_report(report, report_path)
 
-        # For MS: compute per-lesion statistics + save labeled mask for hover
+        # For MS: save the already-computed per-lesion stats + labeled mask for hover
         if lesion_type == 'multiple_sclerosis':
-            stats, labeled, affine = compute_lesion_stats(mask_path)
             stats["patient_id"] = subject_id
             stats["session_id"] = session_id
             stats_path = report_path.parent / report_path.name.replace(

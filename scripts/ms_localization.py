@@ -17,10 +17,11 @@ from typing import Dict, Optional
 
 import nibabel as nib
 import numpy as np
-from scipy.ndimage import binary_dilation, label as ndimage_label
+from scipy.ndimage import binary_dilation
 
 from anatomical_analyzer_base import AnatomicalAnalyzerBase
 from atlas_resample import resample_to_grid
+from lesion_stats import compute_lesion_stats
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +45,31 @@ class MSZoneAnalyzer(AnatomicalAnalyzerBase):
         self.infratentorial_atlas_path = Path(infratentorial_atlas_path)
         self.dilation_voxels = dilation_voxels
 
-    def analyze_mask(self, mask_path: Path) -> Optional[Dict]:
+    def analyze_mask(
+        self,
+        mask_path: Path,
+        labeled: Optional[np.ndarray] = None,
+        kept_labels: Optional[set] = None,
+    ) -> Optional[Dict]:
+        """Analyze a single mask.
+
+        labeled/kept_labels: optional precomputed connected-component labeling
+        from lesion_stats.compute_lesion_stats() for this same mask_path. When
+        the Stage 08 dispatcher already calls compute_lesion_stats() for the
+        sibling *_lesion_stats_report.json, it passes both through here so
+        this report's total_lesion_count and per-lesion label IDs agree
+        exactly with that report. If omitted (e.g. standalone/test use),
+        computed internally via the same compute_lesion_stats() call.
+        """
         try:
             mask_nii = nib.load(str(mask_path))
-            mask_data = np.asarray(mask_nii.dataobj)
             voxel_vol_mm3 = float(np.prod(mask_nii.header.get_zooms()[:3]))
             voxel_vol_cm3 = voxel_vol_mm3 / 1000.0
             target_affine = mask_nii.affine
             target_shape = mask_nii.shape[:3]
+
+            if labeled is None or kept_labels is None:
+                _, labeled, _, kept_labels = compute_lesion_stats(mask_path)
 
             ventricle = resample_to_grid(self.ventricle_atlas_path, target_affine, target_shape)
             cortex = resample_to_grid(self.cortex_atlas_path, target_affine, target_shape)
@@ -69,14 +87,11 @@ class MSZoneAnalyzer(AnatomicalAnalyzerBase):
                 cortex_zone = binary_dilation(cortex_zone, structure=structure)
                 infratentorial_zone = binary_dilation(infratentorial_zone, structure=structure)
 
-            binary = (mask_data > 0).astype(np.uint8)
-            labeled, n_components = ndimage_label(binary)
-
             zone_counts = {zone: 0 for zone in ZONE_ORDER}
             zone_volumes_cm3 = {zone: 0.0 for zone in ZONE_ORDER}
             lesion_zones_by_label = {}
 
-            for i in range(1, n_components + 1):
+            for i in sorted(kept_labels):
                 lesion_voxels = (labeled == i)
                 voxel_count = int(lesion_voxels.sum())
                 volume_cm3 = voxel_count * voxel_vol_cm3
@@ -102,7 +117,7 @@ class MSZoneAnalyzer(AnatomicalAnalyzerBase):
 
             return {
                 "mask_file": mask_path.name,
-                "total_lesion_count": n_components,
+                "total_lesion_count": len(kept_labels),
                 "zones": zones_report,
                 "lesion_zones_by_label": lesion_zones_by_label,
             }
