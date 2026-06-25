@@ -27,13 +27,15 @@ SCRIPTS_DIR = PROJ_ROOT / "scripts"
 sys.path.insert(0, str(PROJ_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-# lobar_analysis requires nibabel/ants — mock the whole module
-if "lobar_analysis" not in sys.modules:
-    sys.modules["lobar_analysis"] = MagicMock()
-if "ants" not in sys.modules:
-    sys.modules["ants"] = MagicMock()
-if "lesion_stats" not in sys.modules:
-    sys.modules["lesion_stats"] = MagicMock()
+# lobar_analysis requires nibabel/ants — mock the whole module for the
+# duration of loading 08_anatomical_analysis.py, then remove the mocks so
+# other test modules in the same pytest process (e.g. test_lesion_stats.py,
+# test_anatomical_analyzer_base.py) still get the real modules.
+_INJECTED_MOCK_MODULES = []
+for _mod_name in ("lobar_analysis", "ants", "lesion_stats"):
+    if _mod_name not in sys.modules:
+        sys.modules[_mod_name] = MagicMock()
+        _INJECTED_MOCK_MODULES.append(_mod_name)
 
 
 def _load_module(filename: str, module_name: str):
@@ -46,6 +48,9 @@ def _load_module(filename: str, module_name: str):
 
 loc_mod = _load_module("08_anatomical_analysis.py", "loc08")
 find_masks_08 = loc_mod.find_masks
+
+for _mod_name in _INJECTED_MOCK_MODULES:
+    del sys.modules[_mod_name]
 
 
 # ---------------------------------------------------------------------------
