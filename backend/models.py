@@ -319,3 +319,25 @@ class LongitudinalResponse(BaseModel):
     patient_id: str
     lesion_type: str
     points: List[LongitudinalPoint]
+
+class LesionDiffEntry(BaseModel):
+    """Классификация одного очага между двумя сессиями"""
+    label: int = Field(..., description="Label очага в labeled-маске")
+    status: str = Field(..., description="new | growing | stable | resolved")
+    volume_cm3: float = Field(..., description="Объём в текущей сессии, см³ (0 если resolved)")
+    previous_volume_cm3: float = Field(..., description="Объём в предыдущей сессии, см³ (0 если new)")
+
+class LongitudinalDiffPair(BaseModel):
+    """Диагностика очагов между двумя соседними по времени сессиями"""
+    from_session_id: str = Field(..., description="Более ранняя сессия")
+    to_session_id: str = Field(..., description="Более поздняя сессия")
+    new_count: int
+    growing_count: int
+    stable_count: int
+    resolved_count: int
+    lesions: List[LesionDiffEntry]
+
+class LongitudinalDiffResponse(BaseModel):
+    """Диагностика очагов по всем парам соседних сессий пациента"""
+    patient_id: str
+    pairs: List[LongitudinalDiffPair]

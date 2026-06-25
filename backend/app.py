@@ -19,6 +19,9 @@ import os
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
+from lesion_diff import compare_labeled_masks
+from patient_registry import find_by_patient_id, find_by_bids_id, find_by_bids_subject
+
 from config import settings
 from models import (
     PipelineStartRequest,
@@ -41,6 +44,9 @@ from models import (
     LesionStatsListResponse,
     LongitudinalPoint,
     LongitudinalResponse,
+    LongitudinalDiffResponse,
+    LongitudinalDiffPair,
+    LesionDiffEntry,
 )
 from database import (
     get_db,
@@ -895,6 +901,95 @@ async def get_longitudinal(
         lesion_type=lesion_type,
         points=points,
     )
+
+
+def _split_bids_id(bids_id: str) -> tuple:
+    """'sub-001_ses-002' -> ('sub-001', 'ses-002')"""
+    idx = bids_id.find("_ses-")
+    if idx == -1:
+        return bids_id, ""
+    return bids_id[:idx], bids_id[idx + 1:]
+
+
+@app.get("/api/longitudinal/{patient_id}/diff", response_model=LongitudinalDiffResponse)
+async def get_longitudinal_diff(
+    patient_id: str,
+    lesion_type: str = "multiple_sclerosis",
+    db: Session = Depends(get_db)
+):
+    """
+    Детекция новых/растущих/разрешившихся очагов между каждой парой соседних
+    по времени сессий пациента (МС). Не использует ту же фильтрацию по
+    pipeline_run_id, что get_longitudinal — резолвит output_path на лету.
+    """
+    all_records = find_by_patient_id(patient_id)
+    if not all_records:
+        all_records = find_by_bids_id(patient_id)
+    if not all_records:
+        all_records = find_by_bids_subject(patient_id)
+
+    records = [r for r in all_records if r.get("lesion_type") == lesion_type]
+    if not records:
+        raise HTTPException(status_code=404, detail="No sessions found for this patient/lesion_type")
+
+    sortable = sorted(records, key=lambda r: r.get("scan_date") or "")
+    seen_bids_ids = set()
+    ordered = []
+    for r in sortable:
+        bid = r.get("bids_id", "")
+        if bid and bid not in seen_bids_ids:
+            seen_bids_ids.add(bid)
+            ordered.append(r)
+
+    if len(ordered) < 2:
+        raise HTTPException(status_code=404, detail="Not enough sessions for diff analysis (need >= 2)")
+
+    import yaml
+    config_path = Path(__file__).parent.parent / "configs" / "ms_longitudinal_config.yaml"
+    with open(config_path, "r") as f:
+        diff_config = yaml.safe_load(f)
+
+    pairs = []
+    for prev_record, curr_record in zip(ordered[:-1], ordered[1:]):
+        prev_run = get_pipeline_run(db, prev_record.get("pipeline_run_id"))
+        curr_run = get_pipeline_run(db, curr_record.get("pipeline_run_id"))
+        if not prev_run or not curr_run:
+            continue
+
+        prev_subject, prev_session = _split_bids_id(prev_record.get("bids_id", ""))
+        curr_subject, curr_session = _split_bids_id(curr_record.get("bids_id", ""))
+
+        prev_label_path = pipeline_manager.get_segmask_label_path(prev_run.output_path, prev_subject, prev_session)
+        curr_label_path = pipeline_manager.get_segmask_label_path(curr_run.output_path, curr_subject, curr_session)
+        if not prev_label_path or not curr_label_path:
+            logger.warning(
+                f"Skipping diff {prev_session}->{curr_session} for {patient_id}: "
+                f"missing labeled mask (prev={prev_label_path}, curr={curr_label_path})"
+            )
+            continue
+
+        try:
+            result = compare_labeled_masks(
+                prev_label_path, curr_label_path,
+                growth_threshold_relative=diff_config.get("growth_threshold_relative", 0.20),
+                growth_threshold_absolute_cm3=diff_config.get("growth_threshold_absolute_cm3", 0.03),
+                dilation_voxels=diff_config.get("dilation_voxels", 1),
+            )
+        except ValueError as e:
+            logger.warning(f"Skipping diff {prev_session}->{curr_session} for {patient_id}: {e}")
+            continue
+
+        pairs.append(LongitudinalDiffPair(
+            from_session_id=prev_session,
+            to_session_id=curr_session,
+            new_count=result["new_count"],
+            growing_count=result["growing_count"],
+            stable_count=result["stable_count"],
+            resolved_count=result["resolved_count"],
+            lesions=[LesionDiffEntry(**l) for l in result["lesions"]],
+        ))
+
+    return LongitudinalDiffResponse(patient_id=patient_id, pairs=pairs)
 
 
 @app.get("/api/lobar-atlas/{run_id}")
