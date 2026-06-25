@@ -69,6 +69,14 @@ export const getLobarReports = async (runId) => {
 };
 
 /**
+ * Локализация очагов МС по McDonald-зонам (periventricular/juxtacortical/infratentorial)
+ */
+export const getMcdonaldReports = async (runId) => {
+  const response = await apiClient.get(`/mcdonald-reports/${runId}`);
+  return response.data;
+};
+
+/**
  * Статистика очагов МС (количество, объёмы)
  */
 export const getLesionStatsReports = async (runId) => {
@@ -305,6 +313,7 @@ export default {
   getQualityReport,
   getVolumeReports,
   getLobarReports,
+  getMcdonaldReports,
   getLesionStatsReports,
   getLongitudinalReport,
   getNIfTIFiles,
