@@ -506,6 +506,22 @@ class PipelineManager:
         logger.info(f"Успешно загружено {len(reports)} McDonald-отчётов")
         return reports
 
+    def get_segmask_label_path(self, output_path: str, subject_id: str, session_id: str) -> Optional[Path]:
+        """
+        Locate the per-lesion labeled mask (*_segmask_labels.nii.gz) Stage 08
+        writes for a specific MS session — used for cross-session lesion diffing.
+
+        Args:
+            output_path: pipeline run's output directory.
+            subject_id: BIDS subject, e.g. "sub-001".
+            session_id: BIDS session, e.g. "ses-001".
+        """
+        seg_dir = Path(output_path) / "segmentation" / subject_id / session_id / "anat" / "multiple_sclerosis"
+        if not seg_dir.exists():
+            return None
+        matches = list(seg_dir.glob("*_segmask_labels.nii.gz"))
+        return matches[0] if matches else None
+
     def get_lesion_stats_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
         """
         Read lesion_stats_report.json files produced by Stage 08 for MS cases.
