@@ -73,4 +73,5 @@ services/*/weights/
 # Test/development data — kept locally, never committed
 data/MS_5/
 data/UPENN-GBM/
+data/templates/ms_zones_raw/
 .superpowers/
