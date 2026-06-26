@@ -150,9 +150,12 @@ class ModalityDetector:
         }
     }
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, scoring_config: Optional[Dict] = None):
         self.logger = logger
         self._cache: Dict[Path, Tuple[Optional[str], str, Dict]] = {}  # series_path -> (modality, description, tech_meta)
+        self._anatomy_exclude_keywords: List[str] = (
+            (scoring_config or {}).get('anatomy_exclude', {}).get('keywords', [])
+        )
 
     def detect_modality(self, series_path: Path) -> Tuple[Optional[str], str, Dict]:
         """
@@ -203,7 +206,18 @@ class ModalityDetector:
             
             # Store readable description for logging
             readable_desc = f"{dcm.get('ProtocolName', 'N/A')} | {dcm.get('SeriesDescription', 'N/A')}"
-            
+
+            # Hard anatomy exclusion (KI-027) — non-brain series (e.g. spine)
+            # must never be treated as a brain modality candidate, even if
+            # no other candidate exists for that modality in the session.
+            excluded_keyword = self._is_excluded_anatomy(combined_text)
+            if excluded_keyword:
+                self._cache[series_path] = (None, readable_desc, {})
+                self.logger.info(
+                    f"    {series_path.name}: EXCLUDED "
+                    f"[non-brain anatomy: '{excluded_keyword}'] ({readable_desc})")
+                return None, readable_desc, {}
+
             # Detect contrast from multiple DICOM fields
             has_contrast = self._detect_contrast(dcm, combined_text)
             
@@ -308,10 +322,27 @@ class ModalityDetector:
         
         return None
 
+    def _is_excluded_anatomy(self, combined_text: str) -> Optional[str]:
+        """
+        Check whether combined_text indicates non-brain anatomy this
+        pipeline must never treat as a brain modality (e.g. cervical
+        spine, pituitary). Returns the matched keyword, or None.
+
+        When multiple configured keywords match (e.g. both 'spine' and
+        'c-spine' are substrings of the same text), the longest (most
+        specific) match is returned, checked in configured order among
+        ties, so a more specific keyword like 'c-spine' takes precedence
+        over a more generic one like 'spine'.
+        """
+        matches = [kw for kw in self._anatomy_exclude_keywords if kw in combined_text]
+        if not matches:
+            return None
+        return max(matches, key=len)
+
     def _match_modality(self, combined_text: str, has_contrast: bool = False) -> Optional[str]:
         """
         Match combined text (ProtocolName + SeriesDescription) against patterns.
-        
+
         Order matters: check from most specific to most generic.
         
         Args:
