@@ -579,6 +579,67 @@ class SessionGrouper:
         return sessions
 
 
+def score_series(
+    series_info: 'SeriesInfo',
+    modality: str,
+    scoring_config: Dict,
+    logger: logging.Logger,
+) -> float:
+    """
+    Compute a selection score for one candidate series within a modality
+    group (KI-027). Combines text keyword weights, a failure-marker
+    penalty, a slice-thickness resolution factor, and (FLAIR only) a
+    long-TI bonus. Higher is better.
+
+    Returns 1.0 when no signal in scoring_config applies to this series —
+    callers must fall back to another tie-break (e.g. slice_count) in
+    that case, since 1.0 carries no preference information.
+    """
+    combined_text = series_info.series_description.lower()
+    score = 1.0
+
+    text_weights = scoring_config.get('text_weights', {}).get(modality, {})
+    for keyword, weight in text_weights.items():
+        if keyword in combined_text:
+            score *= weight
+            logger.debug(
+                f"      [{series_info.original_path.name}] "
+                f"weight {weight} for '{keyword}'")
+
+    failure_cfg = scoring_config.get('failure_markers', {})
+    failure_keywords = failure_cfg.get('keywords', [])
+    if any(kw in combined_text for kw in failure_keywords):
+        penalty = failure_cfg.get('penalty', 1.0)
+        score *= penalty
+        logger.debug(
+            f"      [{series_info.original_path.name}] "
+            f"failure marker penalty {penalty}")
+
+    res_cfg = scoring_config.get('resolution_scoring', {})
+    reference_mm = res_cfg.get('reference_slice_thickness_mm')
+    if reference_mm and series_info.slice_thickness_mm:
+        min_factor = res_cfg.get('min_factor', 0.5)
+        max_factor = res_cfg.get('max_factor', 2.0)
+        factor = reference_mm / series_info.slice_thickness_mm
+        factor = max(min_factor, min(max_factor, factor))
+        score *= factor
+        logger.debug(
+            f"      [{series_info.original_path.name}] "
+            f"resolution factor {factor:.2f}")
+
+    if modality == 't2fl':
+        ti_cfg = scoring_config.get('flair_ti_bonus', {})
+        threshold = ti_cfg.get('threshold_ms')
+        if threshold and series_info.ti_ms and series_info.ti_ms > threshold:
+            bonus = ti_cfg.get('bonus', 1.0)
+            score *= bonus
+            logger.debug(
+                f"      [{series_info.original_path.name}] "
+                f"long-TI bonus {bonus}")
+
+    return score
+
+
 class SeriesDeduplicator:
     """Select best series when multiple exist for same modality."""
 
