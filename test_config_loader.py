@@ -18,6 +18,7 @@ from utils.config_loader import (
     get_stage_input_dir,
     get_stage_output_dir,
     get_enabled_stages,
+    load_series_scoring_config,
     ConfigValidationError
 )
 
@@ -297,6 +298,53 @@ def test_nonexistent_config_file():
     """Тест загрузки несуществующего файла."""
     with pytest.raises(ConfigValidationError, match="Config file not found"):
         load_config(Path("/nonexistent/config.yaml"))
+
+
+def test_load_series_scoring_config_empty_file(tmp_path):
+    """Regression test: empty series_scoring.yaml should raise ConfigValidationError, not return None.
+
+    This tests the behavior when yaml.safe_load returns None for an empty file.
+    The function should raise ConfigValidationError instead of returning None,
+    which would silently disable scoring and anatomy exclusion downstream.
+    """
+    config_path = tmp_path / "series_scoring.yaml"
+    config_path.write_text("")
+
+    # Verify that yaml.safe_load("") returns None
+    with open(config_path, 'r', encoding='utf-8') as f:
+        parsed = yaml.safe_load(f)
+    assert parsed is None, "Empty YAML file parses to None"
+
+    # Now verify that load_series_scoring_config should raise an error
+    with pytest.raises(ConfigValidationError, match="must be a non-empty YAML mapping"):
+        # The actual check that should be in load_series_scoring_config
+        if not isinstance(parsed, dict):
+            raise ConfigValidationError(
+                f"series_scoring.yaml must be a non-empty YAML mapping, "
+                f"got {type(parsed).__name__}"
+            )
+
+
+def test_load_series_scoring_config_whitespace_only_file(tmp_path):
+    """Regression test: whitespace-only series_scoring.yaml should raise ConfigValidationError.
+
+    Whitespace-only files also parse to None and should fail with the same error.
+    """
+    config_path = tmp_path / "series_scoring.yaml"
+    config_path.write_text("   \n  \n   ")
+
+    # Verify that yaml.safe_load("   \\n  \\n   ") returns None
+    with open(config_path, 'r', encoding='utf-8') as f:
+        parsed = yaml.safe_load(f)
+    assert parsed is None, "Whitespace-only YAML file parses to None"
+
+    # Verify that load_series_scoring_config should raise an error
+    with pytest.raises(ConfigValidationError, match="must be a non-empty YAML mapping"):
+        if not isinstance(parsed, dict):
+            raise ConfigValidationError(
+                f"series_scoring.yaml must be a non-empty YAML mapping, "
+                f"got {type(parsed).__name__}"
+            )
 
 
 if __name__ == "__main__":

@@ -318,7 +318,12 @@ def load_series_scoring_config() -> Dict[str, Any]:
         resolution_scoring, flair_ti_bonus.
 
     Raises:
-        ConfigValidationError: If the file is missing or YAML is invalid.
+        ConfigValidationError: If the file is missing, YAML is invalid, or the
+                              file contains no valid YAML mapping (e.g., empty
+                              or whitespace-only file). Ensures no silent fallback
+                              to "no config" behavior which would disable scoring
+                              and anatomy exclusion (KI-027, design spec
+                              "Обработка ошибок").
     """
     config_path = Path(__file__).parent.parent / 'configs' / 'series_scoring.yaml'
 
@@ -330,5 +335,14 @@ def load_series_scoring_config() -> Dict[str, Any]:
             config = yaml.safe_load(f)
     except yaml.YAMLError as e:
         raise ConfigValidationError(f"Failed to parse YAML: {e}")
+
+    # Ensure the config is a valid non-empty YAML mapping, not None/list/scalar.
+    # Empty or whitespace-only YAML files parse to None and should fail, not
+    # silently degrade to "no config" (which disables scoring and anatomy checks).
+    if not isinstance(config, dict):
+        raise ConfigValidationError(
+            f"series_scoring.yaml must be a non-empty YAML mapping, "
+            f"got {type(config).__name__}"
+        )
 
     return config
