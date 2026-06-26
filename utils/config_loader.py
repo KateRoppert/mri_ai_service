@@ -303,3 +303,32 @@ def load_lesion_type_config(lesion_type: str) -> Dict[str, Any]:
             f"Available: {list(all_configs.keys())}"
         )
     return all_configs[lesion_type]
+
+
+def load_series_scoring_config() -> Dict[str, Any]:
+    """
+    Load series scoring configuration from configs/series_scoring.yaml.
+
+    Used by Stage 01 (scripts/01_reorganize_folders.py) to select the best
+    series among multiple candidates for the same modality, and to exclude
+    non-brain anatomy series. See KI-027, KI-001 in KNOWN_ISSUES.md.
+
+    Returns:
+        Dict with keys: anatomy_exclude, failure_markers, text_weights,
+        resolution_scoring, flair_ti_bonus.
+
+    Raises:
+        ConfigValidationError: If the file is missing or YAML is invalid.
+    """
+    config_path = Path(__file__).parent.parent / 'configs' / 'series_scoring.yaml'
+
+    if not config_path.exists():
+        raise ConfigValidationError(f"Config file not found: {config_path}")
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigValidationError(f"Failed to parse YAML: {e}")
+
+    return config
