@@ -59,6 +59,9 @@ class SeriesInfo:
     modality: Optional[str] = None
     slice_count: int = 0
     series_description: str = ""
+    slice_thickness_mm: Optional[float] = None
+    ti_ms: Optional[float] = None
+    has_contrast: bool = False
 
 
 @dataclass
@@ -108,6 +111,17 @@ class ModalityDetector:
         """Check if 'ce' appears as a standalone contrast-enhanced marker."""
         return bool(ModalityDetector._CE_PATTERN.search(text))
 
+    @staticmethod
+    def _safe_float_tag(dcm: pydicom.Dataset, tag: Tuple[int, int]) -> Optional[float]:
+        """Read a DICOM tag as float, returning None if missing or unparsable."""
+        val = dcm.get(tag)
+        if val is None:
+            return None
+        try:
+            return float(val.value if hasattr(val, 'value') else val)
+        except (ValueError, TypeError):
+            return None
+
     # Patterns for each modality (order matters!)
     MODALITY_PATTERNS = {
         't2fl': {  # FLAIR (check first - most specific)
@@ -138,24 +152,27 @@ class ModalityDetector:
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
-        self._cache: Dict[Path, Tuple[Optional[str], str]] = {}  # series_path -> (modality, description)
+        self._cache: Dict[Path, Tuple[Optional[str], str, Dict]] = {}  # series_path -> (modality, description, tech_meta)
 
-    def detect_modality(self, series_path: Path) -> Tuple[Optional[str], str]:
+    def detect_modality(self, series_path: Path) -> Tuple[Optional[str], str, Dict]:
         """
         Detect modality from DICOM tags: ProtocolName and SeriesDescription.
-        
+
         Enhanced detection cascade:
           1. Pattern matching on ProtocolName + SeriesDescription
           2. Multi-field contrast detection (ContrastBolusAgent, text keywords)
           3. Technical parameter fallback (TR/TE/TI)
-        
+
         Args:
             series_path: Path to series directory
-            
+
         Returns:
-            (modality, combined_description) where:
+            (modality, combined_description, tech_meta) where:
                 - modality: 't1', 't1c', 't2', 't2fl', or None
                 - combined_description: "ProtocolName | SeriesDescription"
+                - tech_meta: dict with slice_thickness_mm, ti_ms, has_contrast
+                  (empty dict {} when modality detection short-circuited
+                  before reading these, e.g. no DICOM files found)
         """
         # Check cache
         if series_path in self._cache:
@@ -165,8 +182,8 @@ class ModalityDetector:
         dicom_files = sorted([f for f in series_path.rglob("*.dcm") if f.is_file()])
         if not dicom_files:
             self.logger.warning(f"No DICOM files found in {series_path}")
-            self._cache[series_path] = (None, "")
-            return None, ""
+            self._cache[series_path] = (None, "", {})
+            return None, "", {}
 
         try:
             # Read DICOM tags (stop before pixels for speed)
@@ -181,8 +198,8 @@ class ModalityDetector:
             
             if not combined_text:
                 self.logger.warning(f"No ProtocolName or SeriesDescription in {dicom_files[0]}")
-                self._cache[series_path] = (None, "")
-                return None, ""
+                self._cache[series_path] = (None, "", {})
+                return None, "", {}
             
             # Store readable description for logging
             readable_desc = f"{dcm.get('ProtocolName', 'N/A')} | {dcm.get('SeriesDescription', 'N/A')}"
@@ -199,10 +216,18 @@ class ModalityDetector:
                 modality = self._detect_by_technical_params(dcm, has_contrast)
                 if modality:
                     detection_method = "technical_params"
-            
+
+            # Technical metadata for downstream series scoring (KI-027) —
+            # read once here so SeriesDeduplicator never re-reads the DICOM.
+            tech_meta = {
+                'slice_thickness_mm': self._safe_float_tag(dcm, (0x0018, 0x0050)),
+                'ti_ms': self._safe_float_tag(dcm, (0x0018, 0x0082)),
+                'has_contrast': has_contrast,
+            }
+
             # Cache result
-            self._cache[series_path] = (modality, readable_desc)
-            
+            self._cache[series_path] = (modality, readable_desc, tech_meta)
+
             # Log at INFO level so detection decisions are always visible
             series_name = series_path.name
             if modality:
@@ -215,13 +240,13 @@ class ModalityDetector:
                     f"    {series_name}: NO MATCH "
                     f"[contrast={has_contrast}] "
                     f"({readable_desc})")
-            
-            return modality, readable_desc
+
+            return modality, readable_desc, tech_meta
 
         except Exception as e:
             self.logger.warning(f"Failed to read {dicom_files[0]}: {e}")
-            self._cache[series_path] = (None, "")
-            return None, ""
+            self._cache[series_path] = (None, "", {})
+            return None, "", {}
 
     def _detect_contrast(self, dcm: pydicom.Dataset, combined_text: str) -> bool:
         """Detect contrast agent from multiple DICOM fields + text keywords."""
@@ -1047,7 +1072,7 @@ def _process_one_patient_core(
             continue
 
         # Detect modality
-        modality, series_description = modality_detector.detect_modality(series_dir)
+        modality, series_description, tech_meta = modality_detector.detect_modality(series_dir)
 
         # Filter: only copy modalities required for this lesion type
         if modality in MODALITY_BIDS_SUFFIX and modality in required_modalities:
@@ -1057,6 +1082,9 @@ def _process_one_patient_core(
                 date=date,
                 modality=modality,
                 series_description=series_description,
+                slice_thickness_mm=tech_meta.get('slice_thickness_mm'),
+                ti_ms=tech_meta.get('ti_ms'),
+                has_contrast=tech_meta.get('has_contrast', False),
             )
             series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
             series_list.append(series_info)
