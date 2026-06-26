@@ -244,7 +244,16 @@ class ModalityDetector:
 
             # Log at INFO level so detection decisions are always visible
             series_name = series_path.name
-            if modality:
+            if modality == 't2fl' and has_contrast:
+                # KI-001: post-contrast FLAIR is a normal clinical case,
+                # not a detection ambiguity — phrase the log accordingly.
+                self.logger.info(
+                    f"    {series_name}: {modality} "
+                    f"[{detection_method}, contrast marker present "
+                    f"(informational — common for post-contrast FLAIR, "
+                    f"does not affect classification)] "
+                    f"({readable_desc})")
+            elif modality:
                 self.logger.info(
                     f"    {series_name}: {modality} "
                     f"[{detection_method}, contrast={has_contrast}] "
