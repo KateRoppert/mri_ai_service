@@ -34,7 +34,7 @@ import time
 import yaml
 from scripts.metadata_extractor import MetadataExtractor
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.config_loader import load_lesion_type_config
+from utils.config_loader import load_lesion_type_config, load_series_scoring_config
 
 # Single source of truth for modalities the pipeline knows how to process.
 # Maps internal modality name → BIDS suffix used in output filenames.
@@ -643,9 +643,10 @@ def score_series(
 class SeriesDeduplicator:
     """Select best series when multiple exist for same modality."""
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, scoring_config: Optional[Dict] = None):
         self.logger = logger
         self.duplicates_removed = 0
+        self.scoring_config = scoring_config or {}
 
     def deduplicate_session(self, session: SessionInfo) -> SessionInfo:
         """
@@ -663,7 +664,7 @@ class SeriesDeduplicator:
             if isinstance(series_list, list):
                 if len(series_list) > 1:
                     # Multiple series for same modality
-                    best_series = self._select_best_series(series_list)
+                    best_series = self._select_best_series(series_list, modality)
                     deduplicated.series[modality] = best_series
 
                     removed_count = len(series_list) - 1
@@ -680,14 +681,30 @@ class SeriesDeduplicator:
 
         return deduplicated
 
-    def _select_best_series(self, series_list: List[SeriesInfo]) -> SeriesInfo:
-        """Select series with most slices."""
-        # Count slices for each series (use rglob to include nested files)
+    def _select_best_series(self, series_list: List[SeriesInfo], modality: str) -> SeriesInfo:
+        """
+        Select the best series using protocol-aware scoring (KI-027),
+        falling back to slice count when scoring does not differentiate
+        candidates (e.g. no scoring_config, or no signal matched).
+        """
+        # Count slices for each series (use rglob to include nested files) —
+        # kept as the tie-break fallback signal.
         for series in series_list:
             series.slice_count = len(list(series.original_path.rglob("*.dcm")))
 
-        # Return series with maximum slice count
-        return max(series_list, key=lambda s: s.slice_count)
+        scored = [
+            (series, score_series(series, modality, self.scoring_config, self.logger))
+            for series in series_list
+        ]
+        max_score = max(score for _, score in scored)
+        top_candidates = [series for series, score in scored if score == max_score]
+
+        if len(top_candidates) == 1:
+            return top_candidates[0]
+
+        # Tie (including the common case where no scoring signal applies
+        # and every candidate scored 1.0) — fall back to slice count.
+        return max(top_candidates, key=lambda s: s.slice_count)
 
 
 class CompletenessChecker:
@@ -1319,10 +1336,11 @@ def process_single_patient(
             }
 
         # Initialize fresh components for this process
-        modality_detector = ModalityDetector(logger)
+        scoring_config = load_series_scoring_config()
+        modality_detector = ModalityDetector(logger, scoring_config=scoring_config)
         scanner = DatasetScanner(logger)
         grouper = SessionGrouper(logger)
-        deduplicator = SeriesDeduplicator(logger)
+        deduplicator = SeriesDeduplicator(logger, scoring_config=scoring_config)
         _metadata_extractor = None
         if tags_config:
             _metadata_extractor = MetadataExtractor(tags_config, logger)
@@ -1516,13 +1534,14 @@ def run_sequential(
                               "failed_patients": [(orig_id, reason), ...]}.
     """
     # Initialize components
-    modality_detector = ModalityDetector(logger)
+    scoring_config = load_series_scoring_config()
+    modality_detector = ModalityDetector(logger, scoring_config=scoring_config)
     # Use provided id_mapper or create new one
     if id_mapper is None:
         id_mapper = IDMapper()
     scanner = DatasetScanner(logger)
     grouper = SessionGrouper(logger)
-    deduplicator = SeriesDeduplicator(logger)
+    deduplicator = SeriesDeduplicator(logger, scoring_config=scoring_config)
     completeness_checker = CompletenessChecker(logger, lesion_type=lesion_type)
     # Create metadata extractor if config provided
     _metadata_extractor = None
