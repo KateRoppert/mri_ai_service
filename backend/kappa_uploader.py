@@ -229,6 +229,7 @@ class KappaUploader:
                 "volume_report": None,
                 "lobar_report": None,
                 "lesion_stats_report": None,
+                "mcdonald_report": None,
                 "lesion_labels_mask": None,
             })
             sessions[session_key]["preprocessed"].append(nifti)
@@ -275,6 +276,12 @@ class KappaUploader:
             session_key = self._extract_session_key(ls)
             if session_key and session_key in sessions:
                 sessions[session_key]["lesion_stats_report"] = ls
+
+        # Находим mcdonald reports (МС — классификация очагов по McDonald-зонам)
+        for mr in sorted(segmentation_dir.rglob("*_mcdonald_report.json")):
+            session_key = self._extract_session_key(mr)
+            if session_key and session_key in sessions:
+                sessions[session_key]["mcdonald_report"] = mr
 
         # Find labeled lesion masks (МС — для hover объёма очага)
         for lbl in sorted(segmentation_dir.rglob("*_segmask_labels.nii.gz")):
@@ -525,8 +532,11 @@ class KappaUploader:
                 except Exception as e:
                     logger.warning("Failed to read quality report %s: %s", qr_path, e)
 
-        # Volume report
-        if session_data["volume_report"]:
+        # Volume report (GBM-specific NCR/ED/NET/ET tumor-subregion breakdown —
+        # not meaningful for MS binary lesion masks, which carry no such
+        # distinction; MS volumes are already reported correctly via
+        # lesion_stats_report/mcdonald_report)
+        if self.lesion_type != "multiple_sclerosis" and session_data["volume_report"]:
             vr_path = session_data["volume_report"]
             if vr_path.suffix == ".json":
                 try:
@@ -583,6 +593,19 @@ class KappaUploader:
                     info["lesion_labels_file"] = session_data["lesion_labels_mask"].name
             except Exception as e:
                 logger.warning("Failed to read lesion stats report: %s", e)
+
+        # McDonald zone report (МС — классификация очагов по зонам)
+        if session_data.get("mcdonald_report"):
+            try:
+                with open(session_data["mcdonald_report"], "r") as f:
+                    mr = json.load(f)
+                info["mcdonald_report"] = {
+                    "total_lesion_count": mr.get("total_lesion_count"),
+                    "zones": mr.get("zones", {}),
+                    "lesion_zones_by_label": mr.get("lesion_zones_by_label", {}),
+                }
+            except Exception as e:
+                logger.warning("Failed to read mcdonald report: %s", e)
 
         return info
 

@@ -12,10 +12,13 @@ import nibabel as nib
 from pathlib import Path
 from typing import Dict, Optional
 
+from atlas_resample import resample_to_grid
+from anatomical_analyzer_base import AnatomicalAnalyzerBase
+
 logger = logging.getLogger(__name__)
 
 
-class LobarAnalyzer:
+class LobarAnalyzer(AnatomicalAnalyzerBase):
     """Analyzes anatomical localization of lesions using a lobar atlas."""
 
     def __init__(self, atlas_path: Path, mapping_path: Path, 
@@ -63,43 +66,15 @@ class LobarAnalyzer:
 
     def _resample_atlas_to_mask(self, mask_nii) -> Optional[np.ndarray]:
         """Resample atlas to match mask grid using nearest-neighbor."""
-        try:
-            from scipy.ndimage import affine_transform
-
-            atlas_nii = nib.load(str(self.atlas_path))
-            atlas_data = np.asarray(atlas_nii.dataobj).astype(np.float64)
-
-            # Compute voxel-to-voxel mapping: mask voxel -> atlas voxel
-            # mask_voxel -> world: mask_affine
-            # world -> atlas_voxel: inv(atlas_affine)
-            mask_affine = mask_nii.affine
-            atlas_affine = atlas_nii.affine
-
-            # Combined: atlas_voxel = inv(atlas_affine) @ mask_affine @ mask_voxel
-            transform = np.linalg.inv(atlas_affine) @ mask_affine
-
-            # affine_transform uses: output[o] = input[matrix @ o + offset]
-            matrix = transform[:3, :3]
-            offset = transform[:3, 3]
-
-            resampled = affine_transform(
-                atlas_data,
-                matrix,
-                offset=offset,
-                output_shape=mask_nii.shape[:3],
-                order=0,  # nearest-neighbor
-                mode='constant',
-                cval=0
-            )
-
-            resampled = resampled.astype(int)
+        resampled = resample_to_grid(
+            self.atlas_path,
+            target_affine=mask_nii.affine,
+            target_shape=mask_nii.shape[:3],
+        )
+        if resampled is not None:
             logger.info(f"  Resampled atlas: {resampled.shape}, "
                         f"non-zero: {(resampled > 0).sum()}")
-            return resampled
-
-        except Exception as e:
-            logger.error(f"Failed to resample atlas: {e}")
-            return None
+        return resampled
 
     def analyze_mask(self, mask_path: Path) -> Optional[Dict]:
         """

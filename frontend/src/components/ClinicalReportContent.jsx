@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Table, Space, Spin, Alert, Tag, Tooltip, Row, Col, Statistic, Divider, Collapse } from 'antd';
 import { MedicineBoxOutlined, ExperimentOutlined, EnvironmentOutlined } from '@ant-design/icons';
-import { getVolumeReports, getLobarReports, getLesionStatsReports } from '../services/api';
+import { getVolumeReports, getLobarReports, getLesionStatsReports, getMcdonaldReports } from '../services/api';
 import LongitudinalTimeline from './LongitudinalTimeline';
 
 // Sort report blocks by patient, then session (chronological — ses-001
@@ -30,6 +30,15 @@ const LESION_SIZE_BANDS = [
 
 const countLesionBands = (volumes) =>
   LESION_SIZE_BANDS.map((b) => ({ ...b, count: (volumes || []).filter(b.test).length }));
+
+// McDonald zone display metadata (RU labels, colors). spinal_cord is rendered
+// separately as an explicit "unsupported" tag, not as a regular zone row.
+const MCDONALD_ZONES = [
+  { key: 'periventricular',  label: 'Перивентрикулярная',  color: '#1890ff' },
+  { key: 'juxtacortical',     label: 'Юкстакортикальная',    color: '#52c41a' },
+  { key: 'infratentorial',    label: 'Инфратенториальная',   color: '#fa8c16' },
+  { key: 'deep_white_matter', label: 'Глубокое белое вещество', color: '#8c8c8c' },
+];
 
 // Glio segmentation class label ↔ name. Shared by the text parser (local
 // source) and the Kappa normalizer so both produce identical class objects.
@@ -86,6 +95,15 @@ const normalizeKappaEntity = (info) => {
       }]
     : [];
 
+  const mcdonaldReports = info.mcdonald_report
+    ? [{
+        patient_id,
+        session_id,
+        total_lesion_count: info.mcdonald_report.total_lesion_count,
+        zones: info.mcdonald_report.zones || {},
+      }]
+    : [];
+
   const volumeReports = info.volume_report
     ? [{
         patient_id,
@@ -104,7 +122,7 @@ const normalizeKappaEntity = (info) => {
       }]
     : [];
 
-  return { volumeReports, lobarReports, lesionStatsReports };
+  return { volumeReports, lobarReports, lesionStatsReports, mcdonaldReports };
 };
 
 const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma', kappaEntityInfo = null }) => {
@@ -113,17 +131,19 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   const [volumeReports, setVolumeReports] = useState([]);
   const [lobarReports, setLobarReports] = useState([]);
   const [lesionStatsReports, setLesionStatsReports] = useState([]);
+  const [mcdonaldReports, setMcdonaldReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
   // Kappa source (validation): normalize dsEntityInfo into the same state
   // shapes the local API produces, then the shared render handles it.
   useEffect(() => {
     if (kappaEntityInfo) {
-      const { volumeReports: v, lobarReports: l, lesionStatsReports: s } =
+      const { volumeReports: v, lobarReports: l, lesionStatsReports: s, mcdonaldReports: m } =
         normalizeKappaEntity(kappaEntityInfo);
       setVolumeReports(v);
       setLobarReports(l);
       setLesionStatsReports(s);
+      setMcdonaldReports(m);
       setLoaded(true);
     }
   }, [kappaEntityInfo]);
@@ -144,6 +164,7 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
       setVolumeReports([]);
       setLobarReports([]);
       setLesionStatsReports([]);
+      setMcdonaldReports([]);
       setError(null);
     }
   }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -166,12 +187,14 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
       ];
       if (lesionType === 'multiple_sclerosis') {
         fetches.push(getLesionStatsReports(runId).catch(() => ({ reports: [] })));
+        fetches.push(getMcdonaldReports(runId).catch(() => ({ reports: [] })));
       }
       const results = await Promise.all(fetches);
       setVolumeReports(sortByPatientSession(results[0].reports));
       setLobarReports(results[1].reports || []);
       if (lesionType === 'multiple_sclerosis') {
         setLesionStatsReports(sortByPatientSession(results[2]?.reports));
+        setMcdonaldReports(sortByPatientSession(results[3]?.reports));
       }
       setLoaded(true);
     } catch (err) {
@@ -422,6 +445,51 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     return Object.entries(report.lobes).map(([key, lobe]) => ({ key, ...lobe }));
   };
 
+  const mcdonaldColumns = [
+    {
+      title: 'Зона',
+      dataIndex: 'label',
+      key: 'label',
+      width: 220,
+      render: (text, record) => (
+        <Space>
+          <div style={{
+            width: 12, height: 12, borderRadius: 2,
+            backgroundColor: record.color,
+            border: '1px solid rgba(0,0,0,0.1)',
+          }} />
+          <span>{text}</span>
+        </Space>
+      ),
+    },
+    {
+      title: 'Очагов',
+      dataIndex: 'lesion_count',
+      key: 'count',
+      width: 100,
+      align: 'right',
+    },
+    {
+      title: 'Объём (см³)',
+      dataIndex: 'total_volume_cm3',
+      key: 'volume',
+      width: 120,
+      align: 'right',
+      render: (val) => val.toFixed(3),
+    },
+  ];
+
+  const getMcdonaldTableData = (report) => {
+    if (!report?.zones) return [];
+    return MCDONALD_ZONES.map(({ key, label, color }) => ({
+      key,
+      label,
+      color,
+      lesion_count: report.zones[key]?.lesion_count ?? 0,
+      total_volume_cm3: report.zones[key]?.total_volume_cm3 ?? 0,
+    }));
+  };
+
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: '40px 0' }}>
@@ -513,6 +581,32 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
                   />
                 ),
               }]} />
+
+              {/* Локализация очагов (McDonald) */}
+              {(() => {
+                const mcdonald = mcdonaldReports.find(
+                  mr => mr.patient_id === stats.patient_id && mr.session_id === stats.session_id
+                );
+                if (!mcdonald) return null;
+                return (
+                  <>
+                    <Divider orientation="left" style={{ fontSize: 14 }}>
+                      <Space><EnvironmentOutlined /> Локализация очагов (McDonald)</Space>
+                    </Divider>
+                    <Table
+                      columns={mcdonaldColumns}
+                      dataSource={getMcdonaldTableData(mcdonald)}
+                      pagination={false}
+                      size="small"
+                      bordered
+                      style={{ marginBottom: 12, maxWidth: 500 }}
+                    />
+                    <Tag color="default" style={{ marginBottom: 16 }}>
+                      Спинной мозг: классификация не поддерживается в этой версии
+                    </Tag>
+                  </>
+                );
+              })()}
 
               {/* Динамика между сессиями */}
               <Divider orientation="left" style={{ fontSize: 14 }}>

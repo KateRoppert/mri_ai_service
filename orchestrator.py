@@ -66,7 +66,7 @@ def build_command(
         'stage_05_preprocessing',
         'stage_06_segmentation',
         'stage_07_inverse_transform',
-        'stage_08_lobar_localization',
+        'stage_08_anatomical_analysis',
     ):
         lesion_type = config['general'].get('lesion_type', 'glioblastoma')
         cmd.extend(['--lesion-type', lesion_type])

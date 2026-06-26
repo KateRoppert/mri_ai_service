@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Lobar Localization: determine anatomical location of lesions by brain lobe.
+Anatomical Analysis: per-lesion-type anatomical localization of lesions.
 
-Overlays segmentation masks with a lobar atlas to compute per-lobe
-volumes for each lesion class (NCR, ED, NET, ET).
+Dispatches to a lesion-type-specific AnatomicalAnalyzerBase implementation:
+- glioblastoma: LobarAnalyzer — overlays the mask with a cortical lobe atlas
+  to compute per-lobe volumes for each BraTS class (NCR, ED, NET, ET).
+- multiple_sclerosis: per-lesion connected-component stats via lesion_stats
+  (McDonald zone classification is added in a follow-up plan).
 
 Usage:
-    python 08_lobar_localization.py <input_dir> <output_dir> [options]
+    python 08_anatomical_analysis.py <input_dir> <output_dir> [options]
 """
 
 import argparse
@@ -22,71 +25,26 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import yaml
 import nibabel as nib
-import numpy as np
-from scipy.ndimage import label as ndimage_label
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from lobar_analysis import LobarAnalyzer
+from lesion_stats import compute_lesion_stats
 
 logger = logging.getLogger(__name__)
 
 
-# Components smaller than this are treated as noise for counting purposes —
-# they are excluded from lesion_count, the per-lesion list, and hover lookup.
-# They still contribute to total_volume_cm3 (full lesion burden). 5 mm³ matches
-# what is visually counted as a discrete lesion (sub-visible 3-4 voxel specks
-# are dropped); see KI-037 for the upstream determinism this mitigates.
-MIN_LESION_VOLUME_MM3 = 5.0
+def build_analyzer(lesion_type: str, atlas_path: Path, mapping_path: Path,
+                    seg_classes: Dict, ms_zone_atlas_paths: Optional[Dict]):
+    """Build the AnatomicalAnalyzerBase implementation for this lesion type."""
+    if lesion_type == "multiple_sclerosis":
+        from ms_localization import MSZoneAnalyzer
+        return MSZoneAnalyzer(**ms_zone_atlas_paths)
+    return LobarAnalyzer(atlas_path, mapping_path, seg_classes)
 
 
-def compute_lesion_stats(mask_path: Path):
-    """
-    Count connected components (individual lesions) in a binary mask.
-    Used for MS where each component = one lesion.
-
-    Components below MIN_LESION_VOLUME_MM3 are treated as noise: excluded from
-    lesion_count / lesion_volumes_cm3 / lesion_volumes_by_label, but their
-    volume is still included in total_volume_cm3 (full burden).
-
-    Returns (stats_dict, labeled_array, affine):
-      stats_dict: lesion_count, total_volume_cm3, mean_lesion_volume_cm3,
-                  lesion_volumes_cm3 (sorted desc, kept lesions, for display/table),
-                  lesion_volumes_by_label ({str(label): volume_cm3}, kept, for hover).
-      labeled_array: int array, EVERY component its own integer label 1..N
-                     (not filtered — the saved mask keeps all blobs; only the
-                     stats/hover map drop sub-threshold ones).
-      affine: source affine (to save the labeled mask).
-    """
-    img = nib.load(str(mask_path))
-    data = np.asarray(img.dataobj)
-    voxel_vol_mm3 = float(np.prod(np.abs(np.diag(img.affine[:3, :3]))))
-    voxel_vol_cm3 = voxel_vol_mm3 / 1000.0
-    min_cm3 = MIN_LESION_VOLUME_MM3 / 1000.0
-
-    binary = (data > 0).astype(np.uint8)
-    labeled, n_components = ndimage_label(binary)
-
-    # Volume of every component (used for the full-burden total).
-    all_volumes = {}
-    for i in range(1, n_components + 1):
-        voxel_count = int(np.sum(labeled == i))
-        all_volumes[str(i)] = round(voxel_count * voxel_vol_cm3, 4)
-
-    total = round(sum(all_volumes.values()), 4)  # full burden, unfiltered
-
-    # Kept lesions (≥ threshold) drive count, the per-lesion list, and hover.
-    kept_by_label = {lbl: v for lbl, v in all_volumes.items() if v >= min_cm3}
-    kept_volumes = sorted(kept_by_label.values(), reverse=True)
-    count = len(kept_volumes)
-    mean = round(sum(kept_volumes) / count, 4) if count > 0 else 0.0
-
-    stats = {
-        "lesion_count": count,
-        "total_volume_cm3": total,
-        "mean_lesion_volume_cm3": mean,
-        "lesion_volumes_cm3": kept_volumes,
-        "lesion_volumes_by_label": kept_by_label,
-    }
-    return stats, labeled.astype(np.int16), img.affine
+REPORT_SUFFIX_BY_LESION_TYPE = {
+    "glioblastoma": "_lobar_report.json",
+    "multiple_sclerosis": "_mcdonald_report.json",
+}
 
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
@@ -203,7 +161,8 @@ def process_one_mask(
     mapping_path: Path,
     seg_classes: Dict,
     lesion_type: str,
-    analyzer: Optional["LobarAnalyzer"] = None,
+    ms_zone_atlas_paths: Optional[Dict] = None,
+    analyzer: Optional["AnatomicalAnalyzerBase"] = None,
 ) -> Dict:
     """Process a single mask — wrapper for parallel execution.
 
@@ -212,8 +171,18 @@ def process_one_mask(
     """
     try:
         if analyzer is None:
-            analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
-        report = analyzer.analyze_mask(mask_path)
+            analyzer = build_analyzer(lesion_type, atlas_path, mapping_path, seg_classes, ms_zone_atlas_paths)
+
+        stats = labeled = affine = None
+        if lesion_type == 'multiple_sclerosis':
+            # Compute connected-component labeling + noise filtering ONCE here
+            # and hand the exact same labeled array / kept-label set to
+            # MSZoneAnalyzer, so total_lesion_count and per-lesion label IDs
+            # agree exactly with this mask's *_lesion_stats_report.json.
+            stats, labeled, affine, kept_labels = compute_lesion_stats(mask_path)
+            report = analyzer.analyze_mask(mask_path, labeled=labeled, kept_labels=kept_labels)
+        else:
+            report = analyzer.analyze_mask(mask_path)
 
         if report is None:
             return {
@@ -225,7 +194,7 @@ def process_one_mask(
 
         # Save report
         mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-        report_name = f"{mask_stem}_lobar_report.json"
+        report_name = f"{mask_stem}{REPORT_SUFFIX_BY_LESION_TYPE[lesion_type]}"
         # Lobar report goes into the same lesion_type subfolder as the source mask
         report_path = (output_dir / subject_id / session_id / "anat" / lesion_type / report_name)
 
@@ -235,13 +204,12 @@ def process_one_mask(
 
         analyzer.save_report(report, report_path)
 
-        # For MS: compute per-lesion statistics + save labeled mask for hover
+        # For MS: save the already-computed per-lesion stats + labeled mask for hover
         if lesion_type == 'multiple_sclerosis':
-            stats, labeled, affine = compute_lesion_stats(mask_path)
             stats["patient_id"] = subject_id
             stats["session_id"] = session_id
             stats_path = report_path.parent / report_path.name.replace(
-                "_lobar_report.json", "_lesion_stats_report.json"
+                REPORT_SUFFIX_BY_LESION_TYPE[lesion_type], "_lesion_stats_report.json"
             )
             with open(stats_path, 'w', encoding='utf-8') as f:
                 json.dump(stats, f, indent=2, ensure_ascii=False)
@@ -302,6 +270,8 @@ def main():
                         help="Path to lobar_atlas_config.yaml")
     parser.add_argument("--preprocessing-config", type=Path, required=True,
                         help="Path to preprocessing_config.yaml (to read atlas.name)")
+    parser.add_argument("--ms-zones-config", type=Path, default=None,
+                        help="Path to ms_zones_config.yaml (required when --lesion-type multiple_sclerosis)")
     parser.add_argument(
         "--lesion-type",
         type=str,
@@ -346,6 +316,26 @@ def main():
         logger.error(f"Mapping file not found: {mapping_path}")
         return 1
 
+    ms_zone_atlas_paths = None
+    if args.lesion_type == "multiple_sclerosis":
+        if not args.ms_zones_config or not args.ms_zones_config.exists():
+            logger.error("multiple_sclerosis requires --ms-zones-config pointing to a valid ms_zones_config.yaml")
+            return 1
+        with open(args.ms_zones_config, 'r') as f:
+            ms_zones_config = yaml.safe_load(f)
+        template_name = preprocessing_config.get("atlas", {}).get("name", "SRI24")
+        zone_templates = ms_zones_config.get("templates", {})
+        if template_name not in zone_templates:
+            logger.error(f"No MS zone atlases registered for template '{template_name}'. "
+                         f"Available: {list(zone_templates.keys())}")
+            return 1
+        ms_zone_atlas_paths = {
+            "ventricle_atlas_path": project_root / zone_templates[template_name]["ventricle_atlas"],
+            "cortex_atlas_path": atlas_path,  # reuse the already-resolved cortical atlas
+            "infratentorial_atlas_path": project_root / zone_templates[template_name]["infratentorial_atlas"],
+            "dilation_voxels": ms_zones_config.get("dilation_voxels", 1),
+        }
+
     # Parse segmentation classes from config
     seg_classes = {}
     for label_str, cls_info in lobar_config.get("segmentation_classes", {}).items():
@@ -375,7 +365,7 @@ def main():
         filtered = []
         for mask_path, subj, sess in masks:
             mask_stem = mask_path.name.replace("_segmask.nii.gz", "")
-            report_path = args.output_dir / subj / sess / "anat" / args.lesion_type / f"{mask_stem}_lobar_report.json"
+            report_path = args.output_dir / subj / sess / "anat" / args.lesion_type / f"{mask_stem}{REPORT_SUFFIX_BY_LESION_TYPE[args.lesion_type]}"
             if report_path.exists():
                 skipped += 1
                 logger.info(f"  Skipping {subj}/{sess}: report exists")
@@ -414,13 +404,14 @@ def main():
 
     if args.mode == "sequential":
         # Load atlas once and reuse across all masks
-        shared_analyzer = LobarAnalyzer(atlas_path, mapping_path, seg_classes)
+        shared_analyzer = build_analyzer(args.lesion_type, atlas_path, mapping_path, seg_classes, ms_zone_atlas_paths)
         for idx, (mask_path, subj, sess) in enumerate(masks, 1):
             logger.info(f"\n[{idx}/{len(masks)}] {subj}/{sess}")
             result = process_one_mask(
                 mask_path, subj, sess, args.output_dir,
                 atlas_path, mapping_path, seg_classes,
                 args.lesion_type,
+                ms_zone_atlas_paths=ms_zone_atlas_paths,
                 analyzer=shared_analyzer,
             )
             if result["success"]:
@@ -437,6 +428,7 @@ def main():
                     mask_path, subj, sess, args.output_dir,
                     atlas_path, mapping_path, seg_classes,
                     args.lesion_type,
+                    ms_zone_atlas_paths,
                 ): (subj, sess)
                 for mask_path, subj, sess in masks
             }

@@ -69,6 +69,14 @@ export const getLobarReports = async (runId) => {
 };
 
 /**
+ * Локализация очагов МС по McDonald-зонам (periventricular/juxtacortical/infratentorial)
+ */
+export const getMcdonaldReports = async (runId) => {
+  const response = await apiClient.get(`/mcdonald-reports/${runId}`);
+  return response.data;
+};
+
+/**
  * Статистика очагов МС (количество, объёмы)
  */
 export const getLesionStatsReports = async (runId) => {
@@ -81,6 +89,16 @@ export const getLesionStatsReports = async (runId) => {
  */
 export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sclerosis') => {
   const response = await apiClient.get(`/longitudinal/${patientId}`, {
+    params: { lesion_type: lesionType },
+  });
+  return response.data;
+};
+
+/**
+ * Детекция новых/растущих/разрешившихся очагов между сессиями (МС)
+ */
+export const getLongitudinalDiff = async (patientId, lesionType = 'multiple_sclerosis') => {
+  const response = await apiClient.get(`/longitudinal/${patientId}/diff`, {
     params: { lesion_type: lesionType },
   });
   return response.data;
@@ -305,8 +323,10 @@ export default {
   getQualityReport,
   getVolumeReports,
   getLobarReports,
+  getMcdonaldReports,
   getLesionStatsReports,
   getLongitudinalReport,
+  getLongitudinalDiff,
   getNIfTIFiles,
   getNIfTIFileUrl,
   getLesionTypes,

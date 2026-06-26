@@ -1,0 +1,21 @@
+# MS McDonald zone classification config (Этап 5.6).
+# Cortex atlas for "juxtacortical" is reused from lobar_atlas_config.yaml
+# (same per-template cortical atlas already used for GBM lobar localization)
+# and is NOT duplicated here — the dispatcher passes its resolved path in.
+
+templates:
+  SRI24:
+    ventricle_atlas: "data/templates/ms_zones/ventricles_SRI24.nii.gz"
+    infratentorial_atlas: "data/templates/ms_zones/infratentorial_SRI24.nii.gz"
+  MNI152_FSL:
+    ventricle_atlas: "data/templates/ms_zones/ventricles_MNI152_FSL.nii.gz"
+    infratentorial_atlas: "data/templates/ms_zones/infratentorial_MNI152_FSL.nii.gz"
+  MNI152_ICBM:
+    ventricle_atlas: "data/templates/ms_zones/ventricles_MNI152_ICBM.nii.gz"
+    infratentorial_atlas: "data/templates/ms_zones/infratentorial_MNI152_ICBM.nii.gz"
+
+# Voxel dilation applied to each zone atlas before testing lesion overlap —
+# tolerates registration jitter. Same value used for inter-session lesion
+# matching in the lesion-diff plan, kept here as its own knob since the two
+# features can be tuned independently.
+dilation_voxels: 1

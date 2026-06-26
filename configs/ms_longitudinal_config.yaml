@@ -1,0 +1,25 @@
+# MS longitudinal lesion-diff config (Этап 5.6, part B).
+# Growth threshold: a matched lesion (overlapping a prior-session lesion,
+# within dilation_voxels tolerance) is classified "growing" if EITHER
+# condition holds — relative-only would miss large lesions growing by a
+# clinically significant absolute amount but a small percentage; absolute-only
+# would miss small lesions growing by a large percentage. This is a
+# provisional default pending clinician input — McDonald 2017 itself only
+# defines "new T2 lesion" as a criterion, not a growth threshold for
+# existing ones.
+growth_threshold_relative: 0.20
+growth_threshold_absolute_cm3: 0.03
+
+# Voxel dilation tolerance for matching a lesion across sessions. Set to 3
+# (not 1) because the MS segmentation model's own inference is not
+# deterministic run-to-run on identical input — nnU-Net test-time-augmentation
+# mirroring plus cudnn.benchmark=True (no fixed seed) shift small lesions'
+# boundaries by 1-2 voxels between runs. At dilation_voxels=1 this caused
+# genuinely stable small lesions to be misclassified as new+resolved pairs;
+# empirically, 3 voxels absorbs that jitter across repeated runs of the same
+# input while staying well below typical inter-lesion spacing in MS. This is
+# a provisional value (pending more real longitudinal cases), same status as
+# the growth thresholds above — it mitigates the symptom, not the underlying
+# segmentation non-determinism, which is tracked separately as KI-037 in
+# KNOWN_ISSUES.md.
+dilation_voxels: 3

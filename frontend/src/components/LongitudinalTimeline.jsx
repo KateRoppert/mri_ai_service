@@ -1,18 +1,25 @@
 // frontend/src/components/LongitudinalTimeline.jsx
 import { useEffect, useState } from 'react';
-import { Table, Spin, Alert, Tag } from 'antd';
-import { getLongitudinalReport } from '../services/api';
+import { Table, Spin, Alert, Tag, Space } from 'antd';
+import { getLongitudinalReport, getLongitudinalDiff } from '../services/api';
 
 const LongitudinalTimeline = ({ patientId, lesionType }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [diffPairs, setDiffPairs] = useState([]);
 
   useEffect(() => {
     if (!patientId) return;
     setLoading(true);
-    getLongitudinalReport(patientId, lesionType)
-      .then(resp => setData(resp.points))
+    Promise.all([
+      getLongitudinalReport(patientId, lesionType),
+      getLongitudinalDiff(patientId, lesionType).catch(() => ({ pairs: [] })),
+    ])
+      .then(([reportResp, diffResp]) => {
+        setData(reportResp.points);
+        setDiffPairs(diffResp.pairs || []);
+      })
       .catch(err => {
         if (err.response?.status === 404) setData([]);
         else setError('Не удалось загрузить динамику');
@@ -51,6 +58,29 @@ const LongitudinalTimeline = ({ patientId, lesionType }) => {
         const delta = record.total_volume_cm3 - prev;
         const color = delta > 0 ? 'red' : delta < 0 ? 'green' : 'default';
         return <Tag color={color}>{delta > 0 ? '+' : ''}{delta.toFixed(3)}</Tag>;
+      },
+    },
+    {
+      title: 'Новые / растущие',
+      key: 'diff',
+      align: 'center',
+      render: (_, record, idx) => {
+        if (idx === 0) return '—';
+        const prevSessionId = data[idx - 1].session_id;
+        const pair = diffPairs.find(
+          p => p.from_session_id === prevSessionId && p.to_session_id === record.session_id
+        );
+        if (!pair) return <span style={{ color: '#bbb' }}>н/д</span>;
+        if (pair.new_count === 0 && pair.growing_count === 0 && pair.resolved_count === 0) {
+          return <Tag color="green">стабильно</Tag>;
+        }
+        return (
+          <Space size={4}>
+            {pair.new_count > 0 && <Tag color="red">{pair.new_count} новых</Tag>}
+            {pair.growing_count > 0 && <Tag color="orange">{pair.growing_count} растёт</Tag>}
+            {pair.resolved_count > 0 && <Tag color="blue">{pair.resolved_count} исчезло</Tag>}
+          </Space>
+        );
       },
     },
   ];
