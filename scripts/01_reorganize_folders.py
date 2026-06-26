@@ -274,12 +274,14 @@ class ModalityDetector:
     def _detect_contrast(self, dcm: pydicom.Dataset, combined_text: str) -> bool:
         """Detect contrast agent from multiple DICOM fields + text keywords."""
         # Field: ContrastBolusAgent (0018,0010)
-        agent = str(dcm.get((0x0018, 0x0010), '')).strip().lower()
+        elem = dcm.get((0x0018, 0x0010))
+        agent = str(elem.value).strip().lower() if elem is not None else ''
         if agent and agent not in ('', 'none', 'no', 'n/a'):
             return True
-        
+
         # Field: ContrastBolusStartTime (0018,1078)
-        bolus = str(dcm.get((0x0018, 0x1078), '')).strip().lower()
+        elem = dcm.get((0x0018, 0x1078))
+        bolus = str(elem.value).strip().lower() if elem is not None else ''
         if bolus and bolus not in ('', 'none', 'no'):
             return True
         
