@@ -639,6 +639,8 @@ def score_series(
                 f"      [{series_info.original_path.name}] "
                 f"long-TI bonus {bonus}")
 
+    logger.debug(
+        f"      [{series_info.original_path.name}] final score: {score:.4f}")
     return score
 
 
@@ -665,17 +667,12 @@ class SeriesDeduplicator:
         for modality, series_list in session.series.items():
             if isinstance(series_list, list):
                 if len(series_list) > 1:
-                    # Multiple series for same modality
+                    # Multiple series for same modality — _select_best_series logs the INFO line
                     best_series = self._select_best_series(series_list, modality)
                     deduplicated.series[modality] = best_series
 
                     removed_count = len(series_list) - 1
                     self.duplicates_removed += removed_count
-
-                    self.logger.info(
-                        f"Modality {modality}: {len(series_list)} series found, "
-                        f"selected one with {best_series.slice_count} slices"
-                    )
                 else:
                     deduplicated.series[modality] = series_list[0]
             else:
@@ -702,11 +699,22 @@ class SeriesDeduplicator:
         top_candidates = [series for series, score in scored if score == max_score]
 
         if len(top_candidates) == 1:
-            return top_candidates[0]
+            winner = top_candidates[0]
+            self.logger.info(
+                f"Modality {modality}: {len(series_list)} series, "
+                f"selected {winner.original_path.name} "
+                f"(score={max_score:.2f}, {winner.slice_count} slices) — won by score")
+            return winner
 
         # Tie (including the common case where no scoring signal applies
         # and every candidate scored 1.0) — fall back to slice count.
-        return max(top_candidates, key=lambda s: s.slice_count)
+        winner = max(top_candidates, key=lambda s: s.slice_count)
+        self.logger.info(
+            f"Modality {modality}: {len(series_list)} series, "
+            f"{len(top_candidates)} tied at score={max_score:.2f} — "
+            f"selected {winner.original_path.name} by slice-count tiebreak "
+            f"({winner.slice_count} slices)")
+        return winner
 
 
 class CompletenessChecker:
