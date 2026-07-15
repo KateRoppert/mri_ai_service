@@ -73,6 +73,9 @@ services/*/weights/
 # Test/development data — kept locally, never committed
 data/MS_5/
 data/UPENN-GBM/
+data/SibBMS/
+data/MosMed/
+data/clinical_dicom/
 data/templates/ms_zones_raw/
 data/templates/ms_zones_work/
 .superpowers/
