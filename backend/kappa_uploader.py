@@ -83,19 +83,30 @@ class KappaUploader:
 
             if study_hash and study_hash in existing_hashes:
                 logger.warning(
-                    "Duplicate detected, skipping: %s (study_hash=%s already in dataset %d)",
+                    "Duplicate detected, skipping upload: %s (study_hash=%s already in dataset %d)",
                     session_key, study_hash, dataset_id,
                 )
 
-                # НЕ обновляем pipeline_run_id — он должен указывать
-                # на запуск, который создал данные пациента.
-                # kappa_entity_id и kappa_dataset_id уже в реестре.
+                # POST не делаем (сущность уже в Каппе — иначе задвоим), но
+                # убеждаемся, что она есть в локальных таблицах. Это и есть
+                # путь восстановления запусков, чьи сущности осели в Каппе
+                # после 504, но не попали в локальный реестр.
+                reconciled_id = await self._reconcile_session(
+                    dataset_id, session_key, session_data, study_hash,
+                    attempts=1,
+                )
 
                 results.append({
                     "session": session_key,
-                    "success": False,
-                    "error": "duplicate",
-                    "message": f"Сессия {session_key} уже существует в датасете (study_hash={study_hash})",
+                    "success": bool(reconciled_id),
+                    "skipped_upload": True,
+                    "reconciled": bool(reconciled_id),
+                    "entity_id": reconciled_id,
+                    "error": None if reconciled_id else "duplicate",
+                    "message": (
+                        f"Сессия {session_key} уже в датасете; локальная запись "
+                        f"{'восстановлена' if reconciled_id else 'не найдена'}"
+                    ),
                 })
                 continue
 
@@ -440,42 +451,24 @@ class KappaUploader:
             entity_info=entity_info,
         )
 
-        if result is not None:
+        entity_id = self._extract_entity_id(result) if result is not None else None
+
+        # Чистый успех: Каппа вернула entity_id в ответе.
+        if entity_id:
             logger.info(
                 "Session uploaded: %s (%d files)", session_key, len(file_paths)
             )
-
-            # Извлекаем entity_id из ответа и ставим статус Labeled
-            entity_id = self._extract_entity_id(result)
-            if entity_id:
-                await update_entity_status(
-                    token=self.token,
-                    user_id=self.user_id,
-                    user_type_id=self.user_type_id,
-                    dataset_id=dataset_id,
-                    entity_id=entity_id,
-                    status=3,  # Labeled
-                )
-
-            # Регистрируем в локальном реестре
-            self._register_patient(
+            await update_entity_status(
+                token=self.token,
+                user_id=self.user_id,
+                user_type_id=self.user_type_id,
+                dataset_id=dataset_id,
+                entity_id=entity_id,
+                status=3,  # Labeled
+            )
+            self._do_local_registration(
                 session_key, session_data, entity_id, dataset_id
             )
-
-            # Регистрируем AI-маску в истории версий
-            if entity_id:
-                from mask_service import register_ai_mask
-                main_masks = [
-                    m for m in session_data["masks"]
-                    if "_native_" not in m.name
-                ]
-                if main_masks:
-                    register_ai_mask(
-                        entity_id=entity_id,
-                        dataset_id=dataset_id,
-                        file_path=str(main_masks[0]),
-                    )
-
             return {
                 "session": session_key,
                 "success": True,
@@ -483,9 +476,140 @@ class KappaUploader:
                 "entity_id": entity_id,
                 "response": result,
             }
-        else:
-            logger.error("Failed to upload session: %s", session_key)
-            return {"session": session_key, "success": False, "error": "upload failed"}
+
+        # Ответа с entity_id нет (типичный случай — 504 Gateway Timeout от Каппы:
+        # её nginx сдался по своему таймауту, но бэкенд сущность мог создать).
+        # НЕ ретраим POST (не идемпотентен → плодит дубли). Вместо этого
+        # идемпотентным GET проверяем, не появилась ли сущность в Каппе,
+        # и регистрируем её локально по реальному entity_id.
+        study_hash = self._compute_study_hash(session_data)
+        recovered_id = await self._reconcile_session(
+            dataset_id, session_key, session_data, study_hash
+        )
+        if recovered_id:
+            return {
+                "session": session_key,
+                "success": True,
+                "recovered": True,
+                "files": len(file_paths),
+                "entity_id": recovered_id,
+            }
+
+        logger.error("Failed to upload session: %s", session_key)
+        return {"session": session_key, "success": False, "error": "upload failed"}
+
+    def _do_local_registration(
+        self,
+        session_key: str,
+        session_data: Dict[str, Any],
+        entity_id: Optional[str],
+        dataset_id: int,
+    ) -> None:
+        """
+        Записать сущность в локальные таблицы (patient_registry + mask_versions).
+        Идемпотентно: register_patient апсертит по study_hash, register_ai_mask
+        пропускает, если версия 1 уже есть.
+        """
+        self._register_patient(session_key, session_data, entity_id, dataset_id)
+
+        if entity_id:
+            from mask_service import register_ai_mask
+            main_masks = [
+                m for m in session_data["masks"]
+                if "_native_" not in m.name
+            ]
+            if main_masks:
+                register_ai_mask(
+                    entity_id=entity_id,
+                    dataset_id=dataset_id,
+                    file_path=str(main_masks[0]),
+                )
+
+    async def _find_kappa_entity_by_hash(
+        self, dataset_id: int, study_hash: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Найти в Каппе сущность с данным study_hash (самую свежую, если их несколько).
+        Возвращает entity-dict или None.
+        """
+        entities = await get_dataset_entities(
+            token=self.token,
+            user_id=self.user_id,
+            user_type_id=self.user_type_id,
+            dataset_id=dataset_id,
+        )
+        if not entities:
+            return None
+
+        matches = []
+        for entity in entities:
+            info = entity.get("dsEntityInfo") or {}
+            if isinstance(info, str):
+                try:
+                    info = json.loads(info)
+                except Exception:
+                    info = {}
+            if info.get("study_hash") == study_hash:
+                matches.append(entity)
+
+        if not matches:
+            return None
+
+        matches.sort(key=lambda e: e.get("createdOn", ""), reverse=True)
+        return matches[0]
+
+    async def _reconcile_session(
+        self,
+        dataset_id: int,
+        session_key: str,
+        session_data: Dict[str, Any],
+        study_hash: Optional[str],
+        attempts: int = 3,
+        delay: float = 6.0,
+    ) -> Optional[str]:
+        """
+        Сверка с Каппой после неоднозначной загрузки (504): если сущность
+        всё же создана — регистрируем её локально и возвращаем entity_id.
+        Только GET-запросы (идемпотентно), повторный POST не делается.
+        """
+        if not study_hash:
+            return None
+
+        for attempt in range(attempts):
+            entity = await self._find_kappa_entity_by_hash(dataset_id, study_hash)
+            if entity:
+                entity_id = entity.get("dsEntityId")
+                if entity_id:
+                    logger.warning(
+                        "Reconciled entity after ambiguous upload: session=%s, "
+                        "entity=%s (study_hash=%s)",
+                        session_key, entity_id, study_hash,
+                    )
+                    # Поднимаем статус до Labeled только если он ниже —
+                    # не откатываем уже верифицируемые/верифицированные сущности.
+                    status = entity.get("dsEntityStatus")
+                    if isinstance(status, int) and status < 3:
+                        try:
+                            await update_entity_status(
+                                token=self.token,
+                                user_id=self.user_id,
+                                user_type_id=self.user_type_id,
+                                dataset_id=dataset_id,
+                                entity_id=entity_id,
+                                status=3,
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to set status on reconcile: %s", e)
+
+                    self._do_local_registration(
+                        session_key, session_data, entity_id, dataset_id
+                    )
+                    return entity_id
+
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay)
+
+        return None
 
     def _build_entity_info(
         self,

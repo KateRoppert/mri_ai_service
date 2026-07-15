@@ -95,7 +95,7 @@ class PipelineMonitor:
                     if kappa_uploader and run.status == "completed":
                         logger.info("Starting Kappa upload for completed run %s", run_id)
                         asyncio.create_task(
-                            self._kappa_upload_safe(kappa_uploader)
+                            self._kappa_upload_safe(kappa_uploader, run_id)
                         )
                     break
                 

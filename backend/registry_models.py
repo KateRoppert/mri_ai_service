@@ -9,6 +9,29 @@ from sqlalchemy.orm import Session
 from database import Base, engine
 
 
+class KappaSession(Base):
+    """
+    Сессии авторизации в Kappa.
+    Персистентны (SQLite), чтобы переживать перезапуск backend-контейнера —
+    иначе фронт (localStorage) продолжает слать session_id, невалидный
+    для только что перезапущенного процесса, и Kappa-аплоад молча не срабатывает.
+    """
+    __tablename__ = "kappa_sessions"
+
+    session_id = Column(String, primary_key=True)
+
+    kappa_token = Column(String, nullable=False)
+    user_id = Column(Integer, nullable=True)
+    user_type_id = Column(Integer, nullable=True)
+    user_name = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    token_expiry = Column(String, nullable=True)
+    org_details = Column(Text, nullable=True)  # JSON-сериализованный dict
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class PatientRegistry(Base):
     """
     Локальный реестр пациентов.

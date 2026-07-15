@@ -24,8 +24,9 @@ mri_ai_service/
 ├── agents
 ├── backend
 │   ├── app.py
-│   ├── brain_lesion.db
 │   ├── config.py
+│   ├── data
+│   │   └── brain_lesion.db
 │   ├── database.py
 │   ├── kappa_auth.py
 │   ├── kappa_client.py
@@ -347,7 +348,7 @@ python slicer_agent.py
 [Смотрим логи, определяем причину ошибки, предполагаем гипотезу, реализуем. Если не помогло, ищем другое решение]
 
 ### Database migrations
-[/home/ubuntu/mri_ai_service/backend/brain_lesion.db - локальная БД, которая хранит историю запусков пайплайна и прочее]
+[/home/ubuntu/mri_ai_service/backend/data/brain_lesion.db - локальная БД, которая хранит историю запусков пайплайна, реестр пациентов, версии масок и сессии Kappa. Директория backend/data монтируется в docker-compose как volume (не файл), чтобы БД создавалась автоматически при первом запуске на новой машине]
 
 ### Configuration changes
 [Есть основной конфиг пайплайна. Это /home/ubuntu/mri_ai_service/pipeline_config.yaml. Для каждого этапа пайплайна есть тоже свои конфиги, они лежат в папке configs проекта]

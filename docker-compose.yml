@@ -16,7 +16,7 @@ services:
       - ./demo_workspace:/workspace:rw
       - ./scripts:/app/scripts:ro
       - ./configs:/app/configs:rw
-      - ./backend/brain_lesion.db:/app/backend/brain_lesion.db:rw
+      - ./backend/data:/app/backend/data:rw
     depends_on:
       - service-gbm-seg
     extra_hosts:
