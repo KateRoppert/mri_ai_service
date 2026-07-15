@@ -6,7 +6,7 @@
 general:
   root_input_dir: /mnt/datastorage/nbia/nbia/manifest-1669766397961/UPENN-GBM
   root_output_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_5
-  max_subjects: 3                    # null = все субъекты, или число для теста
+  max_subjects: null                    # null = все субъекты, или число для теста
   skip_existing: true                   # Глобальное возобновление прерванной работы
   benchmark_results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_5/benchmark_results
   lesion_type: glioblastoma             # default for manual runs (web overrides this per-request)
@@ -42,7 +42,7 @@ stages:
       config: configs/dicom_tags.yaml
       metadata-dir: metadata
       mode: parallel
-      workers: 18
+      workers: 8
       dry_run: false
       force: false
       benchmark: false
@@ -71,7 +71,7 @@ stages:
     script: scripts/03_convert_to_nifti.py
     args:
       mode: parallel
-      workers: 14
+      workers: 8
       force: false
       benchmark: false
       max_subjects: null
@@ -85,7 +85,7 @@ stages:
       config: configs/quality_config.yaml
       input-format: bids
       mode: parallel
-      workers: 12
+      workers: 6                            # ~2.1 GB/worker measured on SibBMS 0.35mm volumes after float32+in-place fixes (was ~7.6 GB → OOM at 12); 6*2.1=12.6 GB fits the 20g container cap
       skip-existing: true
       force: false
       benchmark: false
@@ -98,7 +98,7 @@ stages:
     args:
       config: configs/preprocessing_config.yaml
       mode: parallel
-      workers: 14
+      workers: 6
       skip-existing: true
       benchmark: false
       validate: true
@@ -126,7 +126,7 @@ stages:
     script: scripts/07_inverse_transform.py
     args:
       mode: parallel
-      workers: 14
+      workers: 6
       skip-existing: true
       benchmark: false
       max_subjects: null
@@ -141,7 +141,7 @@ stages:
       preprocessing-config: configs/preprocessing_config.yaml
       ms-zones-config: configs/ms_zones_config.yaml
       mode: parallel
-      workers: 14
+      workers: 8
       skip-existing: true
       benchmark: false
       max_subjects: null

@@ -35,21 +35,29 @@ class GradientSharpnessMetric(QualityMetric):
         """
         if not np.any(fg_mask):
             return 0.0
-        
-        # Calculate gradients in each direction
-        grad_x = np.gradient(data, axis=0)
-        grad_y = np.gradient(data, axis=1) 
-        grad_z = np.gradient(data, axis=2)
-        
-        # Calculate gradient magnitude
-        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2 + grad_z**2)
-        
+
+        # Compute the gradient magnitude while holding at most two full-size
+        # arrays at once. The naive form
+        #   np.sqrt(grad_x**2 + grad_y**2 + grad_z**2)
+        # keeps three gradient arrays plus squared temporaries alive
+        # simultaneously — ~6 full volumes at peak, which OOM-killed workers on
+        # high-resolution SibBMS data. Accumulating the sum of squares in place
+        # holds only the accumulator plus one transient per-axis gradient.
+        magnitude = np.gradient(data, axis=0)
+        magnitude *= magnitude  # grad_x**2, in place
+        for axis in (1, 2):
+            grad = np.gradient(data, axis=axis)
+            grad *= grad  # grad_axis**2, in place
+            magnitude += grad
+            del grad
+        np.sqrt(magnitude, out=magnitude)  # magnitude now holds |grad|
+
         # Extract foreground gradients
-        fg_gradients = gradient_magnitude[fg_mask]
-        
+        fg_gradients = magnitude[fg_mask]
+
         # Return variance of gradient magnitudes
         if len(fg_gradients) == 0:
             return 0.0
-        
+
         sharpness = np.var(fg_gradients)
         return float(sharpness)

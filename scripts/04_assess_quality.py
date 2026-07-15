@@ -12,7 +12,9 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pipeline_validator import InputOutputValidator
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -44,6 +46,24 @@ from quality_metrics import (
 )
 
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
+
+
+def _load_image_data(nifti_path):
+    """Load a NIfTI file's voxel data as float32.
+
+    nibabel's ``get_fdata()`` defaults to float64. On high-resolution volumes
+    (e.g. SibBMS at 0.35 mm, ~231M voxels) that is ~1.85 GB for a single array
+    before any metric runs, and downstream metrics (gradient_sharpness) multiply
+    it into several full-size temporaries — enough to OOM a worker. float32
+    halves every downstream array and is more than precise enough for the
+    statistical quality metrics (source images are int16).
+
+    Returns:
+        (img, data): the nibabel image (for header access) and the float32 array.
+    """
+    img = nib.load(str(nifti_path))
+    data = img.get_fdata(dtype=np.float32)
+    return img, data
 
 
 class QualityAssessor:
@@ -324,10 +344,9 @@ class QualityAssessor:
             return True
 
         try:
-            # Load NIfTI image
-            img = nib.load(str(nifti_path))
+            # Load NIfTI image (float32 to bound peak memory — see _load_image_data)
+            img, data = _load_image_data(nifti_path)
             img_header = img.header
-            data = img.get_fdata()
 
             # Create foreground mask
             mask_method = self.config.get('foreground_mask', {}).get('method', 'otsu')
@@ -394,9 +413,23 @@ class QualityAssessor:
         # Update total_images counter BEFORE processing
         self.stats['total_images'] = len(images)
         
-        # Process in parallel
-        with Pool(processes=workers) as pool:
-            results = pool.map(self._assess_image_wrapper, tasks)
+        # Process in parallel.
+        # ProcessPoolExecutor (not multiprocessing.Pool) so that a worker killed
+        # mid-flight — e.g. by the cgroup OOM killer — surfaces as
+        # BrokenProcessPool instead of deadlocking. Pool.map() waits forever for
+        # a result the dead worker will never return, which previously hung the
+        # stage indefinitely with idle workers at ~0% CPU.
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                results = list(executor.map(self._assess_image_wrapper, tasks))
+        except BrokenProcessPool:
+            self.logger.error(
+                f"Quality assessment aborted: a worker process was killed while "
+                f"processing {len(tasks)} images with {workers} workers. The most "
+                f"likely cause is out-of-memory — lower 'workers' for "
+                f"stage_04_quality or free RAM, then retry."
+            )
+            raise
         
         # Aggregate results from workers
         successful_count = 0
@@ -446,11 +479,10 @@ class QualityAssessor:
                 'coefficient_of_variation': CoefficientOfVariationMetric()
             }
 
-            # Load NIfTI image
-            img = nib.load(str(nifti_path))
+            # Load NIfTI image (float32 to bound peak memory — see _load_image_data)
+            img, data = _load_image_data(nifti_path)
             img_header = img.header
-            data = img.get_fdata()
-            
+
             # Create foreground mask
             mask_method = config.get('foreground_mask', {}).get('method', 'otsu')
             fg_mask = create_foreground_mask(data, method=mask_method)
