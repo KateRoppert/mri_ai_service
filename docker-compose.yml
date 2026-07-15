@@ -17,10 +17,22 @@ services:
       - ./scripts:/app/scripts:ro
       - ./configs:/app/configs:rw
       - ./backend/data:/app/backend/data:rw
+      # Mount the pipeline config so edits apply on `up` without an image
+      # rebuild. web.Dockerfile bakes a copy in at build time; without this
+      # mount the container keeps using the stale baked-in workers/settings.
+      - ./pipeline_config.yaml:/app/pipeline_config.yaml:rw
     depends_on:
       - service-gbm-seg
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Memory safety cap: the pipeline (stages 01-08) runs in this container.
+    # Without a limit, a heavy stage (e.g. Stage 04 quality at high worker
+    # counts on large longitudinal datasets) exhausts all host RAM+swap and the
+    # kernel OOM killer takes down the desktop. Capping here means an over-heavy
+    # stage fails inside the container instead of crashing the OS.
+    # memswap_limit == mem_limit disables container swap (no swap thrash).
+    mem_limit: 20g
+    memswap_limit: 20g
     profiles: ["full"]
 
   # GBM segmentation service (nnUNet v1, Task115)
