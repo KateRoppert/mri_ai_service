@@ -1870,6 +1870,46 @@ async def kappa_logout(session_id: str):
         raise HTTPException(status_code=404, detail="Сессия не найдена")
     return {"status": "ok"}
 
+@app.post("/api/kappa/retry-upload/{run_id}")
+async def retry_kappa_upload(run_id: str, session_id: str):
+    """
+    Повторить загрузку результатов запуска в Kappa вручную.
+    Нужен для случаев, когда автоматический аплоад после завершения
+    пайплайна упал (например, временный 502/503/504 от Kappa) —
+    без повторного прогона всего пайплайна.
+    """
+    from database import SessionLocal as DBSessionLocal
+    from pipeline_monitor import pipeline_monitor
+
+    db = DBSessionLocal()
+    try:
+        run = get_pipeline_run(db, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Запуск не найден")
+        if run.status != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Запуск ещё не завершён (status={run.status})",
+            )
+        output_path = run.output_path
+        lesion_type = getattr(run, "lesion_type", None) or "glioblastoma"
+    finally:
+        db.close()
+
+    uploader = pipeline_monitor._create_kappa_uploader(
+        run_id, output_path, session_id, lesion_type
+    )
+    if uploader is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Сессия Kappa не найдена/истекла, или не найден конфиг препроцессинга. Войдите в Kappa заново.",
+        )
+
+    results = await uploader.upload_results()
+    logger.info("Kappa retry-upload results for %s: %s", run_id, results)
+    return results
+
+
 @app.get("/api/kappa/entities/{dataset_id}")
 async def get_kappa_entities(dataset_id: int, session_id: str):
     """Список сущностей датасета Kappa"""

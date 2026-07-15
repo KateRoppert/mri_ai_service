@@ -23,7 +23,10 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     
     # База данных
-    database_url: str = f"sqlite:////app/backend/brain_lesion.db"
+    # Путь внутри /app/backend/data — эта директория монтируется как volume
+    # (не файл), поэтому Docker создаёт её на новой машине автоматически,
+    # без риска подменить bind-mount отсутствующего файла директорией.
+    database_url: str = f"sqlite:////app/backend/data/brain_lesion.db"
     
     # Pipeline
     pipeline_root: Path = Path(__file__).parent.parent.resolve()
