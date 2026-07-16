@@ -91,6 +91,16 @@ const buildCustomFiles = (entity, datasetId) => {
     .filter(Boolean);
 };
 
+// Kappa returns entities unordered. Sort by the bids_id ("sub-002_ses-001") so a
+// patient's sessions sit together and in chronological session order. numeric:true
+// keeps sub-2 before sub-10 even if the ids are not zero-padded.
+const sortEntitiesByPatientSession = (entities) =>
+  [...(entities || [])].sort((a, b) => {
+    const ka = a.dsEntityInfo?.bids_id || a.dsEntityName || '';
+    const kb = b.dsEntityInfo?.bids_id || b.dsEntityName || '';
+    return ka.localeCompare(kb, undefined, { numeric: true });
+  });
+
 const ValidationPanel = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -134,7 +144,7 @@ const ValidationPanel = () => {
     setError(null);
     try {
       const data = await getValidationEntities(datasetId);
-      setEntities(data.entities || []);
+      setEntities(sortEntitiesByPatientSession(data.entities || []));
     } catch (err) {
       console.error('Ошибка загрузки сессий:', err);
       setError('Не удалось загрузить список сессий');
