@@ -25,9 +25,12 @@ counts stay correct, but summing previous_volume_cm3 across a session pair's
 lesions can double-count and will not reconcile to the true prior total.
 """
 
+import hashlib
+import json
 import logging
+import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Union
 
 import nibabel as nib
 import numpy as np
@@ -127,3 +130,68 @@ def compare_labeled_masks(
         "resolved_count": counts["resolved"],
         "lesions": lesions,
     }
+
+
+def _diff_cache_key(prev_path: Path, curr_path: Path, params: Dict) -> str:
+    """Deterministic cache key over the two mask files and the diff parameters.
+
+    Includes each file's mtime (ns), so an expert re-saving an edited mask
+    invalidates the entry automatically without an explicit purge.
+    """
+    def sig(p: Path) -> str:
+        st = Path(p).stat()
+        return f"{p}:{st.st_mtime_ns}:{st.st_size}"
+
+    payload = "|".join([
+        sig(prev_path),
+        sig(curr_path),
+        f"gr={params.get('growth_threshold_relative')}",
+        f"ga={params.get('growth_threshold_absolute_cm3')}",
+        f"dv={params.get('dilation_voxels')}",
+        f"mv={params.get('min_lesion_volume_mm3')}",
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def cached_compare_labeled_masks(
+    prev_path: Union[str, Path],
+    curr_path: Union[str, Path],
+    cache_dir: Union[str, Path],
+    **kwargs,
+) -> Dict:
+    """compare_labeled_masks with a persistent JSON cache.
+
+    The diff of two label masks is deterministic given the files and parameters,
+    so it is computed once and reused. Loading full-resolution masks and running
+    the per-label numpy passes is expensive (~seconds on 0.35 mm SibBMS volumes);
+    without this cache every clinical-report open recomputed all session pairs
+    from scratch.
+
+    The cache key (see _diff_cache_key) embeds file mtimes, so an edited mask is
+    picked up automatically. Writes are atomic (temp file + os.replace) so a
+    concurrent reader never observes a half-written entry.
+    """
+    prev_path = Path(prev_path)
+    curr_path = Path(curr_path)
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    key = _diff_cache_key(prev_path, curr_path, kwargs)
+    cache_file = cache_dir / f"{key}.json"
+
+    if cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Ignoring corrupt diff cache {cache_file.name}: {e}")
+
+    result = compare_labeled_masks(prev_path, curr_path, **kwargs)
+
+    tmp_file = cache_file.with_suffix(".json.tmp")
+    try:
+        tmp_file.write_text(json.dumps(result), encoding="utf-8")
+        os.replace(tmp_file, cache_file)
+    except OSError as e:
+        # A cache-write failure must not break the request — just log it.
+        logger.warning(f"Failed to write diff cache {cache_file.name}: {e}")
+    return result
