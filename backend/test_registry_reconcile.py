@@ -11,16 +11,13 @@ that bind SessionLocal at import time). Run standalone:
     DATABASE_URL=... python -m pytest backend/test_registry_reconcile.py
 """
 
-import os
 import sys
-import tempfile
 from pathlib import Path
-
-_TMP_DB = Path(tempfile.mkdtemp()) / "test_registry.db"
-os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DB}"
 
 import pytest
 
+# The DB is routed to an isolated temp file by backend/conftest.py before any
+# module imports `database`, so SessionLocal here is bound to that temp DB.
 sys.path.insert(0, str(Path(__file__).parent))
 
 from patient_registry import (
