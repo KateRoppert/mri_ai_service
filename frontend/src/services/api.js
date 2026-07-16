@@ -85,6 +85,15 @@ export const getLesionStatsReports = async (runId) => {
 };
 
 /**
+ * Маппинг BIDS-идентификатора на реального пациента (sub-001 → P000915).
+ * Только для клинического UI; в экспертном режиме Каппы не используется.
+ */
+export const getPatientMap = async (runId) => {
+  const response = await apiClient.get(`/run/${runId}/patient-map`);
+  return response.data;
+};
+
+/**
  * Лонгитюдная динамика пациента по типу поражения
  */
 export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sclerosis') => {

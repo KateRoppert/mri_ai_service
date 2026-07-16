@@ -821,6 +821,20 @@ async def get_lesion_stats(
     )
 
 
+@app.get("/api/run/{run_id}/patient-map")
+async def get_run_patient_map(run_id: str, db: Session = Depends(get_db)):
+    """BIDS subject → original patient id for a run (clinical UI only).
+
+    Lets the clinical report show the real patient behind "sub-001". Sourced
+    from Stage 01's dataset_mapping.json, so it works without Kappa. The expert
+    flow in Kappa stays anonymous and does not use this.
+    """
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    return {"run_id": run_id, "patient_map": pipeline_manager.get_patient_map(run.output_path)}
+
+
 @app.get("/api/longitudinal/{patient_id}", response_model=LongitudinalResponse)
 async def get_longitudinal(
     patient_id: str,

@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Table, Space, Spin, Alert, Tag, Tooltip, Row, Col, Statistic, Divider, Collapse } from 'antd';
 import { MedicineBoxOutlined, ExperimentOutlined, EnvironmentOutlined } from '@ant-design/icons';
-import { getVolumeReports, getLobarReports, getLesionStatsReports, getMcdonaldReports } from '../services/api';
+import { getVolumeReports, getLobarReports, getLesionStatsReports, getMcdonaldReports, getPatientMap } from '../services/api';
 import LongitudinalTimeline from './LongitudinalTimeline';
 
 // Sort report blocks by patient, then session (chronological — ses-001
@@ -133,6 +133,9 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   const [lesionStatsReports, setLesionStatsReports] = useState([]);
   const [mcdonaldReports, setMcdonaldReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  // Clinical-only: BIDS subject → real patient id (sub-001 → P000915). Never
+  // populated in the Kappa/expert flow, keeping that view anonymous (variant A).
+  const [patientMap, setPatientMap] = useState({});
 
   // Kappa source (validation): normalize dsEntityInfo into the same state
   // shapes the local API produces, then the shared render handles it.
@@ -165,6 +168,7 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
       setLobarReports([]);
       setLesionStatsReports([]);
       setMcdonaldReports([]);
+      setPatientMap({});
       setError(null);
     }
   }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -181,6 +185,12 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     setLoading(true);
     setError(null);
     try {
+      // Real-patient map for the clinical view (best-effort — absence just
+      // means we fall back to showing the BIDS id alone).
+      getPatientMap(runId)
+        .then((res) => setPatientMap(res.patient_map || {}))
+        .catch(() => setPatientMap({}));
+
       const fetches = [
         getVolumeReports(runId).catch(() => ({ reports: [] })),
         getLobarReports(runId).catch(() => ({ reports: [] })),
@@ -520,6 +530,11 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
           return (
             <div key={idx} style={{ marginBottom: 32 }}>
               <div style={{ marginBottom: 16 }}>
+                {/* Clinical view shows the real patient; Kappa/expert view keeps
+                    patientMap empty and stays anonymous (variant A). */}
+                {patientMap[stats.patient_id] && (
+                  <Tag color="blue">{patientMap[stats.patient_id]}</Tag>
+                )}
                 <Tag>{stats.patient_id}</Tag>
                 <Tag>{stats.session_id}</Tag>
               </div>
