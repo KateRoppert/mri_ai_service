@@ -1,7 +1,7 @@
 /**
  * Компонент для отображения истории запусков pipeline
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Table, Tag, Space, Button, Select, Card, message } from 'antd';
 import { 
   EyeOutlined, 
@@ -27,16 +27,25 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
    */
   useEffect(() => {
     fetchHistory();
-  }, [currentPage, statusFilter]);
+  }, [currentPage, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Автообновление каждые 5 секунд, только если есть запущенные пайплайны
+  // Track "is anything running" in a ref so the poll interval can read the
+  // latest value without being torn down and recreated on every history update.
+  const hasRunningRef = useRef(false);
   useEffect(() => {
-    const hasRunning = history.some(run => run.status === 'running');
-    if (!hasRunning) return;
+    hasRunningRef.current = history.some(run => run.status === 'running');
+  }, [history]);
 
-    const interval = setInterval(fetchHistory, 5000);
+  // One stable 5s interval per page/filter. It refetches only while something is
+  // actually running (read via the ref). Previously `history` was in the deps,
+  // so every fetch recreated the interval; combined with runs stuck in 'running'
+  // that never resolved, this polled the backend without end.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (hasRunningRef.current) fetchHistory();
+    }, 5000);
     return () => clearInterval(interval);
-  }, [currentPage, statusFilter, history]);
+  }, [currentPage, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Получить историю запусков

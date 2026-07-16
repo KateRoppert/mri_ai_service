@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,7 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from lesion_diff import compare_labeled_masks
+import lesion_diff
+from lesion_diff import compare_labeled_masks, cached_compare_labeled_masks
 
 
 def _save_labeled(path: Path, labels: dict, shape=(20, 20, 20)):
@@ -125,3 +127,68 @@ def test_shape_mismatch_raises_value_error(tmp_path):
 
     with pytest.raises(ValueError):
         compare_labeled_masks(prev_path, curr_path)
+
+
+# --- Caching (cached_compare_labeled_masks) ---------------------------------
+# The diff of two label masks is deterministic given the files and params, so it
+# must be computed once and reused. These lock in that behaviour and the
+# mtime-based invalidation (an expert re-saving an edited mask must recompute).
+
+def _counting_compare(monkeypatch):
+    """Wrap compare_labeled_masks with a call counter, via the module global."""
+    calls = {"n": 0}
+    real = lesion_diff.compare_labeled_masks
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(lesion_diff, "compare_labeled_masks", counting)
+    return calls
+
+
+def test_cached_diff_computes_once_then_reuses(tmp_path, monkeypatch):
+    prev = tmp_path / "prev.nii.gz"
+    curr = tmp_path / "curr.nii.gz"
+    _save_labeled(prev, {1: (slice(10, 13), slice(10, 13), slice(10, 13))})
+    _save_labeled(curr, {1: (slice(10, 14), slice(10, 14), slice(10, 14))})
+    cache = tmp_path / "cache"
+
+    calls = _counting_compare(monkeypatch)
+    r1 = cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=1)
+    r2 = cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=1)
+
+    assert calls["n"] == 1              # second call served from cache
+    assert r1 == r2
+    assert r1 == compare_labeled_masks(prev, curr, dilation_voxels=1)  # same as uncached
+
+
+def test_cached_diff_invalidates_when_mask_changes(tmp_path, monkeypatch):
+    prev = tmp_path / "prev.nii.gz"
+    curr = tmp_path / "curr.nii.gz"
+    _save_labeled(prev, {1: (slice(10, 13), slice(10, 13), slice(10, 13))})
+    _save_labeled(curr, {1: (slice(10, 13), slice(10, 13), slice(10, 13))})
+    cache = tmp_path / "cache"
+
+    calls = _counting_compare(monkeypatch)
+    cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=1)
+
+    # Expert edits the current mask: new content and a distinct mtime.
+    _save_labeled(curr, {1: (slice(10, 15), slice(10, 15), slice(10, 15))})
+    os.utime(curr, ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
+
+    cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=1)
+    assert calls["n"] == 2              # recomputed after the mask changed
+
+
+def test_cached_diff_key_depends_on_params(tmp_path, monkeypatch):
+    prev = tmp_path / "prev.nii.gz"
+    curr = tmp_path / "curr.nii.gz"
+    _save_labeled(prev, {1: (slice(10, 13), slice(10, 13), slice(10, 13))})
+    _save_labeled(curr, {1: (slice(10, 14), slice(10, 14), slice(10, 14))})
+    cache = tmp_path / "cache"
+
+    calls = _counting_compare(monkeypatch)
+    cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=1)
+    cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=2)  # different param
+    assert calls["n"] == 2              # different params must not share a cache entry

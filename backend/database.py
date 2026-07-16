@@ -151,6 +151,35 @@ def update_pipeline_run(
     return run
 
 
+def reconcile_orphaned_runs(db: Session) -> int:
+    """Mark runs stuck in a non-terminal state as failed at startup.
+
+    A pipeline run executes as a subprocess of the backend, so it cannot outlive
+    a backend/container restart. Any run still marked 'running' or 'pending' when
+    the backend boots is therefore orphaned — its process died. Left untouched,
+    these 'running' rows keep the frontend history auto-refresh polling forever
+    and mislead the user into thinking work is still in progress.
+
+    Returns the number of runs reconciled.
+    """
+    orphaned = db.query(PipelineRun).filter(
+        PipelineRun.status.in_(["running", "pending"])
+    ).all()
+    if not orphaned:
+        return 0
+
+    now = datetime.utcnow()
+    for run in orphaned:
+        run.status = "failed"
+        run.completed_at = now
+        run.error_message = (
+            run.error_message
+            or "Прогон прерван перезапуском сервиса (orphaned at startup)"
+        )
+    db.commit()
+    return len(orphaned)
+
+
 def get_stage_executions(db: Session, run_id: str) -> List[StageExecution]:
     """Получить все этапы для запуска"""
     return db.query(StageExecution).filter(

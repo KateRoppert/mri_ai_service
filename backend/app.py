@@ -19,10 +19,14 @@ import os
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from lesion_diff import compare_labeled_masks
+from lesion_diff import cached_compare_labeled_masks
 from patient_registry import find_by_patient_id, find_by_bids_id, find_by_bids_subject
 
 from config import settings
+
+# Persistent cache for longitudinal lesion diffs (see cached_compare_labeled_masks).
+# Lives under the mounted data dir so it survives container restarts.
+DIFF_CACHE_DIR = Path(__file__).parent / "data" / "diff_cache"
 from models import (
     PipelineStartRequest,
     PipelineStartResponse,
@@ -56,7 +60,9 @@ from database import (
     update_pipeline_run,
     get_stage_executions,
     update_stage_execution,
-    get_pipeline_history
+    get_pipeline_history,
+    reconcile_orphaned_runs,
+    SessionLocal,
 )
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor
@@ -83,6 +89,17 @@ async def lifespan(app: FastAPI):
     ensure_tables()
     logger.info("Таблицы реестра и валидаций инициализированы")
     logger.info("База данных инициализирована")
+
+    # A pipeline run is a subprocess of this backend, so it cannot survive a
+    # restart. Reconcile any run left 'running'/'pending' from a previous process
+    # to 'failed' — otherwise the frontend history auto-refresh polls them forever.
+    _reco_db = SessionLocal()
+    try:
+        n = reconcile_orphaned_runs(_reco_db)
+        if n:
+            logger.warning(f"Реконсиляция: {n} осиротевших прогонов помечены failed")
+    finally:
+        _reco_db.close()
     
     yield
     
@@ -983,8 +1000,13 @@ async def get_longitudinal_diff(
             continue
 
         try:
-            result = compare_labeled_masks(
-                prev_label_path, curr_label_path,
+            # Offload the CPU-bound mask comparison to a worker thread so it does
+            # not block the event loop (loading full-res masks + numpy passes runs
+            # for seconds), and cache the deterministic result so repeat report
+            # opens are instant instead of recomputing every session pair.
+            result = await asyncio.to_thread(
+                cached_compare_labeled_masks,
+                prev_label_path, curr_label_path, DIFF_CACHE_DIR,
                 growth_threshold_relative=diff_config.get("growth_threshold_relative", 0.20),
                 growth_threshold_absolute_cm3=diff_config.get("growth_threshold_absolute_cm3", 0.03),
                 dilation_voxels=diff_config.get("dilation_voxels", 1),
