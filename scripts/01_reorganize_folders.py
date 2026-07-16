@@ -407,15 +407,25 @@ class ModalityDetector:
 
 
 class IDMapper:
-    """Maps original patient IDs to new numbered IDs."""
+    """Maps original patient IDs to stable BIDS subject IDs.
 
-    def __init__(self):
+    When a ``lesion_type`` is given, allocation is delegated to the persistent,
+    concurrency-safe SQLite allocator (utils.bids_allocator), so the same patient
+    keeps the same sub-NNN across runs and new patients continue the numbering
+    (scoped per lesion_type = per Kappa dataset). Without a lesion_type it falls
+    back to the legacy in-memory counter — used only where no DB is available
+    (e.g. isolated unit tests).
+    """
+
+    def __init__(self, lesion_type: Optional[str] = None, db_path=None):
         self._patient_counter = 0
-        self._patient_map = {}  # original_id -> new_id
+        self._patient_map = {}  # original_id -> new_id (per-run cache)
+        self._lesion_type = lesion_type
+        self._db_path = db_path
 
     def get_patient_id(self, original_id: str) -> str:
         """
-        Get or create new patient ID.
+        Get or create the stable BIDS id for a patient.
 
         Args:
             original_id: Original patient ID (e.g., 'UPENN-GBM-00454')
@@ -423,11 +433,20 @@ class IDMapper:
         Returns:
             New patient ID (e.g., 'sub-001')
         """
-        if original_id not in self._patient_map:
-            self._patient_counter += 1
-            self._patient_map[original_id] = f"sub-{self._patient_counter:03d}"
+        if original_id in self._patient_map:
+            return self._patient_map[original_id]
 
-        return self._patient_map[original_id]
+        if self._lesion_type:
+            # Authoritative, cross-run, collision-proof allocation.
+            from utils.bids_allocator import get_or_allocate
+            new_id = get_or_allocate(self._lesion_type, original_id, self._db_path)
+        else:
+            # Legacy in-memory fallback (no persistence, no cross-run stability).
+            self._patient_counter += 1
+            new_id = f"sub-{self._patient_counter:03d}"
+
+        self._patient_map[original_id] = new_id
+        return new_id
 
     def get_mapping(self) -> Dict[str, str]:
         """Get complete patient ID mapping."""
@@ -1984,9 +2003,22 @@ def main():
     logger.info(f"Total patients to process: {len(all_patient_dirs)}")
     logger.info("=" * 60)
 
-    # Initialize or restore IDMapper from any previously saved mapping
-    existing_mapping = load_existing_mapping(args.output_dir, logger)
-    id_mapper = restore_id_mapper(existing_mapping, logger)
+    # Initialize IDMapper. With a lesion_type (always set here) the persistent
+    # SQLite allocator is the source of truth: it keeps sub-NNN stable per patient
+    # across runs and continues numbering for new patients (scoped per lesion_type
+    # = per Kappa dataset). The legacy per-run json restore is bypassed in this
+    # mode — restoring it would re-seed the in-memory cache and shadow the DB.
+    if args.lesion_type:
+        id_mapper = IDMapper(lesion_type=args.lesion_type)
+        from utils.bids_allocator import get_allocations
+        already = get_allocations(args.lesion_type)
+        logger.info(
+            f"BIDS allocator (lesion_type={args.lesion_type}): "
+            f"{len(already)} patient(s) already allocated; new patients continue "
+            f"from the next free number")
+    else:
+        existing_mapping = load_existing_mapping(args.output_dir, logger)
+        id_mapper = restore_id_mapper(existing_mapping, logger)
 
     if args.mode == 'sequential':
         (

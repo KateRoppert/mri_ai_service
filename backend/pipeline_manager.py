@@ -547,6 +547,36 @@ class PipelineManager:
 
         return reports or None
 
+    def get_patient_map(self, output_path: str) -> Dict[str, str]:
+        """
+        Read Stage 01's mapping of BIDS subject → original patient id.
+
+        Source: bids_organized/dataset_mapping.json, always written by Stage 01
+        regardless of Kappa (so this works in the pure clinical flow). Used by the
+        clinical UI to show the real patient behind "sub-001"; deliberately NOT
+        sent to Kappa, where the expert flow stays anonymous.
+
+        Returns:
+            {"sub-001": "P000915", ...}; empty dict if the mapping is absent.
+        """
+        mapping_file = Path(output_path) / "bids_organized" / "dataset_mapping.json"
+        if not mapping_file.exists():
+            return {}
+        try:
+            with open(mapping_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to read patient map {mapping_file}: {e}")
+            return {}
+
+        patients = data.get("patients", {})
+        # Stage 01 stores {"sub-001": {"original_id": "P000915", ...}}.
+        return {
+            bids_id: info.get("original_id", "")
+            for bids_id, info in patients.items()
+            if isinstance(info, dict)
+        }
+
     def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
         """
         Удаляет runtime конфиг после завершения

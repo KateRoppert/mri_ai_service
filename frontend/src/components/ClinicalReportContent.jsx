@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Table, Space, Spin, Alert, Tag, Tooltip, Row, Col, Statistic, Divider, Collapse } from 'antd';
 import { MedicineBoxOutlined, ExperimentOutlined, EnvironmentOutlined } from '@ant-design/icons';
-import { getVolumeReports, getLobarReports, getLesionStatsReports, getMcdonaldReports } from '../services/api';
+import { getVolumeReports, getLobarReports, getLesionStatsReports, getMcdonaldReports, getPatientMap } from '../services/api';
 import LongitudinalTimeline from './LongitudinalTimeline';
 
 // Sort report blocks by patient, then session (chronological — ses-001
@@ -30,6 +30,20 @@ const LESION_SIZE_BANDS = [
 
 const countLesionBands = (volumes) =>
   LESION_SIZE_BANDS.map((b) => ({ ...b, count: (volumes || []).filter(b.test).length }));
+
+// Group session report blocks by patient, preserving the incoming (already
+// sorted) session order. The longitudinal timeline is a per-patient object, so
+// it must be rendered once per patient — not once per session, which fired one
+// timeline (2 API calls) for every session and stormed the backend.
+const groupByPatient = (arr) => {
+  const groups = new Map();
+  for (const item of arr || []) {
+    const pid = item.patient_id || '';
+    if (!groups.has(pid)) groups.set(pid, []);
+    groups.get(pid).push(item);
+  }
+  return [...groups.entries()]; // [[patientId, sessions[]], ...]
+};
 
 // McDonald zone display metadata (RU labels, colors). spinal_cord is rendered
 // separately as an explicit "unsupported" tag, not as a regular zone row.
@@ -133,6 +147,9 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   const [lesionStatsReports, setLesionStatsReports] = useState([]);
   const [mcdonaldReports, setMcdonaldReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  // Clinical-only: BIDS subject → real patient id (sub-001 → P000915). Never
+  // populated in the Kappa/expert flow, keeping that view anonymous (variant A).
+  const [patientMap, setPatientMap] = useState({});
 
   // Kappa source (validation): normalize dsEntityInfo into the same state
   // shapes the local API produces, then the shared render handles it.
@@ -165,6 +182,7 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
       setLobarReports([]);
       setLesionStatsReports([]);
       setMcdonaldReports([]);
+      setPatientMap({});
       setError(null);
     }
   }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -181,6 +199,12 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     setLoading(true);
     setError(null);
     try {
+      // Real-patient map for the clinical view (best-effort — absence just
+      // means we fall back to showing the BIDS id alone).
+      getPatientMap(runId)
+        .then((res) => setPatientMap(res.patient_map || {}))
+        .catch(() => setPatientMap({}));
+
       const fetches = [
         getVolumeReports(runId).catch(() => ({ reports: [] })),
         getLobarReports(runId).catch(() => ({ reports: [] })),
@@ -512,19 +536,30 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     if (!loaded || lesionStatsReports.length === 0) return null;
     return (
       <>
-        {lesionStatsReports.map((stats, idx) => {
-          const bands = countLesionBands(stats.lesion_volumes_cm3);
-          const perLesionRows = (stats.lesion_volumes_cm3 || []).map((v, i) => ({
-            key: i, n: i + 1, cm3: v,
-          }));
-          return (
-            <div key={idx} style={{ marginBottom: 32 }}>
-              <div style={{ marginBottom: 16 }}>
-                <Tag>{stats.patient_id}</Tag>
-                <Tag>{stats.session_id}</Tag>
-              </div>
+        {groupByPatient(lesionStatsReports).map(([patientId, sessions]) => (
+          <div key={patientId} style={{ marginBottom: 40 }}>
+            {/* Patient header — once per patient. Clinical view shows the real
+                patient; Kappa/expert view keeps patientMap empty and stays
+                anonymous (variant A). */}
+            <div style={{ marginBottom: 16 }}>
+              {patientMap[patientId] && (
+                <Tag color="blue">{patientMap[patientId]}</Tag>
+              )}
+              <Tag>{patientId}</Tag>
+            </div>
 
-              {/* Очаговая нагрузка */}
+            {sessions.map((stats, idx) => {
+              const bands = countLesionBands(stats.lesion_volumes_cm3);
+              const perLesionRows = (stats.lesion_volumes_cm3 || []).map((v, i) => ({
+                key: i, n: i + 1, cm3: v,
+              }));
+              return (
+                <div key={idx} style={{ marginBottom: 32 }}>
+                  <div style={{ marginBottom: 16 }}>
+                    <Tag>{stats.session_id}</Tag>
+                  </div>
+
+                  {/* Очаговая нагрузка */}
               <Divider orientation="left" style={{ fontSize: 14 }}>
                 <Space><MedicineBoxOutlined /> Очаговая нагрузка</Space>
               </Divider>
@@ -607,15 +642,17 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
                   </>
                 );
               })()}
+                </div>
+              );
+            })}
 
-              {/* Динамика между сессиями */}
-              <Divider orientation="left" style={{ fontSize: 14 }}>
-                <Space>📈 Динамика между сессиями</Space>
-              </Divider>
-              <LongitudinalTimeline patientId={stats.patient_id} lesionType="multiple_sclerosis" />
-            </div>
-          );
-        })}
+            {/* Динамика между сессиями — один таймлайн на пациента (не на сессию). */}
+            <Divider orientation="left" style={{ fontSize: 14 }}>
+              <Space>📈 Динамика между сессиями</Space>
+            </Divider>
+            <LongitudinalTimeline patientId={patientId} lesionType="multiple_sclerosis" />
+          </div>
+        ))}
       </>
     );
   }
