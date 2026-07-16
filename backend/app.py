@@ -85,10 +85,21 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Запуск {settings.app_name} v{settings.app_version}")
     init_db()
-    from patient_registry import ensure_tables
+    from patient_registry import ensure_tables, reconcile_registry_bids_ids
     ensure_tables()
     logger.info("Таблицы реестра и валидаций инициализированы")
     logger.info("База данных инициализирована")
+
+    # Keep registry BIDS ids in sync with the persistent allocator (the source of
+    # truth). Historically register_patient did not update bids_id, so patients
+    # re-numbered by the allocator kept a stale subject id and their longitudinal
+    # view broke. Idempotent — a no-op once everything already matches.
+    try:
+        n_bids = reconcile_registry_bids_ids()
+        if n_bids:
+            logger.warning(f"Реконсиляция реестра: обновлено bids_id у {n_bids} записей")
+    except Exception as e:
+        logger.error(f"Реконсиляция реестра не удалась: {e}")
 
     # A pipeline run is a subprocess of this backend, so it cannot survive a
     # restart. Reconcile any run left 'running'/'pending' from a previous process
