@@ -60,7 +60,9 @@ from database import (
     update_pipeline_run,
     get_stage_executions,
     update_stage_execution,
-    get_pipeline_history
+    get_pipeline_history,
+    reconcile_orphaned_runs,
+    SessionLocal,
 )
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor
@@ -87,6 +89,17 @@ async def lifespan(app: FastAPI):
     ensure_tables()
     logger.info("Таблицы реестра и валидаций инициализированы")
     logger.info("База данных инициализирована")
+
+    # A pipeline run is a subprocess of this backend, so it cannot survive a
+    # restart. Reconcile any run left 'running'/'pending' from a previous process
+    # to 'failed' — otherwise the frontend history auto-refresh polls them forever.
+    _reco_db = SessionLocal()
+    try:
+        n = reconcile_orphaned_runs(_reco_db)
+        if n:
+            logger.warning(f"Реконсиляция: {n} осиротевших прогонов помечены failed")
+    finally:
+        _reco_db.close()
     
     yield
     
