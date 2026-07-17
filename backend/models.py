@@ -336,6 +336,13 @@ class LongitudinalDiffPair(BaseModel):
     stable_count: int
     resolved_count: int
     lesions: List[LesionDiffEntry]
+    # Диагностика недостоверна, если сессии плохо ко-регистрированы: очаги не
+    # пересекаются и всё считается как «новое + исчезло». reliable=False → фронт
+    # показывает предупреждение вместо цифр.
+    reliable: bool = True
+    coregistration_dice: Optional[float] = Field(
+        None, description="Dice перекрытия мозга сессий; ниже порога — недостоверно"
+    )
 
 class LongitudinalDiffResponse(BaseModel):
     """Диагностика очагов по всем парам соседних сессий пациента"""

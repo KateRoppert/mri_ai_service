@@ -19,7 +19,7 @@ import os
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from lesion_diff import cached_compare_labeled_masks
+from lesion_diff import cached_compare_labeled_masks, coregistration_dice
 from patient_registry import find_by_patient_id, find_by_bids_id, find_by_bids_subject
 
 from config import settings
@@ -27,6 +27,13 @@ from config import settings
 # Persistent cache for longitudinal lesion diffs (see cached_compare_labeled_masks).
 # Lives under the mounted data dir so it survives container restarts.
 DIFF_CACHE_DIR = Path(__file__).parent / "data" / "diff_cache"
+
+# Below this brain-overlap Dice, two sessions are treated as not co-registered:
+# the lesion diff would be meaningless (lesions don't overlap, everything counts
+# as new+resolved), so the pair is flagged unreliable instead of reported.
+# Well-registered pairs measure ~0.88-0.98; a gross failure (partial coverage /
+# bad registration) measures ~0.4.
+COREG_DICE_THRESHOLD = 0.7
 from models import (
     PipelineStartRequest,
     PipelineStartResponse,
@@ -1010,6 +1017,27 @@ async def get_longitudinal_diff(
             )
             continue
 
+        # Guardrail: the lesion diff is only meaningful if the two sessions are
+        # co-registered. Assess brain overlap; if the sessions are misaligned
+        # (e.g. partial-coverage scan or failed registration), the diff would be
+        # noise, so flag the pair unreliable and skip the expensive computation.
+        prev_ref = pipeline_manager.get_preprocessed_reference_path(prev_run.output_path, prev_subject, prev_session)
+        curr_ref = pipeline_manager.get_preprocessed_reference_path(curr_run.output_path, curr_subject, curr_session)
+        coreg = coregistration_dice(prev_ref, curr_ref) if (prev_ref and curr_ref) else None
+
+        if coreg is not None and coreg < COREG_DICE_THRESHOLD:
+            logger.warning(
+                f"Diff {prev_session}->{curr_session} for {patient_id} flagged "
+                f"unreliable: brain co-registration Dice={coreg:.3f} "
+                f"< {COREG_DICE_THRESHOLD}"
+            )
+            pairs.append(LongitudinalDiffPair(
+                from_session_id=prev_session, to_session_id=curr_session,
+                new_count=0, growing_count=0, stable_count=0, resolved_count=0,
+                lesions=[], reliable=False, coregistration_dice=round(coreg, 3),
+            ))
+            continue
+
         try:
             # Offload the CPU-bound mask comparison to a worker thread so it does
             # not block the event loop (loading full-res masks + numpy passes runs
@@ -1034,6 +1062,8 @@ async def get_longitudinal_diff(
             stable_count=result["stable_count"],
             resolved_count=result["resolved_count"],
             lesions=[LesionDiffEntry(**l) for l in result["lesions"]],
+            reliable=True,
+            coregistration_dice=round(coreg, 3) if coreg is not None else None,
         ))
 
     return LongitudinalDiffResponse(patient_id=patient_id, pairs=pairs)

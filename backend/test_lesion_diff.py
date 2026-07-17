@@ -192,3 +192,43 @@ def test_cached_diff_key_depends_on_params(tmp_path, monkeypatch):
     cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=1)
     cached_compare_labeled_masks(prev, curr, cache, dilation_voxels=2)  # different param
     assert calls["n"] == 2              # different params must not share a cache entry
+
+
+# --- coregistration_dice (guardrail signal) ---------------------------------
+# The longitudinal diff is only meaningful when the two sessions are co-registered.
+# coregistration_dice measures brain overlap (background is 0 on skull-stripped
+# preprocessed images) so the endpoint can flag pairs that are not aligned instead
+# of reporting the misalignment as lesion activity.
+
+def _save_brain(path, occupied):
+    vol = np.zeros((30, 30, 30), dtype=np.float32)
+    vol[occupied] = 100.0
+    nib.save(nib.Nifti1Image(vol, np.eye(4)), str(path))
+
+
+def test_coregistration_dice_aligned_is_high(tmp_path):
+    a, b = tmp_path / "a.nii.gz", tmp_path / "b.nii.gz"
+    occ = (slice(5, 25), slice(5, 25), slice(5, 25))
+    _save_brain(a, occ)
+    _save_brain(b, occ)
+    assert lesion_diff.coregistration_dice(a, b) > 0.95
+
+
+def test_coregistration_dice_shifted_is_low(tmp_path):
+    a, b = tmp_path / "a.nii.gz", tmp_path / "b.nii.gz"
+    _save_brain(a, (slice(2, 12), slice(5, 25), slice(5, 25)))    # lower half
+    _save_brain(b, (slice(18, 28), slice(5, 25), slice(5, 25)))   # shifted up, no overlap
+    assert lesion_diff.coregistration_dice(a, b) < 0.3
+
+
+def test_coregistration_dice_shape_mismatch_returns_zero(tmp_path):
+    a, b = tmp_path / "a.nii.gz", tmp_path / "b.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((30, 30, 30), np.float32), np.eye(4)), str(a))
+    nib.save(nib.Nifti1Image(np.ones((20, 20, 20), np.float32), np.eye(4)), str(b))
+    assert lesion_diff.coregistration_dice(a, b) == 0.0
+
+
+def test_coregistration_dice_missing_file_returns_none(tmp_path):
+    a = tmp_path / "a.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((10, 10, 10), np.float32), np.eye(4)), str(a))
+    assert lesion_diff.coregistration_dice(a, tmp_path / "missing.nii.gz") is None
