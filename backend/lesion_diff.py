@@ -30,7 +30,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 
 import nibabel as nib
 import numpy as np
@@ -130,6 +130,44 @@ def compare_labeled_masks(
         "resolved_count": counts["resolved"],
         "lesions": lesions,
     }
+
+
+def coregistration_dice(
+    prev_ref_path: Union[str, Path],
+    curr_ref_path: Union[str, Path],
+) -> Optional[float]:
+    """Brain-overlap Dice between two sessions' preprocessed reference images.
+
+    The longitudinal diff is only meaningful when the two sessions occupy the same
+    anatomical space. Preprocessed images are skull-stripped (background exactly 0),
+    so ``data > 0`` is the brain mask, and the Dice of the two brain masks measures
+    how well the sessions are co-registered — independent of lesion biology.
+
+    Returns:
+        Dice in [0, 1]; 0.0 if the two grids differ (definitely not aligned);
+        None if a file is missing/unreadable (cannot assess — caller should not
+        block on this).
+    """
+    prev_ref_path, curr_ref_path = Path(prev_ref_path), Path(curr_ref_path)
+    if not prev_ref_path.exists() or not curr_ref_path.exists():
+        return None
+    try:
+        prev = np.asarray(nib.load(str(prev_ref_path)).dataobj)
+        curr = np.asarray(nib.load(str(curr_ref_path)).dataobj)
+    except Exception as e:
+        logger.warning(f"coregistration_dice: failed to load references: {e}")
+        return None
+
+    if prev.shape != curr.shape:
+        return 0.0
+
+    prev_brain = prev > 0
+    curr_brain = curr > 0
+    denom = int(prev_brain.sum()) + int(curr_brain.sum())
+    if denom == 0:
+        return None
+    inter = int((prev_brain & curr_brain).sum())
+    return 2.0 * inter / denom
 
 
 def _diff_cache_key(prev_path: Path, curr_path: Path, params: Dict) -> str:

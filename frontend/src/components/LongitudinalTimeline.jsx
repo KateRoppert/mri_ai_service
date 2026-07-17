@@ -1,6 +1,6 @@
 // frontend/src/components/LongitudinalTimeline.jsx
 import { useEffect, useState } from 'react';
-import { Table, Spin, Alert, Tag, Space } from 'antd';
+import { Table, Spin, Alert, Tag, Space, Tooltip } from 'antd';
 import { getLongitudinalReport, getLongitudinalDiff } from '../services/api';
 
 const LongitudinalTimeline = ({ patientId, lesionType }) => {
@@ -54,6 +54,18 @@ const LongitudinalTimeline = ({ patientId, lesionType }) => {
       align: 'right',
       render: (_, record, idx) => {
         if (idx === 0) return '—';
+        const pair = diffPairs.find(
+          p => p.from_session_id === data[idx - 1].session_id && p.to_session_id === record.session_id
+        );
+        // When the sessions are not co-registered, the volume comparison spans
+        // different anatomy/coverage and is not trustworthy either.
+        if (pair && pair.reliable === false) {
+          return (
+            <Tooltip title="Сессии не ко-регистрированы — сравнение недостоверно">
+              <Tag color="warning">⚠</Tag>
+            </Tooltip>
+          );
+        }
         const prev = data[idx - 1].total_volume_cm3;
         const delta = record.total_volume_cm3 - prev;
         const color = delta > 0 ? 'red' : delta < 0 ? 'green' : 'default';
@@ -71,6 +83,16 @@ const LongitudinalTimeline = ({ patientId, lesionType }) => {
           p => p.from_session_id === prevSessionId && p.to_session_id === record.session_id
         );
         if (!pair) return <span style={{ color: '#bbb' }}>н/д</span>;
+        // Guardrail: misaligned sessions would report all lesions as new+resolved.
+        // Show an explicit warning instead of misleading clinical counts.
+        if (pair.reliable === false) {
+          return (
+            <Tooltip title={`Сессии не ко-регистрированы (Dice мозга ${pair.coregistration_dice ?? '—'}). `
+              + 'Динамика очагов недостоверна — вероятно, разное покрытие скана или сбой регистрации.'}>
+              <Tag color="warning">⚠ не ко-регистрировано</Tag>
+            </Tooltip>
+          );
+        }
         if (pair.new_count === 0 && pair.growing_count === 0 && pair.resolved_count === 0) {
           return <Tag color="green">стабильно</Tag>;
         }

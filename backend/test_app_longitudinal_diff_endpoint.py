@@ -47,6 +47,8 @@ def test_200_with_two_sessions_computes_one_pair(tmp_path):
     with patch("app.find_by_patient_id", return_value=records), \
          patch("app.get_pipeline_run", return_value=_fake_run()), \
          patch.object(pipeline_manager, "get_segmask_label_path", return_value=Path("/fake/labels.nii.gz")), \
+         patch.object(pipeline_manager, "get_preprocessed_reference_path", return_value=Path("/fake/t1.nii.gz")), \
+         patch("app.coregistration_dice", return_value=0.95), \
          patch("app.cached_compare_labeled_masks", return_value=fake_diff_result):
         response = client.get("/api/longitudinal/sub-001/diff?lesion_type=multiple_sclerosis")
 
@@ -56,6 +58,31 @@ def test_200_with_two_sessions_computes_one_pair(tmp_path):
     assert body["pairs"][0]["from_session_id"] == "ses-001"
     assert body["pairs"][0]["to_session_id"] == "ses-002"
     assert body["pairs"][0]["new_count"] == 1
+    assert body["pairs"][0]["reliable"] is True
+    assert body["pairs"][0]["coregistration_dice"] == 0.95
+
+
+def test_pair_flagged_unreliable_when_not_coregistered():
+    """A misaligned pair must be flagged, not reported as lesion activity."""
+    records = [
+        _fake_record("sub-001_ses-001", "2020-09-21", "run-1"),
+        _fake_record("sub-001_ses-002", "2021-04-13", "run-2"),
+    ]
+    with patch("app.find_by_patient_id", return_value=records), \
+         patch("app.get_pipeline_run", return_value=_fake_run()), \
+         patch.object(pipeline_manager, "get_segmask_label_path", return_value=Path("/fake/labels.nii.gz")), \
+         patch.object(pipeline_manager, "get_preprocessed_reference_path", return_value=Path("/fake/t1.nii.gz")), \
+         patch("app.coregistration_dice", return_value=0.42), \
+         patch("app.cached_compare_labeled_masks", return_value={"new_count": 51, "growing_count": 0,
+               "stable_count": 0, "resolved_count": 56, "lesions": []}) as mock_diff:
+        response = client.get("/api/longitudinal/sub-001/diff?lesion_type=multiple_sclerosis")
+
+    assert response.status_code == 200
+    pair = response.json()["pairs"][0]
+    assert pair["reliable"] is False
+    assert pair["coregistration_dice"] == 0.42
+    assert pair["new_count"] == 0 and pair["resolved_count"] == 0  # misleading counts suppressed
+    mock_diff.assert_not_called()  # expensive diff skipped for a misaligned pair
 
 
 def test_pair_skipped_when_label_file_missing():

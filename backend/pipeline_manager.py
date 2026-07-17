@@ -522,6 +522,20 @@ class PipelineManager:
         matches = list(seg_dir.glob("*_segmask_labels.nii.gz"))
         return matches[0] if matches else None
 
+    def get_preprocessed_reference_path(
+        self, output_path: str, subject_id: str, session_id: str, modality: str = "t1"
+    ) -> Optional[Path]:
+        """Locate a session's preprocessed (atlas-space, skull-stripped) reference
+        image — used to assess inter-session co-registration for the diff guardrail.
+
+        Path: preprocessed/sub-XXX/ses-XXX/anat/sub-XXX_ses-XXX_<modality>.nii.gz
+        """
+        prep_path = (
+            Path(output_path) / "preprocessed" / subject_id / session_id / "anat"
+            / f"{subject_id}_{session_id}_{modality}.nii.gz"
+        )
+        return prep_path if prep_path.exists() else None
+
     def get_lesion_stats_reports(self, output_path: str) -> Optional[List[Dict[str, Any]]]:
         """
         Read lesion_stats_report.json files produced by Stage 08 for MS cases.
