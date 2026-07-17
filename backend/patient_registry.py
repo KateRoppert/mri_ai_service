@@ -120,6 +120,13 @@ def register_patient(
         ).first()
 
         if existing:
+            # Keep bids_id in sync with the allocator. The BIDS subject can change
+            # between runs (a patient re-numbered by the persistent allocator), and
+            # if we don't update it here the registry keeps the first-ever id while
+            # run outputs use the new one — which desyncs the longitudinal view (a
+            # patient's timeline endpoint can't find its sessions under the new id).
+            if bids_id and existing.bids_id != bids_id:
+                existing.bids_id = bids_id
             if kappa_entity_id:
                 existing.kappa_entity_id = kappa_entity_id
             if kappa_dataset_id:
@@ -248,6 +255,69 @@ def get_all_records() -> List[Dict[str, Any]]:
             PatientRegistry.created_at.desc()
         ).all()
         return [_to_dict(r) for r in records]
+    finally:
+        db.close()
+
+
+def _resync_bids_id(current_bids_id: str, correct_subject: str) -> str:
+    """Return the bids_id with its subject replaced by ``correct_subject``.
+
+    bids_id is "sub-XXX_ses-YYY"; only the subject (sub-XXX) is governed by the
+    allocator — the session part is per-run and kept as-is.
+    """
+    if "_" in (current_bids_id or ""):
+        session_part = current_bids_id.split("_", 1)[1]
+        return f"{correct_subject}_{session_part}"
+    return correct_subject
+
+
+def reconcile_registry_bids_ids(
+    allocations_by_lesion_type: Optional[Dict[str, Dict[str, str]]] = None,
+) -> int:
+    """Sync each registry row's BIDS subject to the allocator (source of truth).
+
+    register_patient historically did not update bids_id, so patients re-numbered
+    by the persistent allocator kept their first-ever subject id. That desynced
+    the registry from run outputs and broke the longitudinal view. This brings
+    existing rows back in line without re-running the pipeline. Idempotent: rows
+    already matching the allocator are left untouched, and patients with no
+    allocator entry (e.g. processed before the allocator existed) are skipped.
+
+    Args:
+        allocations_by_lesion_type: injectable {lesion_type: {original_id: sub-XXX}}
+            for testing; when omitted it is read from utils.bids_allocator.
+
+    Returns:
+        Number of registry rows updated.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.query(PatientRegistry).all()
+        alloc_cache: Dict[str, Dict[str, str]] = allocations_by_lesion_type or {}
+        updated = 0
+        for row in rows:
+            lesion_type = row.lesion_type
+            if not lesion_type:
+                continue
+            if lesion_type not in alloc_cache:
+                # Imported lazily so the reconcile logic can be tested with
+                # injected allocations without importing the allocator module.
+                from utils.bids_allocator import get_allocations
+                alloc_cache[lesion_type] = get_allocations(lesion_type)
+            correct_subject = alloc_cache[lesion_type].get(row.original_patient_id)
+            if not correct_subject:
+                continue  # patient predates the allocator — leave as-is
+            new_bids_id = _resync_bids_id(row.bids_id, correct_subject)
+            if new_bids_id != row.bids_id:
+                logger.info(
+                    "Reconciling registry bids_id: %s -> %s (%s)",
+                    row.bids_id, new_bids_id, row.original_patient_id,
+                )
+                row.bids_id = new_bids_id
+                updated += 1
+        if updated:
+            db.commit()
+        return updated
     finally:
         db.close()
 

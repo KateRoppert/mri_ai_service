@@ -47,7 +47,7 @@ def test_200_with_two_sessions_computes_one_pair(tmp_path):
     with patch("app.find_by_patient_id", return_value=records), \
          patch("app.get_pipeline_run", return_value=_fake_run()), \
          patch.object(pipeline_manager, "get_segmask_label_path", return_value=Path("/fake/labels.nii.gz")), \
-         patch("app.compare_labeled_masks", return_value=fake_diff_result):
+         patch("app.cached_compare_labeled_masks", return_value=fake_diff_result):
         response = client.get("/api/longitudinal/sub-001/diff?lesion_type=multiple_sclerosis")
 
     assert response.status_code == 200
