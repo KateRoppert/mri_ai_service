@@ -98,7 +98,7 @@ stages:
     args:
       config: configs/preprocessing_config.yaml
       mode: parallel
-      workers: 4                            # ~2.9 GB/worker measured on SibBMS 0.35mm (6 workers took 17.6 of the 20g cap and spilled 2.1 GB into swap — passed, but no margin); 4*2.9=11.7 GB. See KI-042
+      workers: 3                            # re-measured on SibBMS 0.35mm: ~4.1 GB/worker (higher than the earlier 2.9 estimate); 4 workers = 16.6 of the 20g cap + host swap pressure. 3*4.1=12.3 GB gives margin on the heaviest stage. See KI-042 (proper fix is memory-aware sizing)
       skip-existing: true
       benchmark: false
       validate: true
