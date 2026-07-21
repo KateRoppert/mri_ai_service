@@ -7,11 +7,14 @@ when no budget can be determined the planner returns the requested value, so a
 working run is never broken.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def cgroup_memory_limit_bytes(
@@ -114,36 +117,62 @@ def plan_stage_workers(
     """Stage-facing wrapper: read the stage's cost constants, estimate per-worker
     bytes from the largest input, and cap the worker count.
 
-    Fail-safe: an unknown stage or missing config yields `requested` unchanged.
-    `budget_bytes` is normally None (read from cgroup); tests inject it.
-    When budget_bytes is provided, it is the raw cgroup limit; safety_factor is applied here.
+    Fail-safe: an unknown stage, missing config, malformed config file, or a
+    stage entry missing a required cost key all yield `requested` (capped by
+    `cpu_cap` if given) unchanged. `budget_bytes` is normally None (read from
+    cgroup); tests inject it. When budget_bytes is provided, it is the raw
+    cgroup limit; safety_factor is applied here.
     """
-    if config is None:
-        from utils.config_loader import load_resource_config
-        config = load_resource_config()
+    try:
+        if config is None:
+            from utils.config_loader import load_resource_config
+            config = load_resource_config()
 
-    stage_cfg = config.get("stages", {}).get(stage_name)
-    if not stage_cfg:
-        return PlanResult(
-            max(config.get("min_workers", 1), min([requested, cpu_cap] if cpu_cap else [requested])),
-            f"no resource config for {stage_name}; using requested={requested}",
+        stage_cfg = config.get("stages", {}).get(stage_name)
+        if not stage_cfg:
+            return PlanResult(
+                max(config.get("min_workers", 1), min([requested, cpu_cap] if cpu_cap else [requested])),
+                f"no resource config for {stage_name}; using requested={requested}",
+            )
+
+        voxels = max_voxels(input_files)
+        per_worker = voxels * float(stage_cfg["k_bytes_per_voxel"])
+
+        # If budget_bytes is provided (by tests), apply safety_factor to it.
+        # budget_bytes here is the raw/unscaled limit (e.g. from a test or a
+        # future caller); plan_workers's own budget_bytes=None branch already
+        # applies safety_factor when reading from cgroup, so we replicate that
+        # scaling here for an explicitly-provided budget too, keeping the two
+        # call paths consistent.
+        safety_factor = float(config.get("safety_factor", 0.85))
+        if budget_bytes is not None:
+            budget_bytes = int(budget_bytes * safety_factor)
+
+        return plan_workers(
+            requested=requested,
+            per_worker_bytes=per_worker,
+            budget_bytes=budget_bytes,
+            cpu_cap=cpu_cap,
+            safety_factor=safety_factor,
+            reserve_bytes=int(stage_cfg.get("reserve_bytes", 1_500_000_000)),
+            min_workers=int(config.get("min_workers", 1)),
         )
-
-    voxels = max_voxels(input_files)
-    per_worker = voxels * float(stage_cfg["k_bytes_per_voxel"])
-
-    # If budget_bytes is provided (by tests), apply safety_factor to it.
-    # In production (budget_bytes=None), plan_workers will read cgroup and apply safety_factor.
-    safety_factor = float(config.get("safety_factor", 0.85))
-    if budget_bytes is not None:
-        budget_bytes = int(budget_bytes * safety_factor)
-
-    return plan_workers(
-        requested=requested,
-        per_worker_bytes=per_worker,
-        budget_bytes=budget_bytes,
-        cpu_cap=cpu_cap,
-        safety_factor=safety_factor,
-        reserve_bytes=int(stage_cfg.get("reserve_bytes", 1_500_000_000)),
-        min_workers=int(config.get("min_workers", 1)),
-    )
+    except Exception as exc:
+        # Fail-safe: plan_stage_workers must never raise into a calling stage.
+        # Any problem reading/parsing the resource config, or a malformed
+        # per-stage cost entry (e.g. missing k_bytes_per_voxel), degrades to
+        # the requested worker count (capped by cpu_cap if given).
+        min_workers_default = 1
+        actual_workers = max(
+            min_workers_default,
+            min([requested] + ([cpu_cap] if cpu_cap else [])),
+        )
+        logger.warning(
+            "plan_stage_workers: resource config error for stage=%s (%s); "
+            "falling back to requested=%d",
+            stage_name, exc, requested,
+        )
+        return PlanResult(
+            actual_workers,
+            f"resource config error: {exc}; using requested={requested}",
+        )

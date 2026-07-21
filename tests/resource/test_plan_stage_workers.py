@@ -61,3 +61,28 @@ def test_cpu_cap_forwarded(tmp_path):
     r = plan_stage_workers("stage_05_preprocessing", [small], requested=6,
                            cpu_cap=2, config=_CFG, budget_bytes=20 * GB)
     assert r.actual_workers == 2
+
+
+def test_malformed_yaml_falls_back_to_requested(tmp_path, monkeypatch):
+    """A YAML parse error in resource_config.yaml must not raise into the stage."""
+    from utils.resource_planner import plan_stage_workers
+    bad = tmp_path / "resource_config.yaml"
+    bad.write_text("stages:\n  stage_05_preprocessing: [unbalanced\n")  # invalid YAML
+    monkeypatch.setattr(
+        "utils.config_loader.load_resource_config",
+        lambda: (_ for _ in ()).throw(Exception("simulated parse error")),
+    )
+    # No explicit config= passed, so plan_stage_workers must call (the now-broken)
+    # load_resource_config() itself and NOT raise.
+    result = plan_stage_workers("stage_05_preprocessing", [], requested=6)
+    assert result.actual_workers == 6
+
+
+def test_stage_missing_cost_key_falls_back_to_requested():
+    from utils.resource_planner import plan_stage_workers
+    broken_cfg = {
+        "safety_factor": 0.85, "min_workers": 1,
+        "stages": {"stage_05_preprocessing": {"reserve_bytes": 2_000_000_000}},  # no k_bytes_per_voxel
+    }
+    result = plan_stage_workers("stage_05_preprocessing", [], requested=6, config=broken_cfg)
+    assert result.actual_workers == 6
