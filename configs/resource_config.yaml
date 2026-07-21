@@ -12,5 +12,10 @@ stages:
     k_bytes_per_voxel: 17.7
     reserve_bytes: 2000000000
   stage_07_inverse_transform:
+    # Calibrated against the true cross-modality worst-case file (confirmed
+    # empirically on SibBMS: t1 231.4M voxels >= t2fl 185.6M >= t2 14.7M) —
+    # valid as long as max_voxels() is computed across all modalities, not
+    # just the reference modality (see scripts/07_inverse_transform.py's
+    # _input_refs).
     k_bytes_per_voxel: 22.5
     reserve_bytes: 2000000000
