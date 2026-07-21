@@ -48,6 +48,15 @@ from quality_metrics import (
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 
 
+def _plan_workers_for_inputs(input_files, requested, cpu_cap=None, budget_bytes=None):
+    """Memory-aware worker count for this stage (see utils.resource_planner)."""
+    from utils.resource_planner import plan_stage_workers
+    return plan_stage_workers(
+        "stage_04_quality", input_files, requested,
+        cpu_cap=cpu_cap, budget_bytes=budget_bytes,
+    )
+
+
 def _load_image_data(nifti_path):
     """Load a NIfTI file's voxel data as float32.
 
@@ -631,6 +640,13 @@ class QualityAssessor:
         if mode == 'sequential':
             self._process_sequential(images, output_dir, skip_existing)
         else:  # parallel
+            # Memory-aware ceiling: cap the configured worker count by what the
+            # container's memory budget allows, given the largest input volume
+            # among the images actually about to be processed.
+            input_nifti_files = [nifti_path for (nifti_path, *_rest) in images]
+            _plan = _plan_workers_for_inputs(input_nifti_files, workers)
+            self.logger.info(f"Workers (memory budget): {_plan.actual_workers} — {_plan.reason}")
+            workers = _plan.actual_workers
             self._process_parallel(images, output_dir, workers, skip_existing)
         
         # Calculate statistics
