@@ -88,7 +88,7 @@ def plan_workers(
         limit = cgroup_memory_limit_bytes()
         budget_bytes = int(limit * safety_factor) if limit is not None else None
 
-    if budget_bytes is not None and per_worker_bytes and per_worker_bytes > 0:
+    if budget_bytes is not None and per_worker_bytes > 0:
         usable = budget_bytes - reserve_bytes
         mem_workers = int(usable // per_worker_bytes) if usable > 0 else 0
         caps.append(mem_workers)

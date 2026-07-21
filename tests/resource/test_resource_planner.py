@@ -3,7 +3,6 @@ from pathlib import Path
 
 import numpy as np
 import nibabel as nib
-import pytest
 
 PROJ_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJ_ROOT))
@@ -81,8 +80,9 @@ def test_cpu_cap_applies():
     assert r.actual_workers == 3
 
 
-def test_no_budget_means_no_memory_cap():
-    # budget_bytes None and cgroup unreadable -> fall back to requested (capped by cpu only)
+def test_no_budget_means_no_memory_cap(monkeypatch):
+    monkeypatch.setattr("utils.resource_planner.cgroup_memory_limit_bytes", lambda *a, **k: None)
+    # budget_bytes None and cgroup reports no limit -> fall back to requested (capped by cpu only)
     r = plan_workers(requested=5, per_worker_bytes=4 * GB, budget_bytes=None, cpu_cap=None)
     assert r.actual_workers == 5
 
