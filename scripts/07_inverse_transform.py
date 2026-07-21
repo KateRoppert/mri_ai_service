@@ -27,6 +27,16 @@ from preprocessing_steps.registration import inverse_transform_subject_masks
 
 logger = logging.getLogger(__name__)
 
+
+def _plan_workers_for_inputs(input_files, requested, cpu_cap=None, budget_bytes=None):
+    """Memory-aware worker count for this stage (see utils.resource_planner)."""
+    from utils.resource_planner import plan_stage_workers
+    return plan_stage_workers(
+        "stage_07_inverse_transform", input_files, requested,
+        cpu_cap=cpu_cap, budget_bytes=budget_bytes,
+    )
+
+
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     """Setup logging configuration."""
     root_logger = logging.getLogger()
@@ -265,16 +275,28 @@ def main():
     else:
         workers_by_tasks = min(args.workers, len(masks))
         workers_by_cpu = max(1, effective_cpu // 4)
-        actual_workers = max(1, min(workers_by_tasks, workers_by_cpu))
+        # Memory driver for stage 07 is the native reference image each mask is
+        # warped into (loaded by inverse_transform_mask), not the small
+        # atlas-space mask itself. Build those native reference paths from the
+        # already-assembled work list and feed the CPU cap in alongside them so
+        # the planner takes the min of ceiling/CPU/memory.
+        # Measure across ALL native modalities per mask, not just the reference
+        # modality — inverse_transform_subject_masks (registration.py) loads
+        # every modality's own native image as a warp target, so the true
+        # peak-memory driver is whichever modality's file is largest for a
+        # given subject/session, not necessarily the reference modality's file.
+        _input_refs = [
+            nifti_dir / subj / sess / "anat" / f"{subj}_{sess}_{modality}.nii.gz"
+            for (mask_path, subj, sess) in masks
+            for modality in modalities
+        ]
+        _plan = _plan_workers_for_inputs(
+            _input_refs, requested=workers_by_tasks, cpu_cap=workers_by_cpu,
+        )
+        actual_workers = _plan.actual_workers
         threads = max(1, effective_cpu // actual_workers)
-        reason = ""
-        if actual_workers < args.workers:
-            if workers_by_tasks <= workers_by_cpu:
-                reason = f" (capped by n_masks={len(masks)})"
-            else:
-                reason = f" (capped by effective_cpu//4={workers_by_cpu})"
         logger.info(
-            f"Workers: {actual_workers}{reason} | "
+            f"Workers: {actual_workers} — {_plan.reason} | "
             f"Threads per worker: {threads} | "
             f"Total threads: {actual_workers * threads}/{cpu_count} "
             f"(reserved {_OS_RESERVED_CORES} for OS)"

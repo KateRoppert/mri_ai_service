@@ -48,6 +48,16 @@ logger = logging.getLogger(__name__)
 _OS_RESERVED_CORES = 2
 
 
+def _plan_workers_for_inputs(input_files, requested, cpu_cap=None, budget_bytes=None):
+    """Memory-aware worker count for this stage (see utils.resource_planner)."""
+    from utils.resource_planner import plan_stage_workers
+    plan = plan_stage_workers(
+        "stage_05_preprocessing", input_files, requested,
+        cpu_cap=cpu_cap, budget_bytes=budget_bytes,
+    )
+    return plan
+
+
 def calculate_optimal_parallelism(
     n_subjects: int, cpu_count: int, max_workers: int
 ) -> tuple[int, int]:
@@ -887,11 +897,24 @@ def main():
                 processing_args = filtered_args
 
             if processing_args:
+                # Memory-aware ceiling: cap the configured --workers by what the
+                # container's memory budget allows, given the largest input volume
+                # among the subjects actually about to be processed.
+                input_nifti_files = []
+                for anat_dir, subject_id, session_id, *_ in processing_args:
+                    for modality in modalities:
+                        nifti_path = anat_dir / f"{subject_id}_{session_id}_{modality}.nii.gz"
+                        if nifti_path.exists():
+                            input_nifti_files.append(nifti_path)
+
+                _plan = _plan_workers_for_inputs(input_nifti_files, args.workers)
+                logger.info(f"Workers (memory budget): {_plan.actual_workers} — {_plan.reason}")
+
                 # Calculate actual parallelism now that we know the real workload
                 actual_workers, threads_per_worker = calculate_optimal_parallelism(
                     n_subjects=len(processing_args),
                     cpu_count=cpu_count,
-                    max_workers=args.workers,
+                    max_workers=_plan.actual_workers,
                 )
 
                 reason_parts = []
