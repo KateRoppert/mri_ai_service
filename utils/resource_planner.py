@@ -101,3 +101,49 @@ def plan_workers(
 
     actual = max(min_workers, min(caps))
     return PlanResult(actual, f"min({', '.join(parts)}) -> {actual}")
+
+
+def plan_stage_workers(
+    stage_name: str,
+    input_files: "Iterable[Path]",
+    requested: int,
+    cpu_cap: Optional[int] = None,
+    config: Optional[dict] = None,
+    budget_bytes: Optional[int] = None,
+) -> PlanResult:
+    """Stage-facing wrapper: read the stage's cost constants, estimate per-worker
+    bytes from the largest input, and cap the worker count.
+
+    Fail-safe: an unknown stage or missing config yields `requested` unchanged.
+    `budget_bytes` is normally None (read from cgroup); tests inject it.
+    When budget_bytes is provided, it is the raw cgroup limit; safety_factor is applied here.
+    """
+    if config is None:
+        from utils.config_loader import load_resource_config
+        config = load_resource_config()
+
+    stage_cfg = config.get("stages", {}).get(stage_name)
+    if not stage_cfg:
+        return PlanResult(
+            max(config.get("min_workers", 1), min([requested, cpu_cap] if cpu_cap else [requested])),
+            f"no resource config for {stage_name}; using requested={requested}",
+        )
+
+    voxels = max_voxels(input_files)
+    per_worker = voxels * float(stage_cfg["k_bytes_per_voxel"])
+
+    # If budget_bytes is provided (by tests), apply safety_factor to it.
+    # In production (budget_bytes=None), plan_workers will read cgroup and apply safety_factor.
+    safety_factor = float(config.get("safety_factor", 0.85))
+    if budget_bytes is not None:
+        budget_bytes = int(budget_bytes * safety_factor)
+
+    return plan_workers(
+        requested=requested,
+        per_worker_bytes=per_worker,
+        budget_bytes=budget_bytes,
+        cpu_cap=cpu_cap,
+        safety_factor=safety_factor,
+        reserve_bytes=int(stage_cfg.get("reserve_bytes", 1_500_000_000)),
+        min_workers=int(config.get("min_workers", 1)),
+    )

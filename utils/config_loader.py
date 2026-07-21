@@ -346,3 +346,26 @@ def load_series_scoring_config() -> Dict[str, Any]:
         )
 
     return config
+
+
+def load_resource_config() -> Dict[str, Any]:
+    """Load per-stage memory cost model from configs/resource_config.yaml.
+
+    Used by memory-aware worker sizing (utils/resource_planner). Returns a dict
+    with keys: safety_factor, min_workers, stages. Returns an empty-but-safe
+    default if the file is missing so the planner degrades to config workers.
+    """
+    config_path = Path(__file__).parent.parent / 'configs' / 'resource_config.yaml'
+    if not config_path.exists():
+        return {"safety_factor": 0.85, "min_workers": 1, "stages": {}}
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigValidationError(f"Failed to parse resource_config.yaml: {e}")
+    if not isinstance(config, dict):
+        return {"safety_factor": 0.85, "min_workers": 1, "stages": {}}
+    config.setdefault("safety_factor", 0.85)
+    config.setdefault("min_workers", 1)
+    config.setdefault("stages", {})
+    return config

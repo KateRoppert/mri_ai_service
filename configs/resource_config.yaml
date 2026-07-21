@@ -1,0 +1,16 @@
+# Per-stage memory cost model for memory-aware worker sizing.
+# k_bytes_per_voxel = measured peak bytes-per-worker / worst-case input voxels.
+# Calibrated on the SibBMS 3-patient run (worst case 231M voxels). Refine as more
+# datasets are measured. See docs/superpowers/specs/2026-07-17-memory-aware-worker-sizing-design.md
+safety_factor: 0.85
+min_workers: 1
+stages:
+  stage_04_quality:
+    k_bytes_per_voxel: 6.9
+    reserve_bytes: 1500000000
+  stage_05_preprocessing:
+    k_bytes_per_voxel: 17.7
+    reserve_bytes: 2000000000
+  stage_07_inverse_transform:
+    k_bytes_per_voxel: 22.5
+    reserve_bytes: 2000000000
