@@ -76,6 +76,7 @@ data/UPENN-GBM/
 data/SibBMS/
 data/MosMed/
 data/clinical_dicom/
+data/dropbox_33/
 data/templates/ms_zones_raw/
 data/templates/ms_zones_work/
 .superpowers/

@@ -50,6 +50,40 @@ MODALITY_BIDS_SUFFIX: Dict[str, str] = {
 }
 
 
+def is_dicom_file(path: Path) -> bool:
+    """
+    True if `path` is a DICOM file, independent of extension (KI-029).
+
+    Real clinical exports are not always named ``*.dcm`` — some vendors
+    write extensionless files (e.g. ``23831328``), others use ``.IMA`` or
+    ``.dicom``. Extension alone is unreliable both ways: it misses files
+    without ``.dcm``, and (in theory) could match a non-DICOM file someone
+    renamed to ``.dcm``.
+
+    Fast path: files already named ``*.dcm`` are trusted directly, so
+    datasets that already use this convention (the common case) pay no
+    extra I/O. Anything else is checked via the standard DICOM Part-10
+    magic marker: a 128-byte preamble followed by ``b'DICM'`` at offset
+    128. This is authoritative — unrelated files (README.txt, DICOMDIR,
+    thumbnails) will not carry it by coincidence — and correctly
+    recognizes extensionless DICOM and other extensions uniformly.
+    """
+    if path.suffix.lower() == '.dcm':
+        return True
+    try:
+        with open(path, 'rb') as f:
+            header = f.read(132)
+    except OSError:
+        return False
+    return len(header) == 132 and header[128:132] == b'DICM'
+
+
+def find_dicom_files(directory: Path, recursive: bool = True) -> List[Path]:
+    """All DICOM files under `directory`, any extension or none (see is_dicom_file)."""
+    pattern = '**/*' if recursive else '*'
+    return sorted(f for f in directory.glob(pattern) if f.is_file() and is_dicom_file(f))
+
+
 @dataclass
 class SeriesInfo:
     """Information about a DICOM series."""
@@ -182,7 +216,7 @@ class ModalityDetector:
             return self._cache[series_path]
 
         # Find first DICOM file (search nested directories)
-        dicom_files = sorted([f for f in series_path.rglob("*.dcm") if f.is_file()])
+        dicom_files = find_dicom_files(series_path)
         if not dicom_files:
             self.logger.warning(f"No DICOM files found in {series_path}")
             self._cache[series_path] = (None, "", {})
@@ -492,9 +526,8 @@ class DatasetScanner:
         """
         # Find all directories that contain at least one DICOM file (search nested)
         series_dirs_set: Set[Path] = set()
-        for dcm in patient_dir.rglob("*.dcm"):
-            if dcm.is_file():
-                series_dirs_set.add(dcm.parent)
+        for dcm in find_dicom_files(patient_dir):
+            series_dirs_set.add(dcm.parent)
 
         # Convert to sorted list for stable processing
         series_dirs = sorted(series_dirs_set)
@@ -552,6 +585,37 @@ class DatasetScanner:
             if 1900 <= int(year) <= 2099 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
                 return f"{year}{month}{day}"
 
+        return None
+
+    @staticmethod
+    def parse_date_from_dicom(series_dir: Path) -> Optional[str]:
+        """
+        Fallback: read the acquisition date directly from a representative
+        DICOM file's tags, for datasets that name folders by protocol/series
+        description instead of date (e.g. some clinical archives — patient/
+        study/series folders carry no date anywhere in the hierarchy, but the
+        DICOM headers always do). Only used when folder-name parsing
+        (parse_date_from_series_name) fails at every ancestor level — cheap
+        folder-name parsing stays the fast path for datasets that already
+        embed dates in folder names (UPENN-GBM, SibBMS, MosMed, etc.).
+
+        Args:
+            series_dir: Directory that directly contains DICOM files.
+
+        Returns:
+            Date in YYYYMMDD format, or None if unreadable/absent.
+        """
+        dicom_files = find_dicom_files(series_dir)
+        if not dicom_files:
+            return None
+        try:
+            dcm = pydicom.dcmread(str(dicom_files[0]), stop_before_pixels=True, force=True)
+        except Exception:
+            return None
+        for tag in ('StudyDate', 'SeriesDate', 'AcquisitionDate', 'ContentDate'):
+            value = str(dcm.get(tag, '')).strip()
+            if re.match(r'^\d{8}$', value):
+                return value
         return None
 
 
@@ -708,7 +772,7 @@ class SeriesDeduplicator:
         # Count slices for each series (use rglob to include nested files) —
         # kept as the tie-break fallback signal.
         for series in series_list:
-            series.slice_count = len(list(series.original_path.rglob("*.dcm")))
+            series.slice_count = len(find_dicom_files(series.original_path))
 
         scored = [
             (series, score_series(series, modality, self.scoring_config, self.logger))
@@ -874,7 +938,7 @@ class FileOrganizer:
         Returns:
             Number of files copied
         """
-        source_files = sorted([f for f in source_dir.rglob("*.dcm") if f.is_file()])
+        source_files = find_dicom_files(source_dir)
 
         if not source_files:
             self.logger.warning(f"No DICOM files in {source_dir}")
@@ -965,7 +1029,9 @@ class FileOrganizer:
             # Skip validation in dry run
             return True
         
-        source_count = len(list(source_dir.rglob("*.dcm")))
+        source_count = len(find_dicom_files(source_dir))
+        # Target is always written by copy_series() with a .dcm extension —
+        # only the source side can have non-.dcm/extensionless DICOM (KI-029).
         target_count = len(list(target_dir.glob("*.dcm")))
 
         if source_count != target_count:
@@ -1209,13 +1275,20 @@ def _process_one_patient_core(
     # Process series
     series_list: List[SeriesInfo] = []
     for series_dir, date_folder_name in series_entries:
-        # Priority: date from ancestor folder, else try parse from series_dir.name
+        # Priority: date from ancestor folder, else try parse from series_dir.name,
+        # else fall back to the DICOM tags themselves (datasets that name folders
+        # by protocol/series description instead of date — no folder in the
+        # hierarchy carries a date, but the DICOM headers always do).
         date = scanner.parse_date_from_series_name(date_folder_name) if date_folder_name else None
         if not date:
             date = scanner.parse_date_from_series_name(series_dir.name)
+        if not date:
+            date = scanner.parse_date_from_dicom(series_dir)
+            if date:
+                logger.debug(f"  Date for {series_dir} resolved from DICOM tags: {date}")
 
         if not date:
-            logger.warning(f"  Could not parse date from {series_dir} or its parent folders, skipping")
+            logger.warning(f"  Could not parse date from {series_dir}, its parent folders, or DICOM tags, skipping")
             continue
 
         # Detect modality
@@ -1233,7 +1306,7 @@ def _process_one_patient_core(
                 ti_ms=tech_meta.get('ti_ms'),
                 has_contrast=tech_meta.get('has_contrast', False),
             )
-            series_info.slice_count = len(list(series_dir.rglob("*.dcm")))
+            series_info.slice_count = len(find_dicom_files(series_dir))
             series_list.append(series_info)
             logger.debug(f"  Series {series_dir}: {modality} ({series_info.slice_count} slices)")
         elif modality:
