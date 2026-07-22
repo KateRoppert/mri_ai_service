@@ -145,6 +145,17 @@ class ModalityDetector:
         """Check if 'ce' appears as a standalone contrast-enhanced marker."""
         return bool(ModalityDetector._CE_PATTERN.search(text))
 
+    # KI-048: German clinical archives mark contrast series with "KM"
+    # (Kontrastmittel), e.g. "T1W_FFE 5mm tra KM". Word-boundary regex, same
+    # rationale as _CE_PATTERN — a bare substring check on a 2-letter token
+    # risks false positives.
+    _KM_PATTERN = re.compile(r'(?<![a-z])km(?![a-z])')
+
+    @staticmethod
+    def _has_km_marker(text: str) -> bool:
+        """Check if 'km' (Kontrastmittel) appears as a standalone marker."""
+        return bool(ModalityDetector._KM_PATTERN.search(text))
+
     @staticmethod
     def _safe_float_tag(dcm: pydicom.Dataset, tag: Tuple[int, int]) -> Optional[float]:
         """Read a DICOM tag as float, returning None if missing or unparsable."""
@@ -166,8 +177,9 @@ class ModalityDetector:
             'keywords': ['t1'],
             'contrast_keywords': ['post', 'gad', 'contrast', 'c+', 'enhanced', '+c',
                                   'gadolinium', 'postcontrast', 'gd'],
-            # Note: 'ce' is checked separately via _has_ce_marker() to avoid
-            # false positives from words like "space", "sequence", "slice"
+            # Note: 'ce' and 'km' (Kontrastmittel, KI-048) are checked separately
+            # via _has_ce_marker()/_has_km_marker() to avoid false positives
+            # from words like "space", "sequence", "slice"
             'exclude': ['mpr', 'dyn', 'pit', 'spir']
         },
         't2': {  # T2
@@ -180,7 +192,8 @@ class ModalityDetector:
             'keywords': ['t1', 'mprage', 'spgr', 'tfe', 't1w'],
             'exclude': ['post', 'gad', 'contrast', 'c+', 'enhanced', '+c',
                         'gadolinium', 'gd', 'thr', 'pit']
-            # Note: 'ce' is checked separately via _has_ce_marker()
+            # Note: 'ce' and 'km' (KI-048) are checked separately via
+            # _has_ce_marker()/_has_km_marker()
         }
     }
 
@@ -326,9 +339,9 @@ class ModalityDetector:
         ]
         if any(kw in combined_text for kw in contrast_kws):
             return True
-        
-        # 'ce' with word-boundary check
-        return self._has_ce_marker(combined_text)
+
+        # 'ce' / 'km' (Kontrastmittel) with word-boundary check
+        return self._has_ce_marker(combined_text) or self._has_km_marker(combined_text)
 
     def _detect_by_technical_params(self, dcm: pydicom.Dataset, has_contrast: bool) -> Optional[str]:
         """Fallback modality detection using TR/TE/TI values."""
@@ -412,6 +425,7 @@ class ModalityDetector:
         has_contrast_kw = (
             any(kw in combined_text for kw in pattern['contrast_keywords'])
             or self._has_ce_marker(combined_text)
+            or self._has_km_marker(combined_text)
         )
         has_excl = any(ex in combined_text for ex in pattern['exclude'])
         
@@ -432,6 +446,7 @@ class ModalityDetector:
         has_exclusion = (
             any(ex in combined_text for ex in pattern['exclude'])
             or self._has_ce_marker(combined_text)
+            or self._has_km_marker(combined_text)
         )
         
         if has_keyword and not has_exclusion:
