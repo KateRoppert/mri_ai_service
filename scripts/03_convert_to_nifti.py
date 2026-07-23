@@ -39,8 +39,23 @@ def process_series_worker(args):
     temp_converter.dcm2niix_base_cmd = dcm2niix_base_cmd
     temp_converter.stats = {'total_series': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
     
-    success = temp_converter.convert_series(series_path, patient_id, modality, output_dir, session)
-    return success, temp_converter.stats
+    success, error = temp_converter.convert_series(
+    series_path,
+    patient_id,
+    modality,
+    output_dir,
+    session
+    )
+
+    return {
+        "success": success,
+        "stats": temp_converter.stats,
+        "patient": patient_id,
+        "session": session,
+        "modality": modality,
+        "series_path": str(series_path),
+        "error": error,
+    }
 
 
 class NiftiConverter:
@@ -60,6 +75,7 @@ class NiftiConverter:
             'failed': 0,
             'skipped': 0
         }
+        self.failed_cases = []
 
         # Performance monitoring
         self.monitor = None
@@ -183,7 +199,7 @@ class NiftiConverter:
         return expected_file.exists()
     
     def convert_series(self, series_path: Path, patient_id: str, 
-                      modality: str, output_dir: Path, session: str = "001") -> bool:
+                      modality: str, output_dir: Path, session: str = "001") -> Tuple[bool, Optional[str]]:
         """
         Convert a single DICOM series to NIfTI.
         
@@ -203,7 +219,7 @@ class NiftiConverter:
         if self.check_output_exists(output_dir, patient_id, session, modality):
             self.logger.info(f"Skipping {patient_id}/{modality} (already exists)")
             self.stats['skipped'] += 1
-            return True
+            return True, None
         
         # Create output directory structure
         subject_dir = output_dir / f"sub-{patient_id}"
@@ -245,29 +261,38 @@ class NiftiConverter:
                         )
                     self.stats['successful'] += 1
                     self.logger.debug(f"Successfully converted {patient_id}/{modality}")
-                    return True
+                    return True, None
                 else:
                     self.logger.warning(
                         f"dcm2niix returned 0 but no output file: {patient_id}/{modality}"
                     )
+                    reason = "dcm2niix finished successfully but output file was not created"
+
                     self.stats['failed'] += 1
-                    return False
+
+                    return False, reason
             else:
-                self.logger.error(
-                    f"Failed to convert {patient_id}/{modality}: "
-                    f"returncode={result.returncode}\n{result.stderr}"
+                reason = (
+                    f"dcm2niix exited with code {result.returncode}: "
+                    f"{result.stderr.strip()}"
                 )
+
+                self.logger.error(
+                    f"Failed to convert {patient_id}/{modality}: {reason}"
+                )
+
                 self.stats['failed'] += 1
-                return False
+
+                return False, reason
                 
         except subprocess.TimeoutExpired:
             self.logger.error(f"Timeout converting {patient_id}/{modality}")
             self.stats['failed'] += 1
-            return False
+            return False, "Timeout (300 seconds)"
         except Exception as e:
             self.logger.error(f"Error converting {patient_id}/{modality}: {e}")
             self.stats['failed'] += 1
-            return False
+            return False, str(e)
     def run(self, input_dir: Path, output_dir: Path, max_subjects: Optional[int] = None,
             benchmark: bool = False, results_dir: Optional[Path] = None,
             mode: str = 'sequential', workers: int = 1) -> None:
@@ -374,8 +399,23 @@ class NiftiConverter:
                     self.logger.warning(
                         "No baseline found! Run with --benchmark --mode sequential first."
                     )
-        
+
         # Final statistics
+        if self.failed_cases:
+            self.logger.error("=" * 60)
+            self.logger.error(f"FAILED CONVERSIONS ({len(self.failed_cases)}):")
+
+            for case in self.failed_cases:
+                self.logger.error(
+                    f"\n"
+                    f"Patient : {case['patient']}\n"
+                    f"Session : {case['session']}\n"
+                    f"Modality: {case['modality']}\n"
+                    f"Series  : {case['series_path']}\n"
+                    f"Reason  : {case['error']}"
+                )
+
+            self.logger.error("=" * 60)
         self.logger.info("=" * 60)
         self.logger.info("CONVERSION SUMMARY:")
         self.logger.info(f"Total series: {self.stats['total_series']}")
@@ -466,7 +506,22 @@ class NiftiConverter:
         """Process series sequentially."""
         for series_path, patient_id, session_id, modality in series_list:
             self.logger.info(f"Converting: {patient_id}/ses-{session_id} - {modality}")
-            self.convert_series(series_path, patient_id, modality, output_dir, session_id)
+            success, error = self.convert_series(
+                series_path,
+                patient_id,
+                modality,
+                output_dir,
+                session_id
+            )
+
+            if not success:
+                self.failed_cases.append({
+                    "patient": patient_id,
+                    "session": session_id,
+                    "modality": modality,
+                    "series_path": str(series_path),
+                    "error": error
+                })
     
     def _process_parallel(self, series_list, output_dir, workers):
         """Process series in parallel using multiprocessing."""
@@ -485,11 +540,23 @@ class NiftiConverter:
         # Aggregate stats from each worker's returned stats dict.
         # Workers track successful/failed/skipped independently; we must
         # sum them here — checking only `success` misses failed and skipped.
-        for _success, worker_stats in results:
+        for result in results:
+
+            worker_stats = result["stats"]
+
             self.stats['total_series'] += worker_stats['total_series']
             self.stats['successful'] += worker_stats['successful']
             self.stats['failed'] += worker_stats['failed']
             self.stats['skipped'] += worker_stats['skipped']
+
+            if not result["success"]:
+                self.failed_cases.append({
+                    "patient": result["patient"],
+                    "session": result["session"],
+                    "modality": result["modality"],
+                    "series_path": result["series_path"],
+                    "error": result["error"],
+                })
 
 
 def setup_logging(log_file: Optional[Path] = None) -> logging.Logger:
