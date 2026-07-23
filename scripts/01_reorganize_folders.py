@@ -167,11 +167,35 @@ class ModalityDetector:
         except (ValueError, TypeError):
             return None
 
+    @staticmethod
+    def _is_derived_reconstruction(dcm: pydicom.Dataset) -> bool:
+        """
+        True if ImageType (0008,0008) marks this series as a derived
+        reconstruction (e.g. a multi-planar reformat) rather than a primary
+        acquisition.
+
+        DICOM's ImageType convention: value[0] is ORIGINAL or DERIVED,
+        value[1] is PRIMARY or SECONDARY. Reconstructions are DERIVED
+        and/or SECONDARY. A missing or empty ImageType is treated as "not a
+        reconstruction" (fail open) so an anonymized or absent tag never
+        causes a real primary acquisition to be dropped.
+        """
+        elem = dcm.get((0x0008, 0x0008))
+        if elem is None or not elem.value:
+            return False
+        values = [str(v).strip().upper() for v in elem.value]
+        if values[0] == 'DERIVED':
+            return True
+        return 'SECONDARY' in values
+
     # Patterns for each modality (order matters!)
     MODALITY_PATTERNS = {
         't2fl': {  # FLAIR (check first - most specific)
             'keywords': ['flair', 'dark fluid', 't2-flair', 't2 flair'],
-            'exclude': ['mpr']
+            # 'mpr' removed: derived reconstructions are now excluded via
+            # ImageType (_is_derived_reconstruction), not by text match,
+            # since 'mpr' is also a substring of primary "mprage" series.
+            'exclude': []
         },
         't1c': {  # T1 with contrast (post)
             'keywords': ['t1'],
@@ -180,13 +204,17 @@ class ModalityDetector:
             # Note: 'ce' and 'km' (Kontrastmittel, KI-048) are checked separately
             # via _has_ce_marker()/_has_km_marker() to avoid false positives
             # from words like "space", "sequence", "slice"
-            'exclude': ['mpr', 'dyn', 'pit', 'spir']
+            # 'mpr' removed: it matched inside primary "mprage"/"t1_mpr_*"
+            # acquisitions. Derived reconstructions are now excluded via
+            # ImageType (_is_derived_reconstruction).
+            'exclude': ['dyn', 'pit', 'spir']
         },
         't2': {  # T2
             'keywords': ['t2', 'tse', 'fse', 't2w'],
-            # 't1' prevents T1-TSE from matching; 'mpr' prevents derived
-            # reconstructions (e.g. MPR CE_T1-TSE) from falling through here
-            'exclude': ['flair', 'dark fluid', 't1', 'mpr']
+            # 't1' prevents T1-TSE from matching. Derived reconstructions
+            # are excluded via ImageType (_is_derived_reconstruction), not
+            # by the 'mpr' text token (removed: matched inside "mprage").
+            'exclude': ['flair', 'dark fluid', 't1']
         },
         't1': {  # Plain T1 (non-contrast)
             'keywords': ['t1', 'mprage', 'spgr', 'tfe', 't1w'],
@@ -294,6 +322,18 @@ class ModalityDetector:
                 self.logger.info(
                     f"    {series_path.name}: EXCLUDED "
                     f"[non-brain anatomy: '{excluded_keyword}'] ({readable_desc})")
+                return None, readable_desc, {}
+
+            # Derived reconstructions (e.g. multi-planar reformats) must never
+            # compete with primary acquisitions for a modality slot. 'mpr' used
+            # to be excluded by text match, which also (wrongly) excluded
+            # primary "mprage"/"t1_mpr_*" acquisitions — ImageType is the
+            # correct, unambiguous signal.
+            if self._is_derived_reconstruction(dcm):
+                self._cache[series_path] = (None, readable_desc, {})
+                self.logger.info(
+                    f"    {series_path.name}: EXCLUDED "
+                    f"[derived reconstruction (ImageType)] ({readable_desc})")
                 return None, readable_desc, {}
 
             # Detect contrast from multiple DICOM fields
