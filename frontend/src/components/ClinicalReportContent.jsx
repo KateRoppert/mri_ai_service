@@ -139,7 +139,7 @@ const normalizeKappaEntity = (info) => {
   return { volumeReports, lobarReports, lesionStatsReports, mcdonaldReports };
 };
 
-const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma', kappaEntityInfo = null }) => {
+const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma', kappaEntityInfo = null, selectedPatientId = null }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [volumeReports, setVolumeReports] = useState([]);
@@ -531,12 +531,32 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
     return null;
   }
 
+  // Scope to the patient selected in NIfTIViewer's series dropdown, when
+  // provided. Falsy selectedPatientId (e.g. the standalone ClinicalReport
+  // modal, which has no dropdown) leaves the full run unfiltered — same
+  // behavior as before this feature.
+  const scopedVolumeReports = selectedPatientId
+    ? volumeReports.filter((r) => r.patient_id === selectedPatientId)
+    : volumeReports;
+  const scopedLesionStatsReports = selectedPatientId
+    ? lesionStatsReports.filter((r) => r.patient_id === selectedPatientId)
+    : lesionStatsReports;
+
   // ===== MS RENDER PATH =====
   if (lesionType === 'multiple_sclerosis') {
     if (!loaded || lesionStatsReports.length === 0) return null;
+    if (selectedPatientId && scopedLesionStatsReports.length === 0) {
+      return (
+        <Alert
+          type="info"
+          message="Отчёт для выбранного пациента пока недоступен"
+          showIcon
+        />
+      );
+    }
     return (
       <>
-        {groupByPatient(lesionStatsReports).map(([patientId, sessions]) => (
+        {groupByPatient(scopedLesionStatsReports).map(([patientId, sessions]) => (
           <div key={patientId} style={{ marginBottom: 40 }}>
             {/* Patient header — once per patient. Clinical view shows the real
                 patient; Kappa/expert view keeps patientMap empty and stays
@@ -658,9 +678,18 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   }
 
   // ===== GLIO RENDER PATH =====
+  if (selectedPatientId && scopedVolumeReports.length === 0) {
+    return (
+      <Alert
+        type="info"
+        message="Отчёт для выбранного пациента пока недоступен"
+        showIcon
+      />
+    );
+  }
   return (
     <>
-      {volumeReports.map((report, idx) => {
+      {scopedVolumeReports.map((report, idx) => {
         // Kappa source provides structured classes; local source has report_text.
         const classes = report.classes || parseVolumeReport(report.report_text || '');
         const clinical = computeClinical(classes);

@@ -781,6 +781,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                 autoLoad={true}
                 lesionType={lesionType}
                 kappaEntityInfo={kappaReport}
+                selectedPatientId={kappaReport ? undefined : selectedFile?.patient_id}
               />
             </div>
           )}
