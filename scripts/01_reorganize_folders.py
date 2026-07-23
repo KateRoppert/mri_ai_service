@@ -209,6 +209,7 @@ class ModalityDetector:
         Detect modality from DICOM tags: ProtocolName and SeriesDescription.
 
         Enhanced detection cascade:
+          0. Folder name (flair, t1ce, t1w, t2w)
           1. Pattern matching on ProtocolName + SeriesDescription
           2. Multi-field contrast detection (ContrastBolusAgent, text keywords)
           3. Technical parameter fallback (TR/TE/TI)
@@ -227,6 +228,36 @@ class ModalityDetector:
         # Check cache
         if series_path in self._cache:
             return self._cache[series_path]
+
+        # ------------------------------------------------------------------
+        # Level 0: Detect modality from folder name
+        # ------------------------------------------------------------------
+        folder_name = series_path.name.lower().strip()
+
+        folder_mapping = {
+            "flair": "t2fl",
+            "t1ce": "t1c",
+            "t1w": "t1",
+            "t2w": "t2",
+        }
+
+        modality = folder_mapping.get(folder_name)
+        if modality:
+            readable_desc = f"FolderName: {series_path.name}"
+            tech_meta = {}
+
+            self._cache[series_path] = (modality, readable_desc, tech_meta)
+
+            self.logger.info(
+                f"    {series_path.name}: {modality} "
+                f"[folder_name]"
+            )
+
+            return modality, readable_desc, tech_meta
+
+        # ------------------------------------------------------------------
+        # Fallback to DICOM-based detection
+        # 
 
         # Find first DICOM file (search nested directories)
         dicom_files = find_dicom_files(series_path)
