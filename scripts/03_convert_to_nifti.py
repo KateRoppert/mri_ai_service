@@ -262,15 +262,48 @@ class NiftiConverter:
                     self.stats['successful'] += 1
                     self.logger.debug(f"Successfully converted {patient_id}/{modality}")
                     return True, None
-                else:
-                    self.logger.warning(
-                        f"dcm2niix returned 0 but no output file: {patient_id}/{modality}"
+
+                # No exact-named output. dcm2niix suffixes the filename (e.g.
+                # "_e2") when a disambiguating tag (most commonly EchoNumbers,
+                # for a multi-echo series) differs from the default — the real
+                # data exists, just under a name we didn't ask for. A single
+                # suffixed file is recoverable by renaming; more than one is
+                # real ambiguity (e.g. two distinct echoes) that must not be
+                # silently resolved.
+                suffixed = sorted(anat_dir.glob(f"{filename_pattern}_*.nii.gz"))
+                if len(suffixed) == 1:
+                    suffixed_file = suffixed[0]
+                    suffixed_stem = suffixed_file.name[:-len('.nii.gz')]
+                    suffixed_file.rename(expected_file)
+                    suffixed_json = anat_dir / f"{suffixed_stem}.json"
+                    if suffixed_json.exists():
+                        suffixed_json.rename(anat_dir / f"{filename_pattern}.json")
+                    self.logger.info(
+                        f"Renamed dcm2niix output {suffixed_file.name} -> "
+                        f"{expected_file.name} (single suffixed output, e.g. "
+                        f"non-first echo of a multi-echo series)"
                     )
-                    reason = "dcm2niix finished successfully but output file was not created"
+                    self.stats['successful'] += 1
+                    self.logger.debug(f"Successfully converted {patient_id}/{modality}")
+                    return True, None
 
+                if suffixed:
+                    reason = (
+                        "dcm2niix produced multiple ambiguous outputs, none matching "
+                        f"the expected name: {[f.name for f in suffixed]}"
+                    )
+                    self.logger.warning(f"{reason}: {patient_id}/{modality}")
                     self.stats['failed'] += 1
-
                     return False, reason
+
+                self.logger.warning(
+                    f"dcm2niix returned 0 but no output file: {patient_id}/{modality}"
+                )
+                reason = "dcm2niix finished successfully but output file was not created"
+
+                self.stats['failed'] += 1
+
+                return False, reason
             else:
                 reason = (
                     f"dcm2niix exited with code {result.returncode}: "
