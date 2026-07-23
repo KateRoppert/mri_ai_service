@@ -19,6 +19,7 @@ def write_fake_dicom_series(
     slice_thickness: Optional[float] = None,
     inversion_time: Optional[float] = None,
     contrast_bolus_agent: str = "",
+    image_type: Optional[list] = None,
     n_files: int = 1,
 ) -> Path:
     """Write n_files minimal DICOM files into series_dir. Returns series_dir."""
@@ -41,6 +42,8 @@ def write_fake_dicom_series(
             ds.InversionTime = inversion_time
         if contrast_bolus_agent:
             ds.ContrastBolusAgent = contrast_bolus_agent
+        if image_type is not None:
+            ds.ImageType = image_type
         ds.save_as(str(series_dir / f"IM-{i:04d}.dcm"), write_like_original=False)
     return series_dir
 
