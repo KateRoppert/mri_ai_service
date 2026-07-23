@@ -671,6 +671,9 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
         return (
           <div key={idx} style={{ marginBottom: 32 }}>
             <div style={{ marginBottom: 16 }}>
+              {patientMap[report.patient_id] && (
+                <Tag color="blue">{patientMap[report.patient_id]}</Tag>
+              )}
               <Tag>{report.patient_id}</Tag>
               <Tag>{report.session_id}</Tag>
             </div>
