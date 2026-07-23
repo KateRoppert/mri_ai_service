@@ -83,3 +83,5 @@ data/templates/ms_zones_work/
 
 # Generated longitudinal diff cache
 backend/data/diff_cache/
+pipeline_config_calibration.yaml
+.calibration_scratch/

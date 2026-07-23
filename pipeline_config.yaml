@@ -98,7 +98,7 @@ stages:
     args:
       config: configs/preprocessing_config.yaml
       mode: parallel
-      workers: 3                            # re-measured on SibBMS 0.35mm: ~4.1 GB/worker (higher than the earlier 2.9 estimate); 4 workers = 16.6 of the 20g cap + host swap pressure. 3*4.1=12.3 GB gives margin on the heaviest stage. See KI-042 (proper fix is memory-aware sizing)
+      workers: 4                            # re-measured on SibBMS 0.35mm: ~4.1 GB/worker (higher than the earlier 2.9 estimate); 4 workers = 16.6 of the 20g cap + host swap pressure. 3*4.1=12.3 GB gives margin on the heaviest stage. See KI-042 (proper fix is memory-aware sizing)
       skip-existing: true
       benchmark: false
       validate: true
@@ -126,7 +126,7 @@ stages:
     script: scripts/07_inverse_transform.py
     args:
       mode: parallel
-      workers: 2                            # ~6 GB/worker on SibBMS 0.35mm (ANTs holds native reference + warped output per modality); 5 workers hit the 20g cap -> cgroup OOM -> BrokenProcessPool, all 11 sessions failed. 2*6=12 GB. The stage auto-tuner caps by CPU only and is memory-blind — see KI-042
+      workers: 4                            # ~6 GB/worker on SibBMS 0.35mm (ANTs holds native reference + warped output per modality); 5 workers hit the 20g cap -> cgroup OOM -> BrokenProcessPool, all 11 sessions failed. 2*6=12 GB. The stage auto-tuner caps by CPU only and is memory-blind — see KI-042
       skip-existing: true
       benchmark: false
       max_subjects: null

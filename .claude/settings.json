@@ -1,7 +1,32 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pytest test_config_loader.py -x -q)"
+      "Bash(python -m pytest test_config_loader.py -x -q)",
+      "Bash(python -m pytest test_pipeline_manager_segmask_label_path.py -v)",
+      "Bash(python -m py_compile backend/pipeline_manager.py)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(python -m pytest test_app_longitudinal_diff_endpoint.py -v)",
+      "Bash(python -m pytest test_lesion_diff.py test_pipeline_manager_segmask_label_path.py test_app_longitudinal_diff_endpoint.py -v)",
+      "Bash(python -m py_compile backend/app.py backend/models.py)",
+      "Bash(echo \"PY_COMPILE_OK exit=$?\")",
+      "Bash(python3 -c ' *)",
+      "Bash(grep -n \"^import yaml\\\\|^import yaml$\\\\|import yaml\" app.py)",
+      "Bash(cd /home/ubuntu/mri_ai_service/backend && grep -n \"^def find_by_patient_id\\\\|^def find_by_bids_id\\\\|^def find_by_bids_subject\\\\|def find_by_patient_id\\\\|def find_by_bids_id\\\\|def find_by_bids_subject\" patient_registry.py *)",
+      "Read(//home/ubuntu/configs/**)",
+      "Bash(python -m pytest test_app_longitudinal_diff_endpoint.py test_lesion_diff.py test_pipeline_manager_segmask_label_path.py -q)",
+      "Bash(npx eslint *)",
+      "Bash(cat > *)",
+      "Bash(cp src/components/LongitudinalTimeline.jsx /tmp/claude-1000/-home-ubuntu-mri-ai-service/d18788a9-1c4e-40ab-a5dd-d30f73c431b3/scratchpad/LongitudinalTimeline.NEW.jsx)",
+      "Bash(cp /tmp/claude-1000/-home-ubuntu-mri-ai-service/d18788a9-1c4e-40ab-a5dd-d30f73c431b3/scratchpad/LongitudinalTimeline.HEAD.jsx src/components/LongitudinalTimeline.jsx)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(cp /tmp/claude-1000/-home-ubuntu-mri-ai-service/d18788a9-1c4e-40ab-a5dd-d30f73c431b3/scratchpad/LongitudinalTimeline.NEW.jsx src/components/LongitudinalTimeline.jsx)",
+      "Bash(cat >> *)",
+      "Bash(mkdir -p *)",
+      "Read(//home/ubuntu/.claude/plugins/cache/claude-plugins-official/superpowers/6.0.3/skills/subagent-driven-development/scripts/**)"
+    ],
+    "additionalDirectories": [
+      "/home/ubuntu/mri_ai_service/.superpowers/sdd"
     ]
   }
 }

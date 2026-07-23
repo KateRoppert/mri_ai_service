@@ -1,5 +1,5 @@
 datasets:
-  glioblastoma:current: 133
+  glioblastoma:current: 249
   multiple_sclerosis:1e2b93ad: 158
   multiple_sclerosis:current: 158
 lesion_types:

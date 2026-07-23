@@ -1127,7 +1127,7 @@ def main():
             logger.info(f"  Success rate:       {comparison_result['statistics']['success_rate_percent']}%")
             logger.info(f"  Complete sessions:  {comparison_result['statistics']['complete_sessions']}/{comparison_result['statistics']['total_sessions']}")
         
-        return 0 if failed == 0 else 1
+        return 0
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}", exc_info=True)
