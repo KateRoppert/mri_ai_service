@@ -249,21 +249,25 @@ def apply_transform(
         fixed = load_ants_image(str(fixed_path))
         moving = load_ants_image(str(moving_path))
         
-        # Set interpolation type
+        # ANTsPy's apply_transforms() only accepts a specific set of
+        # lowercase-camelCase interpolator names (e.g. "linear", not
+        # "Linear"). Map this function's capitalized preset names to them;
+        # a caller that already passes an ANTsPy-style string (e.g.
+        # "nearestNeighbor") falls through unchanged.
         interp_map = {
-            "Linear": 1,
-            "NearestNeighbor": 0,
-            "BSpline": 3,
-            "Gaussian": 4
+            "Linear": "linear",
+            "NearestNeighbor": "nearestNeighbor",
+            "BSpline": "bSpline",
+            "Gaussian": "gaussian"
         }
-        interp_type = interp_map.get(interpolation, 1)
-        
+        ants_interpolator = interp_map.get(interpolation, interpolation)
+
         # Apply transformation
         warped = ants.apply_transforms(
             fixed=fixed,
             moving=moving,
             transformlist=[str(transform_path)],
-            interpolator=interpolation,
+            interpolator=ants_interpolator,
             whichtoinvert=[False]
         )
         
