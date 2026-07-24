@@ -184,21 +184,46 @@ def find_subjects(input_dir: Path, max_subjects: int = None) -> List[Tuple[Path,
     return subjects
 
 
+# Named presets for atlas.name — maps the human-picked label to the
+# actual cached filename, so choosing a template only requires editing
+# one field. atlas.filename in config still overrides this when set
+# (escape hatch for an atlas not yet in this list).
+ATLAS_PRESETS = {
+    "SRI24": "sri24_t1.nii.gz",
+    "MNI152_FSL": "MNI152_T1_1mm.nii.gz",
+    "MNI152_ICBM": "mni_icbm152_t1_tal_nlin_sym_09a.nii",
+}
+
+
+def resolve_atlas_filename(atlas_config: dict) -> str:
+    """
+    Resolve which atlas file to use.
+
+    An explicit `filename` in config always wins. Otherwise it's derived
+    from `name` via ATLAS_PRESETS. Falls back to the legacy default
+    (sri24_t1.nii.gz) if neither resolves, preserving prior behavior for
+    configs missing both fields.
+    """
+    if atlas_config.get('filename'):
+        return atlas_config['filename']
+    return ATLAS_PRESETS.get(atlas_config.get('name', ''), 'sri24_t1.nii.gz')
+
+
 def prepare_atlas(config: dict) -> Path:
     """
     Download and prepare SRI24 atlas.
-    
+
     Args:
         config: Configuration dictionary
-    
+
     Returns:
         Path: Path to atlas file
     """
     atlas_config = config.get('atlas', {})
-    
+
     cache_dir = Path(atlas_config.get('cache_dir', 'data/atlases'))
     atlas_url = atlas_config.get('url', '')
-    atlas_filename = atlas_config.get('filename', 'sri24_t1.nii.gz')
+    atlas_filename = resolve_atlas_filename(atlas_config)
     
     logger.info("Preparing atlas...")
     
