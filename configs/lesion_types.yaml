@@ -7,6 +7,13 @@
 # constants). Full migration is planned for feat/lesion-type-aware-pipeline.
 # See KI-016 in KNOWN_ISSUES.md.
 #
+# reference_modality here is used only as the last-resort fallback when a
+# stage isn't given a preprocessing_config.yaml to read it from directly
+# (see 07_inverse_transform.py's resolve_reference_modality()). Keep it in
+# sync with each lesion type's actual preprocessing_config*.yaml — stage 05
+# always prefers its own preprocessing_config.yaml over this file, so a
+# stale value here won't be caught by stage 05 itself.
+#
 # Fields:
 #   required_modalities  — MRI series the pipeline requires for this disease.
 #                          Stage 01 uses this for completeness checking.
@@ -16,7 +23,7 @@
 
 glioblastoma:
   required_modalities: [t1, t1c, t2, t2fl]
-  reference_modality: t1
+  reference_modality: t1c
   reports: [volume, lobar]
 
 multiple_sclerosis:

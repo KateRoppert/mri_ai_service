@@ -130,7 +130,7 @@ stages:
       skip-existing: true
       benchmark: false
       max_subjects: null
-      reference-modality: t1
+      preprocessing-config: configs/preprocessing_config.yaml  # reference-modality is derived from here (see 07_inverse_transform.py:resolve_reference_modality) instead of a static value, so glio (t1c) and MS (t1) both resolve correctly from their own preprocessing config
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_07
 
   stage_08_anatomical_analysis:

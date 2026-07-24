@@ -17,6 +17,7 @@ import logging
 import sys
 import os
 import time
+import yaml
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from datetime import datetime
@@ -24,6 +25,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from preprocessing_steps.registration import inverse_transform_subject_masks
+from utils.config_loader import load_lesion_type_config
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,51 @@ def _plan_workers_for_inputs(input_files, requested, cpu_cap=None, budget_bytes=
         "stage_07_inverse_transform", input_files, requested,
         cpu_cap=cpu_cap, budget_bytes=budget_bytes,
     )
+
+
+def resolve_reference_modality(
+    explicit: Optional[str],
+    preprocessing_config_path: Optional[Path],
+    lesion_type: str,
+) -> str:
+    """
+    Resolve which modality was registered directly to the atlas in stage 05,
+    with the same precedence 05_preprocessing.py itself uses when deriving
+    its own reference_modality:
+
+      1. An explicit value (e.g. --reference-modality), if given.
+      2. steps[registration].params.reference_modality from
+         preprocessing_config_path — the same file stage 05 reads, so this
+         always matches what stage 05 actually used for this run.
+      3. lesion_types.yaml's reference_modality for this lesion type.
+      4. 't1', the long-standing default.
+
+    A stale, independently-set --reference-modality (e.g. hardcoded in
+    pipeline_config.yaml) previously caused "Atlas transform not found"
+    whenever preprocessing_config.yaml's reference_modality diverged from
+    it — this makes stage 07 derive the same value stage 05 used instead
+    of duplicating it.
+    """
+    if explicit:
+        return explicit
+
+    if preprocessing_config_path is not None:
+        try:
+            with open(preprocessing_config_path) as f:
+                prep_config = yaml.safe_load(f) or {}
+            for step in prep_config.get('steps', []):
+                if step.get('name') == 'registration':
+                    value = step.get('params', {}).get('reference_modality')
+                    if value:
+                        return value
+                    break
+        except (OSError, yaml.YAMLError):
+            pass
+
+    try:
+        return load_lesion_type_config(lesion_type)['reference_modality']
+    except Exception:
+        return 't1'
 
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
@@ -184,8 +231,13 @@ def main():
                         help="NIfTI directory with native images (default: sibling of input)")
     parser.add_argument("--transform-dir", type=Path, default=None,
                         help="Transformations directory (default: sibling of input)")
-    parser.add_argument("--reference-modality", type=str, default="t1",
-                        help="Modality registered directly to atlas (default: t1)")
+    parser.add_argument("--reference-modality", type=str, default=None,
+                        help="Modality registered directly to atlas. If omitted, derived "
+                             "from --preprocessing-config (the same file stage 05 uses), "
+                             "falling back to lesion_types.yaml, then 't1'.")
+    parser.add_argument("--preprocessing-config", type=Path, default=None,
+                        help="Path to preprocessing_config.yaml, used to derive "
+                             "--reference-modality when not explicitly given")
     parser.add_argument(
         "--lesion-type",
         type=str,
@@ -195,6 +247,12 @@ def main():
     )
 
     args = parser.parse_args()
+
+    args.reference_modality = resolve_reference_modality(
+        explicit=args.reference_modality,
+        preprocessing_config_path=args.preprocessing_config,
+        lesion_type=args.lesion_type,
+    )
 
     setup_logging(args.log_file)
 
