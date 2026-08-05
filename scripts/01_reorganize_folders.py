@@ -167,6 +167,19 @@ class ModalityDetector:
         """Check if 'mdc' (Mezzo Di Contrasto) appears as a standalone marker."""
         return bool(ModalityDetector._MDC_PATTERN.search(text))
 
+    # data/clinical_dicom/BO marks contrast series with a bare "c"/"C" token
+    # instead of a word (e.g. "t1_space_sag_iso c", "t1_mprage_Sag_C",
+    # "t1_space_sag_iso+C"). A single letter is a much higher collision risk
+    # than 'ce'/'km'/'mdc', so unlike those patterns this boundary also
+    # excludes digits (not just letters) on both sides — otherwise "c1"/"c2"
+    # style tokens (vertebra levels, coil channel labels) would false-positive.
+    _C_PATTERN = re.compile(r'(?<![a-z0-9])c(?![a-z0-9])')
+
+    @staticmethod
+    def _has_c_marker(text: str) -> bool:
+        """Check if a bare 'c' (BO site's contrast marker) appears as a standalone token."""
+        return bool(ModalityDetector._C_PATTERN.search(text))
+
     @staticmethod
     def _safe_float_tag(dcm: pydicom.Dataset, tag: Tuple[int, int]) -> Optional[float]:
         """Read a DICOM tag as float, returning None if missing or unparsable."""
@@ -434,11 +447,13 @@ class ModalityDetector:
         if any(kw in combined_text for kw in contrast_kws):
             return True
 
-        # 'ce' / 'km' (Kontrastmittel) / 'mdc' (Mezzo Di Contrasto) with word-boundary check
+        # 'ce' / 'km' (Kontrastmittel) / 'mdc' (Mezzo Di Contrasto) / bare 'c'
+        # (BO site) with word-boundary check
         return (
             self._has_ce_marker(combined_text)
             or self._has_km_marker(combined_text)
             or self._has_mdc_marker(combined_text)
+            or self._has_c_marker(combined_text)
         )
 
     def _detect_by_technical_params(self, dcm: pydicom.Dataset, has_contrast: bool) -> Optional[str]:
@@ -525,6 +540,7 @@ class ModalityDetector:
             or self._has_ce_marker(combined_text)
             or self._has_km_marker(combined_text)
             or self._has_mdc_marker(combined_text)
+            or self._has_c_marker(combined_text)
         )
         has_excl = any(ex in combined_text for ex in pattern['exclude'])
         
@@ -547,8 +563,9 @@ class ModalityDetector:
             or self._has_ce_marker(combined_text)
             or self._has_km_marker(combined_text)
             or self._has_mdc_marker(combined_text)
+            or self._has_c_marker(combined_text)
         )
-        
+
         if has_keyword and not has_exclusion:
             return 't1'
 
