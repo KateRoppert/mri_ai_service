@@ -191,7 +191,7 @@ class ModalityDetector:
     # Patterns for each modality (order matters!)
     MODALITY_PATTERNS = {
         't2fl': {  # FLAIR (check first - most specific)
-            'keywords': ['flair', 'dark fluid', 't2-flair', 't2 flair'],
+            'keywords': ['flair', 'dark fluid', 'dark-fluid', 't2-flair', 't2 flair'],
             # 'mpr' removed: derived reconstructions are now excluded via
             # ImageType (_is_derived_reconstruction), not by text match,
             # since 'mpr' is also a substring of primary "mprage" series.
@@ -214,7 +214,7 @@ class ModalityDetector:
             # 't1' prevents T1-TSE from matching. Derived reconstructions
             # are excluded via ImageType (_is_derived_reconstruction), not
             # by the 'mpr' text token (removed: matched inside "mprage").
-            'exclude': ['flair', 'dark fluid', 't1']
+            'exclude': ['flair', 'dark fluid', 'dark-fluid', 't1']
         },
         't1': {  # Plain T1 (non-contrast)
             'keywords': ['t1', 'mprage', 'spgr', 'tfe', 't1w'],
