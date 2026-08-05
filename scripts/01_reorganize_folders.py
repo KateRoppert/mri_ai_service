@@ -156,6 +156,16 @@ class ModalityDetector:
         """Check if 'km' (Kontrastmittel) appears as a standalone marker."""
         return bool(ModalityDetector._KM_PATTERN.search(text))
 
+    # Italian clinical archives mark contrast series with "MDC" (Mezzo Di
+    # Contrasto), e.g. "sT1W_3D_MDC", "Ax T1 3D MDC" — same rationale and
+    # word-boundary approach as _KM_PATTERN, for a different language.
+    _MDC_PATTERN = re.compile(r'(?<![a-z])mdc(?![a-z])')
+
+    @staticmethod
+    def _has_mdc_marker(text: str) -> bool:
+        """Check if 'mdc' (Mezzo Di Contrasto) appears as a standalone marker."""
+        return bool(ModalityDetector._MDC_PATTERN.search(text))
+
     @staticmethod
     def _safe_float_tag(dcm: pydicom.Dataset, tag: Tuple[int, int]) -> Optional[float]:
         """Read a DICOM tag as float, returning None if missing or unparsable."""
@@ -411,8 +421,12 @@ class ModalityDetector:
         if any(kw in combined_text for kw in contrast_kws):
             return True
 
-        # 'ce' / 'km' (Kontrastmittel) with word-boundary check
-        return self._has_ce_marker(combined_text) or self._has_km_marker(combined_text)
+        # 'ce' / 'km' (Kontrastmittel) / 'mdc' (Mezzo Di Contrasto) with word-boundary check
+        return (
+            self._has_ce_marker(combined_text)
+            or self._has_km_marker(combined_text)
+            or self._has_mdc_marker(combined_text)
+        )
 
     def _detect_by_technical_params(self, dcm: pydicom.Dataset, has_contrast: bool) -> Optional[str]:
         """Fallback modality detection using TR/TE/TI values."""
@@ -497,6 +511,7 @@ class ModalityDetector:
             any(kw in combined_text for kw in pattern['contrast_keywords'])
             or self._has_ce_marker(combined_text)
             or self._has_km_marker(combined_text)
+            or self._has_mdc_marker(combined_text)
         )
         has_excl = any(ex in combined_text for ex in pattern['exclude'])
         
@@ -518,6 +533,7 @@ class ModalityDetector:
             any(ex in combined_text for ex in pattern['exclude'])
             or self._has_ce_marker(combined_text)
             or self._has_km_marker(combined_text)
+            or self._has_mdc_marker(combined_text)
         )
         
         if has_keyword and not has_exclusion:
