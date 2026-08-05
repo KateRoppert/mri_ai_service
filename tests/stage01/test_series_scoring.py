@@ -23,9 +23,10 @@ score_series = reorganize_mod.score_series
 
 SCORING_CONFIG = {
     'failure_markers': {'keywords': ['failed', 'repeat', 'motion'], 'penalty': 0.5},
+    'derived_reconstruction_penalty': 0.1,
     'text_weights': {
-        't1c': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5, 'mpr': 0.1},
-        't2fl': {'3d': 2.0, 'mpr': 0.1},
+        't1c': {'tfe': 3.0, 'tse': 2.0, '3d': 1.5},
+        't2fl': {'3d': 2.0},
     },
     'resolution_scoring': {
         'reference_slice_thickness_mm': 1.0, 'min_factor': 0.5, 'max_factor': 2.0,
@@ -36,20 +37,28 @@ SCORING_CONFIG = {
 LOGGER = logging.getLogger("test_scoring")
 
 
-def _series(desc, modality="t1c", slice_thickness=None, ti=None):
+def _series(desc, modality="t1c", slice_thickness=None, ti=None, is_derived=False):
     return SeriesInfo(
         original_path=Path(f"/fake/{desc}"),
         patient_id="P1", date="20230101",
         modality=modality, series_description=desc,
         slice_thickness_mm=slice_thickness, ti_ms=ti,
+        is_derived_reconstruction=is_derived,
     )
 
 
 class TestScoreSeries:
-    def test_3d_scores_higher_than_mpr_reformat(self):
-        threed = _series("CE_T1-TFE (3D brain)")
-        mpr = _series("MPR CE_T1-TFE 2.5mm (cor brain)")
-        assert score_series(threed, "t1c", SCORING_CONFIG, LOGGER) > score_series(mpr, "t1c", SCORING_CONFIG, LOGGER)
+    def test_primary_scores_higher_than_derived_reconstruction(self):
+        primary = _series("CE_T1-TFE (3D brain)")
+        derived = _series("MPR CE_T1-TFE 2.5mm (cor brain)", is_derived=True)
+        assert score_series(primary, "t1c", SCORING_CONFIG, LOGGER) > score_series(derived, "t1c", SCORING_CONFIG, LOGGER)
+
+    def test_derived_reconstruction_still_scores_positive(self):
+        """A derived reconstruction must still get a usable (nonzero) score
+        — it needs to be selectable as a last resort when it's the only
+        candidate for a modality, not effectively excluded."""
+        derived = _series("MPR CE_T1-TFE 2.5mm (cor brain)", is_derived=True)
+        assert score_series(derived, "t1c", SCORING_CONFIG, LOGGER) > 0
 
     def test_tfe_scores_higher_than_tse(self):
         tfe = _series("CE_T1-TFE (3D brain)")

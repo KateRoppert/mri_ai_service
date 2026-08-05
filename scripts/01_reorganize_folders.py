@@ -96,6 +96,7 @@ class SeriesInfo:
     slice_thickness_mm: Optional[float] = None
     ti_ms: Optional[float] = None
     has_contrast: bool = False
+    is_derived_reconstruction: bool = False
 
 
 @dataclass
@@ -339,17 +340,17 @@ class ModalityDetector:
                     f"[non-brain anatomy: '{excluded_keyword}'] ({readable_desc})")
                 return None, readable_desc, {}
 
-            # Derived reconstructions (e.g. multi-planar reformats) must never
-            # compete with primary acquisitions for a modality slot. 'mpr' used
-            # to be excluded by text match, which also (wrongly) excluded
-            # primary "mprage"/"t1_mpr_*" acquisitions — ImageType is the
-            # correct, unambiguous signal.
-            if self._is_derived_reconstruction(dcm):
-                self._cache[series_path] = (None, readable_desc, {})
-                self.logger.info(
-                    f"    {series_path.name}: EXCLUDED "
-                    f"[derived reconstruction (ImageType)] ({readable_desc})")
-                return None, readable_desc, {}
+            # Derived reconstructions (e.g. multi-planar reformats) should
+            # lose to a primary acquisition when one exists for the same
+            # modality slot, but are still real, usable data — worth keeping
+            # as a last resort when nothing else is available (rather than
+            # leaving that modality missing entirely). Classified normally
+            # below; SeriesDeduplicator._select_best_series penalizes them
+            # via this flag so a primary candidate always wins when both
+            # exist. 'mpr' used to be excluded by text match, which also
+            # (wrongly) excluded primary "mprage"/"t1_mpr_*" acquisitions —
+            # ImageType is the correct, unambiguous signal.
+            is_derived_reconstruction = self._is_derived_reconstruction(dcm)
 
             # Detect contrast from multiple DICOM fields
             has_contrast = self._detect_contrast(dcm, combined_text)
@@ -370,6 +371,7 @@ class ModalityDetector:
                 'slice_thickness_mm': self._safe_float_tag(dcm, (0x0018, 0x0050)),
                 'ti_ms': self._safe_float_tag(dcm, (0x0018, 0x0082)),
                 'has_contrast': has_contrast,
+                'is_derived_reconstruction': is_derived_reconstruction,
             }
 
             # Cache result
@@ -377,7 +379,13 @@ class ModalityDetector:
 
             # Log at INFO level so detection decisions are always visible
             series_name = series_path.name
-            if modality == 't2fl' and has_contrast:
+            if modality and is_derived_reconstruction:
+                self.logger.info(
+                    f"    {series_name}: {modality} "
+                    f"[{detection_method}, DERIVED RECONSTRUCTION (ImageType) — "
+                    f"heavily deprioritized vs. a primary candidate, kept as "
+                    f"last-resort fallback] ({readable_desc})")
+            elif modality == 't2fl' and has_contrast:
                 # KI-001: post-contrast FLAIR is a normal clinical case,
                 # not a detection ambiguity — phrase the log accordingly.
                 self.logger.info(
@@ -839,8 +847,8 @@ def score_series(
     """
     Compute a selection score for one candidate series within a modality
     group (KI-027). Combines text keyword weights, a failure-marker
-    penalty, a slice-thickness resolution factor, and (FLAIR only) a
-    long-TI bonus. Higher is better.
+    penalty, a derived-reconstruction penalty, a slice-thickness resolution
+    factor, and (FLAIR only) a long-TI bonus. Higher is better.
 
     Returns 1.0 when no signal in scoring_config applies to this series —
     callers must fall back to another tie-break (e.g. slice_count) in
@@ -856,6 +864,18 @@ def score_series(
             logger.debug(
                 f"      [{series_info.original_path.name}] "
                 f"weight {weight} for '{keyword}'")
+
+    # ImageType-based, not text-based (a text 'mpr' keyword here had the same
+    # substring flaw MODALITY_PATTERNS['exclude'] used to have — it matched
+    # inside primary "mprage" too). A primary candidate always outscores a
+    # derived reconstruction when both exist; the reconstruction still wins
+    # when it's the only candidate, rather than leaving that modality empty.
+    if series_info.is_derived_reconstruction:
+        penalty = scoring_config.get('derived_reconstruction_penalty', 0.1)
+        score *= penalty
+        logger.debug(
+            f"      [{series_info.original_path.name}] "
+            f"derived reconstruction penalty {penalty}")
 
     failure_cfg = scoring_config.get('failure_markers', {})
     failure_keywords = failure_cfg.get('keywords', [])
@@ -1471,6 +1491,7 @@ def _process_one_patient_core(
                 slice_thickness_mm=tech_meta.get('slice_thickness_mm'),
                 ti_ms=tech_meta.get('ti_ms'),
                 has_contrast=tech_meta.get('has_contrast', False),
+                is_derived_reconstruction=tech_meta.get('is_derived_reconstruction', False),
             )
             series_info.slice_count = len(find_dicom_files(series_dir))
             series_list.append(series_info)

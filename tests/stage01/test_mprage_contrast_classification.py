@@ -128,8 +128,10 @@ class TestMprageContrastClassification:
         modality, _, tech_meta = detector.detect_modality(series_dir)
         assert modality == "t1c"
 
-    def test_derived_mpr_reconstruction_is_excluded(self, make_dicom_series, tmp_path):
-        """A DERIVED MPR reconstruction of a contrast T1 must not be classified at all."""
+    def test_derived_mpr_reconstruction_is_classified_but_flagged(self, make_dicom_series, tmp_path):
+        """A DERIVED MPR reconstruction of a contrast T1 is still classified
+        normally (t1c) — it's real, usable data — but flagged so scoring can
+        deprioritize it against a primary candidate (see score_series)."""
         series_dir = make_dicom_series(
             tmp_path / "series1",
             protocol_name="t1_mprage_sag_1mm_iso_MPR_MPR cor",
@@ -138,8 +140,9 @@ class TestMprageContrastClassification:
             image_type=['DERIVED', 'PRIMARY', 'M', 'NONE'],
         )
         detector = ModalityDetector(logging.getLogger("test_mprage"))
-        modality, _, _ = detector.detect_modality(series_dir)
-        assert modality is None
+        modality, _, tech_meta = detector.detect_modality(series_dir)
+        assert modality == "t1c"
+        assert tech_meta["is_derived_reconstruction"] is True
 
     def test_real_bo_dark_fluid_flair_with_secondary_imagetype_classified_as_t2fl(self, make_dicom_series, tmp_path):
         """Regression for data/clinical_dicom/BO: real primary FLAIR series
@@ -154,9 +157,10 @@ class TestMprageContrastClassification:
         modality, _, _ = detector.detect_modality(series_dir)
         assert modality == "t2fl"
 
-    def test_real_bo_mpr_reconstruction_still_excluded(self, make_dicom_series, tmp_path):
+    def test_real_bo_mpr_reconstruction_classified_and_flagged(self, make_dicom_series, tmp_path):
         """A genuine BO MPR reconstruction (DERIVED, also carries SECONDARY)
-        must still be excluded — DERIVED alone remains sufficient."""
+        is classified normally (t2) and flagged as derived — DERIVED alone
+        remains sufficient to detect it."""
         series_dir = make_dicom_series(
             tmp_path / "series1",
             protocol_name="t2_space_sag_p4_0.9 fast_MPR_Tra",
@@ -164,8 +168,9 @@ class TestMprageContrastClassification:
             image_type=['DERIVED', 'SECONDARY', 'MPR', 'ND', 'NORM'],
         )
         detector = ModalityDetector(logging.getLogger("test_mprage"))
-        modality, _, _ = detector.detect_modality(series_dir)
-        assert modality is None
+        modality, _, tech_meta = detector.detect_modality(series_dir)
+        assert modality == "t2"
+        assert tech_meta["is_derived_reconstruction"] is True
 
     def test_plain_mprage_without_contrast_still_classified_as_t1(self, make_dicom_series, tmp_path):
         """Unchanged behavior: no contrast marker anywhere -> plain t1."""
