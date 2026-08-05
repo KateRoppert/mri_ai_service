@@ -47,7 +47,6 @@ stages:
       force: false
       benchmark: false
       batch_size: null
-      max_subjects: null
       validate: false  # Пока не реализовано
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_01
 
@@ -62,7 +61,6 @@ stages:
       workers: 14
       force: false
       benchmark: false
-      max_subjects: null
       validate: false  # Пока не реализовано
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_02
 
@@ -74,7 +72,6 @@ stages:
       workers: 8
       force: false
       benchmark: false
-      max_subjects: null
       validate: false  # Пока не реализовано
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_03
 
@@ -89,7 +86,6 @@ stages:
       skip-existing: true
       force: false
       benchmark: false
-      max_subjects: null
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_04
 
   stage_05_preprocessing:
@@ -102,7 +98,6 @@ stages:
       skip-existing: true
       benchmark: false
       validate: true
-      max_subjects: null
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_05
 
   stage_06_segmentation:
@@ -118,7 +113,6 @@ stages:
       server_name: null
       gpu_count: null
       gpu_ids: null
-      max_subjects: null
       results-dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_06
 
   stage_07_inverse_transform:
@@ -129,7 +123,6 @@ stages:
       workers: 4                            # ~6 GB/worker on SibBMS 0.35mm (ANTs holds native reference + warped output per modality); 5 workers hit the 20g cap -> cgroup OOM -> BrokenProcessPool, all 11 sessions failed. 2*6=12 GB. The stage auto-tuner caps by CPU only and is memory-blind — see KI-042
       skip-existing: true
       benchmark: false
-      max_subjects: null
       preprocessing-config: configs/preprocessing_config.yaml  # reference-modality is derived from here (see 07_inverse_transform.py:resolve_reference_modality) instead of a static value, so glio (t1c) and MS (t1) both resolve correctly from their own preprocessing config
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_07
 
@@ -144,7 +137,6 @@ stages:
       workers: 8
       skip-existing: true
       benchmark: false
-      max_subjects: null
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_08
 
 # ============================================
