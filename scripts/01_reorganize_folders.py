@@ -598,8 +598,67 @@ class DatasetScanner:
             if patient_dir.is_dir() and not patient_dir.name.startswith('.'):
                 patient_dirs.append(patient_dir)
 
+        # If input_dir was pointed directly at one patient's own folder, its
+        # subdirectories (session-date folders, or modality folders like the
+        # dropbox_33/117-152 batch's KA117/{t1ce,t2w,t1w,flair}) are fragments
+        # of that ONE patient, not separate patients — verify with the DICOM
+        # patient identity tag before trusting folder depth.
+        if self._looks_like_single_patient(patient_dirs):
+            self.logger.info(
+                f"All {len(patient_dirs)} subdirectories of '{input_dir.name}' share the same "
+                f"DICOM patient identity — treating '{input_dir.name}' itself as one patient, "
+                f"not {len(patient_dirs)} separate patients"
+            )
+            return [input_dir]
+
         self.logger.info(f"Found {len(patient_dirs)} patients")
         return patient_dirs
+
+    def _looks_like_single_patient(self, candidate_dirs: List[Path]) -> bool:
+        """
+        True if candidate_dirs are better explained as fragments (sessions or
+        modality folders) of ONE real patient than as separate patients —
+        i.e. every one of them contains DICOM files reporting the same
+        patient identity (PatientID, falling back to PatientName).
+
+        Requires at least 2 candidates: with only one, there's nothing to
+        compare, and the existing single-child behavior (treat it as the
+        patient) is already correct. Fails open (returns False, "these are
+        separate patients", the pre-existing behavior) whenever identity
+        can't be read for one of the candidates — never guesses.
+        """
+        if len(candidate_dirs) < 2:
+            return False
+
+        identities = set()
+        for d in candidate_dirs:
+            identity = self._read_patient_identity(d)
+            if identity is None:
+                return False
+            identities.add(identity)
+
+        return len(identities) == 1
+
+    @staticmethod
+    def _read_patient_identity(directory: Path) -> Optional[str]:
+        """
+        Read a stable per-patient identity signal from the first DICOM file
+        found under `directory` (searched recursively): PatientID, falling
+        back to PatientName if PatientID is blank. Returns None if no DICOM
+        file is found or neither tag is populated.
+        """
+        files = find_dicom_files(directory)
+        if not files:
+            return None
+        try:
+            ds = pydicom.dcmread(str(files[0]), stop_before_pixels=True, force=True)
+        except Exception:
+            return None
+        patient_id = str(ds.get('PatientID', '')).strip()
+        if patient_id:
+            return patient_id
+        patient_name = str(ds.get('PatientName', '')).strip()
+        return patient_name or None
 
     def scan_patient_series(self, patient_dir: Path) -> List[Tuple[Path, Optional[str]]]:
         """
