@@ -139,7 +139,7 @@ const normalizeKappaEntity = (info) => {
   return { volumeReports, lobarReports, lesionStatsReports, mcdonaldReports };
 };
 
-const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma', kappaEntityInfo = null, selectedPatientId = null }) => {
+const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblastoma', kappaEntityInfo = null, selectedPatientId = null, onPatientsChange = null }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [volumeReports, setVolumeReports] = useState([]);
@@ -194,6 +194,22 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
       fetchAllData();
     }
   }, [autoLoad, runId, kappaEntityInfo, loaded]);
+
+  // Expose the de-duplicated patient list to the parent (e.g. ClinicalReport's
+  // dropdown), derived from whichever report array is authoritative for this
+  // lesion type — no separate fetch needed.
+  useEffect(() => {
+    if (!onPatientsChange) return;
+    const source = lesionType === 'multiple_sclerosis' ? lesionStatsReports : volumeReports;
+    const seen = new Set();
+    const patients = [];
+    for (const item of source) {
+      if (!item.patient_id || seen.has(item.patient_id)) continue;
+      seen.add(item.patient_id);
+      patients.push({ patient_id: item.patient_id, original_id: patientMap[item.patient_id] ?? null });
+    }
+    onPatientsChange(patients);
+  }, [volumeReports, lesionStatsReports, patientMap, lesionType, onPatientsChange]);
 
   const fetchAllData = async () => {
     setLoading(true);
