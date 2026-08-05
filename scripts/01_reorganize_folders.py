@@ -184,19 +184,24 @@ class ModalityDetector:
         reconstruction (e.g. a multi-planar reformat) rather than a primary
         acquisition.
 
-        DICOM's ImageType convention: value[0] is ORIGINAL or DERIVED,
-        value[1] is PRIMARY or SECONDARY. Reconstructions are DERIVED
-        and/or SECONDARY. A missing or empty ImageType is treated as "not a
-        reconstruction" (fail open) so an anonymized or absent tag never
-        causes a real primary acquisition to be dropped.
+        Only value[0] == DERIVED is treated as a reconstruction marker. The
+        textbook DICOM convention also assigns value[1] = SECONDARY to
+        reconstructions, and an earlier version of this check excluded any
+        series with SECONDARY anywhere in ImageType — but real data
+        (data/clinical_dicom/BO) disproved that: that site's scanner tags
+        ORIGINAL/SECONDARY on essentially every series it produces,
+        including plain primary T1/T2/FLAIR acquisitions, so the
+        SECONDARY-anywhere check was silently excluding real primary
+        diagnostic series across the whole dataset. A missing or empty
+        ImageType is treated as "not a reconstruction" (fail open) so an
+        anonymized or absent tag never causes a real primary acquisition to
+        be dropped.
         """
         elem = dcm.get((0x0008, 0x0008))
         if elem is None or not elem.value:
             return False
         values = [str(v).strip().upper() for v in elem.value]
-        if values[0] == 'DERIVED':
-            return True
-        return 'SECONDARY' in values
+        return values[0] == 'DERIVED'
 
     # Patterns for each modality (order matters!)
     MODALITY_PATTERNS = {

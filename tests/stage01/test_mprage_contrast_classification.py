@@ -14,9 +14,20 @@ skipped at the segmentation stage.
 
 Fix: the correct discriminator between a primary acquisition and a derived
 reconstruction is the DICOM ImageType tag (0008,0008), not the series name.
-Reconstructions are ORIGINAL/DERIVED[, SECONDARY]; primary acquisitions are
-ORIGINAL/PRIMARY. 'mpr' is removed from the text exclude lists; a
-ImageType-based check replaces it.
+'mpr' is removed from the text exclude lists; an ImageType-based check
+replaces it.
+
+Correction (data/clinical_dicom/BO): the original version of this check also
+treated 'SECONDARY' appearing anywhere in ImageType as a reconstruction
+marker, per the textbook DICOM convention (value[1] = PRIMARY or SECONDARY).
+That was never backed by a real counter-example — the one confirmed
+reconstruction at the time (117-152's MPR series) already had DERIVED as
+value[0]. Real data proved the theory wrong: BO's scanner/site tags
+ORIGINAL/SECONDARY on essentially every series it produces, including plain
+primary T1/T2/FLAIR acquisitions — the SECONDARY-anywhere check was
+silently excluding real primary diagnostic series (dark-fluid FLAIR among
+them) across the whole dataset. DERIVED as value[0] remains the only
+validated signal; SECONDARY alone is no longer treated as exclusion.
 """
 import sys
 import importlib.util
@@ -59,8 +70,17 @@ class TestIsDerivedReconstruction:
         dcm = _dataset_with_image_type(['DERIVED', 'PRIMARY', 'M', 'NONE'])
         assert ModalityDetector._is_derived_reconstruction(dcm) is True
 
-    def test_secondary_anywhere_is_derived(self):
+    def test_secondary_alone_without_derived_is_not_excluded(self):
+        """Regression for data/clinical_dicom/BO: real primary acquisitions
+        there are tagged ORIGINAL/SECONDARY — SECONDARY alone must not be
+        treated as a reconstruction marker (see module docstring)."""
         dcm = _dataset_with_image_type(['ORIGINAL', 'SECONDARY'])
+        assert ModalityDetector._is_derived_reconstruction(dcm) is False
+
+    def test_derived_with_secondary_is_still_derived(self):
+        """DERIVED as value[0] remains sufficient on its own, whether or not
+        SECONDARY also appears."""
+        dcm = _dataset_with_image_type(['DERIVED', 'SECONDARY', 'MPR'])
         assert ModalityDetector._is_derived_reconstruction(dcm) is True
 
     def test_missing_image_type_fails_open_not_derived(self):
@@ -116,6 +136,32 @@ class TestMprageContrastClassification:
             series_description="t1_mprage_sag_1mm_iso_MPR_MPR cor",
             contrast_bolus_agent="anonymized",
             image_type=['DERIVED', 'PRIMARY', 'M', 'NONE'],
+        )
+        detector = ModalityDetector(logging.getLogger("test_mprage"))
+        modality, _, _ = detector.detect_modality(series_dir)
+        assert modality is None
+
+    def test_real_bo_dark_fluid_flair_with_secondary_imagetype_classified_as_t2fl(self, make_dicom_series, tmp_path):
+        """Regression for data/clinical_dicom/BO: real primary FLAIR series
+        there carry ORIGINAL/SECONDARY — must not be excluded."""
+        series_dir = make_dicom_series(
+            tmp_path / "series1",
+            protocol_name="t2_space_dark-fluid_sag_fs_iso",
+            series_description="t2_space_dark-fluid_sag_fs_iso",
+            image_type=['ORIGINAL', 'SECONDARY', 'M', 'ND', 'NORM'],
+        )
+        detector = ModalityDetector(logging.getLogger("test_mprage"))
+        modality, _, _ = detector.detect_modality(series_dir)
+        assert modality == "t2fl"
+
+    def test_real_bo_mpr_reconstruction_still_excluded(self, make_dicom_series, tmp_path):
+        """A genuine BO MPR reconstruction (DERIVED, also carries SECONDARY)
+        must still be excluded — DERIVED alone remains sufficient."""
+        series_dir = make_dicom_series(
+            tmp_path / "series1",
+            protocol_name="t2_space_sag_p4_0.9 fast_MPR_Tra",
+            series_description="t2_space_sag_p4_0.9 fast_MPR_Tra",
+            image_type=['DERIVED', 'SECONDARY', 'MPR', 'ND', 'NORM'],
         )
         detector = ModalityDetector(logging.getLogger("test_mprage"))
         modality, _, _ = detector.detect_modality(series_dir)
