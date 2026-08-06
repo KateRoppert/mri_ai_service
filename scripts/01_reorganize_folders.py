@@ -104,6 +104,7 @@ class SessionInfo:
     """Information about a session (grouped by date)."""
     date: str  # YYYYMMDD format
     series: Dict[str, SeriesInfo] = field(default_factory=dict)  # modality -> SeriesInfo
+    unrecognized_series: List[SeriesInfo] = field(default_factory=list)  # modality=None, found but not classified
 
 
 # Result of processing one patient. Returned by process_single_patient
@@ -832,6 +833,8 @@ class SessionGrouper:
                         session.series[series.modality] = [session.series[series.modality]]
 
                     session.series[series.modality].append(series)
+                else:
+                    session.unrecognized_series.append(series)
 
             sessions.append(session)
 
@@ -932,6 +935,7 @@ class SeriesDeduplicator:
             Session with single series per modality
         """
         deduplicated = SessionInfo(date=session.date)
+        deduplicated.unrecognized_series = session.unrecognized_series
 
         for modality, series_list in session.series.items():
             if isinstance(series_list, list):
