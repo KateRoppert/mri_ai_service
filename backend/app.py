@@ -58,6 +58,7 @@ from models import (
     LongitudinalDiffResponse,
     LongitudinalDiffPair,
     LesionDiffEntry,
+    IncompletePatientsResponse,
 )
 from database import (
     get_db,
@@ -831,6 +832,28 @@ async def get_mcdonald_reports(
     return McDonaldReportListResponse(
         total=len(reports),
         reports=reports
+    )
+
+@app.get("/api/incomplete-patients/{run_id}", response_model=IncompletePatientsResponse)
+async def get_incomplete_patients(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить список неполных сессий (не хватает требуемых модальностей)
+    для данного запуска — очередь ручного review для врача
+    """
+    logger.info(f"Запрос неполных пациентов для run_id: {run_id}")
+
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    sessions = pipeline_manager.get_incomplete_patients(run.output_path)
+
+    return IncompletePatientsResponse(
+        total=len(sessions),
+        sessions=sessions
     )
 
 @app.get("/api/lesion-stats/{run_id}", response_model=LesionStatsListResponse)

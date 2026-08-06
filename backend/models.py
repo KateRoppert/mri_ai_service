@@ -128,6 +128,31 @@ class McDonaldReportListResponse(BaseModel):
     total: int = Field(..., description="Количество отчётов")
     reports: List[McDonaldReportResponse] = Field(..., description="Список отчётов")
 
+class UnrecognizedSeriesInfo(BaseModel):
+    """Серия, найденная на этапе 01, но не распознанная как требуемая модальность"""
+    original_path: str = Field(..., description="Путь к исходной DICOM-серии")
+    series_description: str = Field(..., description="ProtocolName | SeriesDescription")
+    slice_count: int = Field(..., description="Число DICOM-файлов в серии")
+
+
+class IncompletePatientSession(BaseModel):
+    """Одна неполная сессия, требующая внимания врача"""
+    patient_id: str = Field(..., description="BIDS ID пациента (sub-XXX)")
+    original_id: str = Field(..., description="Исходный ID пациента из источника данных")
+    session_id: str = Field(..., description="BIDS ID сессии (ses-XXX)")
+    date: str = Field(..., description="Дата сессии YYYYMMDD")
+    status: str = Field(..., description="Статус сессии (сейчас всегда 'incomplete')")
+    available: List[str] = Field(..., description="Модальности, которые уже есть")
+    unrecognized_series: List[UnrecognizedSeriesInfo] = Field(
+        default_factory=list, description="Нераспознанные серии — кандидаты на ручную переразметку"
+    )
+
+
+class IncompletePatientsResponse(BaseModel):
+    """Список неполных сессий текущего запуска"""
+    total: int = Field(..., description="Количество неполных сессий")
+    sessions: List[IncompletePatientSession] = Field(..., description="Список неполных сессий")
+
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
 # ============================================

@@ -506,6 +506,38 @@ class PipelineManager:
         logger.info(f"Успешно загружено {len(reports)} McDonald-отчётов")
         return reports
 
+    def _dataset_mapping_path(self, output_path: str) -> Path:
+        return Path(output_path) / "bids_organized" / "dataset_mapping.json"
+
+    def get_incomplete_patients(self, output_path: str) -> List[Dict[str, Any]]:
+        """
+        Read dataset_mapping.json and return every session whose status is
+        not "complete" and not "discarded" — the doctor-review queue for a run.
+        """
+        mapping_file = self._dataset_mapping_path(output_path)
+        if not mapping_file.exists():
+            return []
+
+        with open(mapping_file, 'r', encoding='utf-8') as f:
+            mapping_data = json.load(f)
+
+        results: List[Dict[str, Any]] = []
+        for patient_id, patient_data in mapping_data.get('patients', {}).items():
+            for session_id, session_data in patient_data.get('sessions', {}).items():
+                status = session_data.get('status')
+                if status not in ('incomplete',):
+                    continue
+                results.append({
+                    "patient_id": patient_id,
+                    "original_id": patient_data.get('original_id', ''),
+                    "session_id": session_id,
+                    "date": session_data.get('original_date', ''),
+                    "status": status,
+                    "available": sorted(session_data.get('series', {}).keys()),
+                    "unrecognized_series": session_data.get('unrecognized_series', []),
+                })
+        return results
+
     def get_segmask_label_path(self, output_path: str, subject_id: str, session_id: str) -> Optional[Path]:
         """
         Locate the per-lesion labeled mask (*_segmask_labels.nii.gz) Stage 08
