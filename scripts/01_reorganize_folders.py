@@ -1090,18 +1090,21 @@ class FileOrganizer:
         self,
         patient_id: str,
         session_id: str,
-        modality: str
+        modality: str,
+        incomplete: bool = False
     ) -> Path:
         """
         Create BIDS directory structure.
 
         Structure: output/sub-XXX/ses-XXX/anat/MODALITY/
+        Structure (incomplete session): output/_incomplete/sub-XXX/ses-XXX/anat/MODALITY/
 
         Returns:
             Path to modality directory
         """
+        root = (self.output_dir / '_incomplete') if incomplete else self.output_dir
         modality_dir = (
-            self.output_dir /
+            root /
             patient_id /
             session_id /
             'anat' /
@@ -1428,6 +1431,7 @@ def _process_one_patient_core(
     logger: logging.Logger,
     completeness_checker: 'CompletenessChecker',
     lesion_type: str = 'glioblastoma',
+    include_incomplete: bool = False,
 ) -> Optional[Dict]:
     """
     Process one patient end-to-end: scan series → detect modalities →
@@ -1544,6 +1548,7 @@ def _process_one_patient_core(
         logger.debug(f"  Session {new_session_id} (date: {session.date})")
 
         is_complete, missing_modalities = completeness_checker.check_session(session)
+        route_to_incomplete = (not is_complete) and (not include_incomplete)
 
         session_data: Dict = {
             'original_date': session.date,
@@ -1561,7 +1566,7 @@ def _process_one_patient_core(
 
         for modality, series in session.series.items():
             target_dir = file_organizer.create_bids_structure(
-                new_patient_id, new_session_id, modality
+                new_patient_id, new_session_id, modality, incomplete=route_to_incomplete
             )
 
             copied = file_organizer.copy_series(
@@ -1610,6 +1615,7 @@ def process_single_patient(
     tags_config: Optional[Dict] = None,
     metadata_dir: Optional[Path] = None,
     lesion_type: str = 'glioblastoma',
+    include_incomplete: bool = False,
 ) -> PatientResult:
     """
     Process a single patient (designed to run in parallel).
@@ -1678,6 +1684,7 @@ def process_single_patient(
             logger=logger,
             completeness_checker=completeness_checker,
             lesion_type=lesion_type,
+            include_incomplete=include_incomplete,
         )
 
         if patient_data is None:
@@ -1839,6 +1846,7 @@ def run_sequential(
     tags_config: Optional[Dict] = None,
     metadata_dir: Optional[Path] = None,
     lesion_type: str = 'glioblastoma',
+    include_incomplete: bool = False,
 ) -> Tuple[Dict, Dict, SeriesDeduplicator, 'FileOrganizer', Optional[Dict], Dict[str, int]]:
     """
     Run sequential processing (baseline).
@@ -1922,6 +1930,7 @@ def run_sequential(
             logger=logger,
             completeness_checker=completeness_checker,
             lesion_type=lesion_type,
+            include_incomplete=include_incomplete,
         )
 
         if patient_data is None:
@@ -1995,7 +2004,8 @@ def run_parallel(
     id_mapper: Optional[IDMapper] = None,
     tags_config: Optional[Dict] = None,
     metadata_dir: Optional[Path] = None,
-    lesion_type: str = 'glioblastoma'
+    lesion_type: str = 'glioblastoma',
+    include_incomplete: bool = False,
 ) -> Tuple[Dict, Dict, int, 'FileOrganizer', Optional[Dict], Dict[str, int]]:
     """
     Run parallel processing using multiprocessing.
@@ -2055,8 +2065,9 @@ def run_parallel(
         tags_config=tags_config,
         metadata_dir=metadata_dir,
         lesion_type=lesion_type,
+        include_incomplete=include_incomplete,
     )
-    
+
     # Map worker status strings to counter keys. "ok" → "successful".
     STATUS_TO_COUNTER = {"ok": "successful", "skipped": "skipped", "failed": "failed"}
 
@@ -2197,6 +2208,12 @@ def main():
         help='Force reprocessing: delete existing patient directories and reprocess'
     )
     parser.add_argument(
+        '--include-incomplete',
+        action='store_true',
+        help='Disable the completeness gate: write incomplete sessions to the '
+             'main tree instead of _incomplete/ (old behavior, process everything)'
+    )
+    parser.add_argument(
         '--benchmark',
         action='store_true',
         help='Enable performance benchmarking'
@@ -2332,6 +2349,7 @@ def main():
             tags_config=tags_config,
             metadata_dir=metadata_dir,
             lesion_type=args.lesion_type,
+            include_incomplete=args.include_incomplete,
         )
         dedup_stats = deduplicator
         file_organizer_stats = file_organizer
@@ -2360,6 +2378,7 @@ def main():
             tags_config=tags_config,
             metadata_dir=metadata_dir,
             lesion_type=args.lesion_type,
+            include_incomplete=args.include_incomplete,
         )
 
         class _DeduplicatorStats:
