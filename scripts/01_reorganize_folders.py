@@ -35,6 +35,7 @@ import yaml
 from scripts.metadata_extractor import MetadataExtractor
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config, load_series_scoring_config
+from utils.dicom_file_ops import is_dicom_file, find_dicom_files, MODALITY_BIDS_SUFFIX, copy_and_anonymize_series
 
 # Single source of truth for modalities the pipeline knows how to process.
 # Maps internal modality name → BIDS suffix used in output filenames.
@@ -42,47 +43,7 @@ from utils.config_loader import load_lesion_type_config, load_series_scoring_con
 # modality is not here will be dropped. Adding a new modality (e.g. for
 # metastases work) requires only an entry here plus an update to
 # configs/lesion_types.yaml.
-MODALITY_BIDS_SUFFIX: Dict[str, str] = {
-    't1':   'T1w',
-    't1c':  'T1wCE',
-    't2':   'T2w',
-    't2fl': 'FLAIR',
-}
-
-
-def is_dicom_file(path: Path) -> bool:
-    """
-    True if `path` is a DICOM file, independent of extension (KI-029).
-
-    Real clinical exports are not always named ``*.dcm`` — some vendors
-    write extensionless files (e.g. ``23831328``), others use ``.IMA`` or
-    ``.dicom``. Extension alone is unreliable both ways: it misses files
-    without ``.dcm``, and (in theory) could match a non-DICOM file someone
-    renamed to ``.dcm``.
-
-    Fast path: files already named ``*.dcm`` are trusted directly, so
-    datasets that already use this convention (the common case) pay no
-    extra I/O. Anything else is checked via the standard DICOM Part-10
-    magic marker: a 128-byte preamble followed by ``b'DICM'`` at offset
-    128. This is authoritative — unrelated files (README.txt, DICOMDIR,
-    thumbnails) will not carry it by coincidence — and correctly
-    recognizes extensionless DICOM and other extensions uniformly.
-    """
-    if path.suffix.lower() == '.dcm':
-        return True
-    try:
-        with open(path, 'rb') as f:
-            header = f.read(132)
-    except OSError:
-        return False
-    return len(header) == 132 and header[128:132] == b'DICM'
-
-
-def find_dicom_files(directory: Path, recursive: bool = True) -> List[Path]:
-    """All DICOM files under `directory`, any extension or none (see is_dicom_file)."""
-    pattern = '**/*' if recursive else '*'
-    return sorted(f for f in directory.glob(pattern) if f.is_file() and is_dicom_file(f))
-
+# (Definitions moved to utils.dicom_file_ops)
 
 @dataclass
 class SeriesInfo:
@@ -1137,8 +1098,6 @@ class FileOrganizer:
             self.logger.warning(f"No DICOM files in {source_dir}")
             return 0
 
-        bids_suffix = MODALITY_BIDS_SUFFIX.get(modality, modality.upper())
-
         if self.dry_run:
             count = len(source_files)
             self.files_would_copy += count
@@ -1151,29 +1110,10 @@ class FileOrganizer:
                 source_files[0], patient_id, session_id, modality
             )
 
-        copied = 0
-        for idx, source_file in enumerate(source_files, 1):
-            target_name = f"{patient_id}_{session_id}_{bids_suffix}_{idx:04d}.dcm"
-            target_path = target_dir / target_name
-
-            try:
-                if self.metadata_extractor:
-                    # Read → anonymize → save
-                    dcm = pydicom.dcmread(str(source_file), force=True)
-                    removed = self.metadata_extractor.anonymize_dicom(dcm)
-                    dcm.save_as(str(target_path))
-                    if idx == 1:  # Log only for first file in series
-                        self.logger.info(
-                            f"    Anonymized: removed {len(removed)} tags: "
-                            f"{', '.join(removed)}"
-                        )
-                else:
-                    # Fallback: plain copy (no config provided)
-                    shutil.copy2(source_file, target_path)
-                copied += 1
-            except Exception as e:
-                self.logger.error(f"Failed to process {source_file}: {e}")
-
+        copied = copy_and_anonymize_series(
+            source_files, target_dir, patient_id, session_id, modality,
+            metadata_extractor=self.metadata_extractor, logger=self.logger,
+        )
         self.files_copied += copied
         return copied
 
