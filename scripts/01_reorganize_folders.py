@@ -1426,6 +1426,7 @@ def _process_one_patient_core(
     deduplicator: 'SeriesDeduplicator',
     file_organizer: 'FileOrganizer',
     logger: logging.Logger,
+    completeness_checker: 'CompletenessChecker',
     lesion_type: str = 'glioblastoma',
 ) -> Optional[Dict]:
     """
@@ -1503,7 +1504,16 @@ def _process_one_patient_core(
         elif modality:
             logger.debug(f"  Series {series_dir}: {modality} (filtered out)")
         else:
-            logger.debug(f"  Series {series_dir}: unknown modality (filtered out)")
+            unrecognized_info = SeriesInfo(
+                original_path=series_dir,
+                patient_id=original_patient_id,
+                date=date,
+                modality=None,
+                series_description=series_description,
+            )
+            unrecognized_info.slice_count = len(find_dicom_files(series_dir))
+            series_list.append(unrecognized_info)
+            logger.debug(f"  Series {series_dir}: unknown modality (retained as unrecognized)")
 
     if not series_list:
         logger.warning(f"  No valid series found for {original_patient_id}")
@@ -1533,9 +1543,20 @@ def _process_one_patient_core(
         new_session_id = f"ses-{session_idx:03d}"
         logger.debug(f"  Session {new_session_id} (date: {session.date})")
 
+        is_complete, missing_modalities = completeness_checker.check_session(session)
+
         session_data: Dict = {
             'original_date': session.date,
+            'status': 'complete' if is_complete else 'incomplete',
             'series': {},
+            'unrecognized_series': [
+                {
+                    'original_path': str(u.original_path),
+                    'series_description': u.series_description,
+                    'slice_count': u.slice_count,
+                }
+                for u in session.unrecognized_series
+            ],
         }
 
         for modality, series in session.series.items():
@@ -1634,6 +1655,7 @@ def process_single_patient(
         scanner = DatasetScanner(logger)
         grouper = SessionGrouper(logger)
         deduplicator = SeriesDeduplicator(logger, scoring_config=scoring_config)
+        completeness_checker = CompletenessChecker(logger, lesion_type=lesion_type)
         _metadata_extractor = None
         if tags_config:
             _metadata_extractor = MetadataExtractor(tags_config, logger)
@@ -1654,6 +1676,7 @@ def process_single_patient(
             deduplicator=deduplicator,
             file_organizer=file_organizer,
             logger=logger,
+            completeness_checker=completeness_checker,
             lesion_type=lesion_type,
         )
 
@@ -1897,6 +1920,7 @@ def run_sequential(
             deduplicator=deduplicator,
             file_organizer=file_organizer,
             logger=logger,
+            completeness_checker=completeness_checker,
             lesion_type=lesion_type,
         )
 
