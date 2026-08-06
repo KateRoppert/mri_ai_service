@@ -62,6 +62,7 @@ services/*/weights/
 *.db-journal
 *.db-wal
 *.db-shm
+*.db.bak-*
 *.sqlite
 *.sqlite3
 
@@ -73,6 +74,7 @@ services/*/weights/
 # Test/development data — kept locally, never committed
 data/MS_5/
 data/UPENN-GBM/
+data/KA
 data/SibBMS/
 data/MosMed/
 data/clinical_dicom/
