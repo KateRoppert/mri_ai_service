@@ -48,6 +48,7 @@ stages:
       benchmark: false
       batch_size: null
       validate: false  # Пока не реализовано
+      include-incomplete: false   # true = old behavior, process every session regardless of completeness
       results_dir: /media/ssd/roppert/UPENN-GBM_preprocessed_4/benchmark_results/stage_01
 
   stage_02_metadata:
