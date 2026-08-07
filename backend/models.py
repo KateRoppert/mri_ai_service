@@ -165,6 +165,11 @@ class RelabelSeriesResponse(BaseModel):
     status: str = Field(..., description="Статус сессии после переразметки: complete или incomplete")
     available: List[str] = Field(..., description="Модальности, доступные после переразметки")
 
+
+class DiscardSessionResponse(BaseModel):
+    """Результат исключения сессии из очереди review"""
+    status: str = Field(..., description="Статус сессии после исключения: discarded")
+
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
 # ============================================

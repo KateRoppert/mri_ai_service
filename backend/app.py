@@ -61,6 +61,7 @@ from models import (
     IncompletePatientsResponse,
     RelabelSeriesRequest,
     RelabelSeriesResponse,
+    DiscardSessionResponse,
 )
 from database import (
     get_db,
@@ -354,6 +355,52 @@ async def start_pipeline(
         run_id=run.run_id,
         status=PipelineStatus.PENDING,
         message="Pipeline запущен и будет выполнен в фоновом режиме",
+        created_at=run.created_at,
+        lesion_type=run.lesion_type,
+    )
+
+
+@app.post("/api/pipeline-runs/{run_id}/requeue", response_model=PipelineStartResponse)
+async def requeue_pipeline_run(
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Перезапускает pipeline на тех же input/output путях, что и исходный
+    запуск. skip_existing (базовый конфиг) гарантирует, что реально
+    обработается только дособранный вручную пациент.
+    """
+    original_run = get_pipeline_run(db, run_id)
+    if not original_run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    run = create_pipeline_run(
+        db,
+        input_path=original_run.input_path,
+        output_path=original_run.output_path,
+        lesion_type=original_run.lesion_type or "glioblastoma",
+    )
+
+    background_tasks.add_task(
+        run_pipeline_background,
+        run.run_id,
+        run.input_path,
+        run.output_path,
+        db,
+        lesion_type=run.lesion_type,
+    )
+
+    asyncio.create_task(pipeline_monitor.start_monitoring(
+        run.run_id, run.output_path, None, run.lesion_type
+    ))
+
+    logger.info(f"Requeue: новый run_id {run.run_id} на тех же путях, что и {run_id}")
+
+    return PipelineStartResponse(
+        run_id=run.run_id,
+        status=PipelineStatus.PENDING,
+        message="Pipeline перезапущен (skip_existing обработает только новые/изменённые данные)",
         created_at=run.created_at,
         lesion_type=run.lesion_type,
     )
@@ -888,6 +935,29 @@ async def relabel_series(
 
     logger.info(f"Переразметка {patient_id}/{session_id}: {request.original_path} -> {request.modality}")
     return RelabelSeriesResponse(**result)
+
+@app.post(
+    "/api/incomplete-patients/{run_id}/{patient_id}/{session_id}/discard",
+    response_model=DiscardSessionResponse,
+)
+async def discard_session(
+    run_id: str,
+    patient_id: str,
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """Пометить сессию как намеренно исключённую из очереди review"""
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    try:
+        pipeline_manager.discard_session(run.output_path, patient_id, session_id)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    logger.info(f"Сессия {patient_id}/{session_id} отброшена (run_id={run_id})")
+    return DiscardSessionResponse(status="discarded")
 
 @app.get("/api/lesion-stats/{run_id}", response_model=LesionStatsListResponse)
 async def get_lesion_stats(

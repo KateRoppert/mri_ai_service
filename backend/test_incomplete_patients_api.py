@@ -203,3 +203,60 @@ class TestRelabelSeriesInputValidation:
                 original_path="/whatever",
                 modality="not_a_real_modality",
             )
+
+
+class TestDiscardSession:
+    def test_discard_sets_status(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}},
+                        "unrecognized_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.discard_session(str(tmp_path), "sub-001", "ses-001")
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        assert mapping["patients"]["sub-001"]["sessions"]["ses-001"]["status"] == "discarded"
+
+    def test_discarded_session_excluded_from_incomplete_list(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {}, "unrecognized_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.discard_session(str(tmp_path), "sub-001", "ses-001")
+        assert pm.get_incomplete_patients(str(tmp_path)) == []
+
+
+class TestDiscardSessionInputValidation:
+    """Regression tests mirroring TestRelabelSeriesInputValidation — discard_session
+    also takes patient_id/session_id from the API path, so it validates against the
+    same BIDS-ID patterns before touching dataset_mapping.json, for consistency with
+    relabel_series even though discard only does a dict lookup (no path construction)."""
+
+    def test_rejects_path_traversal_patient_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid patient_id"):
+            pm.discard_session(str(tmp_path), "..", "ses-001")
+
+    def test_rejects_path_traversal_session_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            pm.discard_session(str(tmp_path), "sub-001", "..")

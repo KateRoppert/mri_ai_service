@@ -555,6 +555,28 @@ class PipelineManager:
                 })
         return results
 
+    def discard_session(self, output_path: str, patient_id: str, session_id: str) -> None:
+        """Mark a session as intentionally excluded from review — stays out of
+        get_incomplete_patients() without deleting any data."""
+        # Same validation as relabel_series — patient_id/session_id are API path
+        # parameters (not sanitized by FastAPI beyond excluding '/'). This method
+        # only does a dict lookup (no path construction), so the risk is lower,
+        # but validating consistently keeps the invariant obvious at every call site.
+        if not _BIDS_PATIENT_ID_PATTERN.match(patient_id):
+            raise ValueError(f"Invalid patient_id: {patient_id!r}")
+        if not _BIDS_SESSION_ID_PATTERN.match(session_id):
+            raise ValueError(f"Invalid session_id: {session_id!r}")
+
+        mapping_file = self._dataset_mapping_path(output_path)
+        with open(mapping_file, 'r', encoding='utf-8') as f:
+            mapping_data = json.load(f)
+
+        session_data = mapping_data['patients'][patient_id]['sessions'][session_id]
+        session_data['status'] = 'discarded'
+
+        with open(mapping_file, 'w', encoding='utf-8') as f:
+            json.dump(mapping_data, f, indent=2, ensure_ascii=False)
+
     def relabel_series(
         self,
         output_path: str,
