@@ -153,6 +153,18 @@ class IncompletePatientsResponse(BaseModel):
     total: int = Field(..., description="Количество неполных сессий")
     sessions: List[IncompletePatientSession] = Field(..., description="Список неполных сессий")
 
+
+class RelabelSeriesRequest(BaseModel):
+    """Запрос на ручную переразметку нераспознанной серии"""
+    original_path: str = Field(..., description="Путь к исходной DICOM-серии (из unrecognized_series)")
+    modality: str = Field(..., description="Модальность, назначаемая врачом: t1, t1c, t2 или t2fl")
+
+
+class RelabelSeriesResponse(BaseModel):
+    """Результат переразметки"""
+    status: str = Field(..., description="Статус сессии после переразметки: complete или incomplete")
+    available: List[str] = Field(..., description="Модальности, доступные после переразметки")
+
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
 # ============================================

@@ -62,3 +62,99 @@ class TestGetIncompletePatients:
         pm = PipelineManager()
         result = pm.get_incomplete_patients(str(tmp_path))
         assert result == []
+
+
+import shutil
+
+
+class TestRelabelSeries:
+    def _make_dicom_series(self, series_dir: Path, n_files=2):
+        series_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n_files):
+            (series_dir / f"IM-{i:04d}.dcm").write_bytes(b"fake dicom bytes")
+        return series_dir
+
+    def test_relabel_completes_session_and_moves_to_main_tree(self, tmp_path):
+        bids_dir = tmp_path / "bids_organized"
+        incomplete_dir = bids_dir / "_incomplete" / "sub-001" / "ses-001"
+        raw_series = self._make_dicom_series(tmp_path / "raw" / "weird_series")
+
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}, "t2": {}, "t2fl": {}},
+                        "unrecognized_series": [
+                            {
+                                "original_path": str(raw_series),
+                                "series_description": "xyz | xyz",
+                                "slice_count": 2,
+                            }
+                        ],
+                    },
+                },
+            },
+        })
+        incomplete_dir.mkdir(parents=True, exist_ok=True)
+
+        pm = PipelineManager()
+        result = pm.relabel_series(
+            output_path=str(tmp_path),
+            patient_id="sub-001",
+            session_id="ses-001",
+            original_path=str(raw_series),
+            modality="t1c",
+        )
+
+        assert result["status"] == "complete"
+        # session moved out of _incomplete/
+        assert not incomplete_dir.exists()
+        assert (bids_dir / "sub-001" / "ses-001" / "anat" / "t1c").exists()
+        copied_files = list((bids_dir / "sub-001" / "ses-001" / "anat" / "t1c").glob("*.dcm"))
+        assert len(copied_files) == 2
+
+        # dataset_mapping.json updated on disk
+        mapping = json.loads((bids_dir / "dataset_mapping.json").read_text())
+        session = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        assert session["status"] == "complete"
+        assert "t1c" in session["series"]
+        assert session["unrecognized_series"] == []
+
+    def test_relabel_leaves_session_incomplete_if_still_missing_modalities(self, tmp_path):
+        bids_dir = tmp_path / "bids_organized"
+        incomplete_dir = bids_dir / "_incomplete" / "sub-002" / "ses-001"
+        raw_series = self._make_dicom_series(tmp_path / "raw" / "weird_series_2")
+
+        _write_mapping(tmp_path, {
+            "sub-002": {
+                "original_id": "P2",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}},
+                        "unrecognized_series": [
+                            {"original_path": str(raw_series), "series_description": "xyz", "slice_count": 2}
+                        ],
+                    },
+                },
+            },
+        })
+        incomplete_dir.mkdir(parents=True, exist_ok=True)
+
+        pm = PipelineManager()
+        result = pm.relabel_series(
+            output_path=str(tmp_path),
+            patient_id="sub-002",
+            session_id="ses-001",
+            original_path=str(raw_series),
+            modality="t2",
+        )
+
+        assert result["status"] == "incomplete"
+        # still under _incomplete/ — not yet complete
+        assert (bids_dir / "_incomplete" / "sub-002" / "ses-001" / "anat" / "t2").exists()
+        assert not (bids_dir / "sub-002").exists()

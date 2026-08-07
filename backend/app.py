@@ -59,6 +59,8 @@ from models import (
     LongitudinalDiffPair,
     LesionDiffEntry,
     IncompletePatientsResponse,
+    RelabelSeriesRequest,
+    RelabelSeriesResponse,
 )
 from database import (
     get_db,
@@ -855,6 +857,37 @@ async def get_incomplete_patients(
         total=len(sessions),
         sessions=sessions
     )
+
+@app.post(
+    "/api/incomplete-patients/{run_id}/{patient_id}/{session_id}/relabel",
+    response_model=RelabelSeriesResponse,
+)
+async def relabel_series(
+    run_id: str,
+    patient_id: str,
+    session_id: str,
+    request: RelabelSeriesRequest,
+    db: Session = Depends(get_db)
+):
+    """Вручную назначить модальность нераспознанной серии"""
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    try:
+        result = pipeline_manager.relabel_series(
+            output_path=run.output_path,
+            patient_id=patient_id,
+            session_id=session_id,
+            original_path=request.original_path,
+            modality=request.modality,
+            lesion_type=run.lesion_type or 'glioblastoma',
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    logger.info(f"Переразметка {patient_id}/{session_id}: {request.original_path} -> {request.modality}")
+    return RelabelSeriesResponse(**result)
 
 @app.get("/api/lesion-stats/{run_id}", response_model=LesionStatsListResponse)
 async def get_lesion_stats(

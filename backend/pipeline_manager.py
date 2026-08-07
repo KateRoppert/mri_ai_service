@@ -13,6 +13,14 @@ import json
 
 from config import settings
 
+import sys
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from utils.dicom_file_ops import find_dicom_files, copy_and_anonymize_series
+from utils.config_loader import load_lesion_type_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -537,6 +545,95 @@ class PipelineManager:
                     "unrecognized_series": session_data.get('unrecognized_series', []),
                 })
         return results
+
+    def relabel_series(
+        self,
+        output_path: str,
+        patient_id: str,
+        session_id: str,
+        original_path: str,
+        modality: str,
+        lesion_type: str = 'glioblastoma',
+    ) -> Dict[str, Any]:
+        """
+        Manually assign a modality to a series the automatic detector
+        couldn't classify (piece B's unrecognized_series). Copies it into
+        the correct BIDS location, updates dataset_mapping.json, and moves
+        the whole session out of _incomplete/ into the main tree if this
+        was the last missing modality.
+
+        Returns:
+            Dict with the updated session's "status" and "available" modalities.
+
+        Raises:
+            ValueError if the patient/session/series isn't found in dataset_mapping.json.
+        """
+        mapping_file = self._dataset_mapping_path(output_path)
+        with open(mapping_file, 'r', encoding='utf-8') as f:
+            mapping_data = json.load(f)
+
+        session_data = mapping_data['patients'][patient_id]['sessions'][session_id]
+
+        unrecognized = session_data.get('unrecognized_series', [])
+        matches = [u for u in unrecognized if u['original_path'] == original_path]
+        if not matches:
+            raise ValueError(
+                f"No unrecognized series with original_path={original_path!r} "
+                f"in {patient_id}/{session_id}"
+            )
+        series_entry = matches[0]
+
+        bids_dir = Path(output_path) / "bids_organized"
+        was_incomplete = session_data.get('status') == 'incomplete'
+        current_root = (bids_dir / "_incomplete") if was_incomplete else bids_dir
+        target_dir = current_root / patient_id / session_id / "anat" / modality
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        source_files = find_dicom_files(Path(original_path))
+        copy_and_anonymize_series(
+            source_files, target_dir, patient_id, session_id, modality,
+            metadata_extractor=None, logger=logger,
+        )
+
+        # Move the series entry from unrecognized_series to series[modality]
+        session_data['unrecognized_series'] = [
+            u for u in unrecognized if u['original_path'] != original_path
+        ]
+        session_data['series'][modality] = {
+            'original_path': original_path,
+            'slice_count': len(source_files),
+            'series_description': series_entry['series_description'],
+        }
+
+        # Recompute completeness — same lesion-type-aware required set as
+        # CompletenessChecker.check_session() in 01_reorganize_folders.py
+        # (piece B), not a hardcoded glioblastoma-only set — MS requires
+        # t1/t2/t2fl, no t1c.
+        try:
+            required = set(load_lesion_type_config(lesion_type)['required_modalities'])
+        except KeyError:
+            required = {'t1', 't1c', 't2', 't2fl'}
+        is_complete = required.issubset(session_data['series'].keys())
+        session_data['status'] = 'complete' if is_complete else 'incomplete'
+
+        # If now complete and it was previously under _incomplete/, move the whole session
+        if is_complete and was_incomplete:
+            source_session_dir = bids_dir / "_incomplete" / patient_id / session_id
+            target_session_dir = bids_dir / patient_id / session_id
+            target_session_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source_session_dir), str(target_session_dir))
+            # Clean up now-empty _incomplete/<patient_id> if this was its only session
+            parent_dir = bids_dir / "_incomplete" / patient_id
+            if parent_dir.exists() and not any(parent_dir.iterdir()):
+                parent_dir.rmdir()
+
+        with open(mapping_file, 'w', encoding='utf-8') as f:
+            json.dump(mapping_data, f, indent=2, ensure_ascii=False)
+
+        return {
+            'status': session_data['status'],
+            'available': sorted(session_data['series'].keys()),
+        }
 
     def get_segmask_label_path(self, output_path: str, subject_id: str, session_id: str) -> Optional[Path]:
         """
