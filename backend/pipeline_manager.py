@@ -665,10 +665,20 @@ class PipelineManager:
             )
 
         source_files = find_dicom_files(Path(original_path))
-        copy_and_anonymize_series(
+        copied = copy_and_anonymize_series(
             source_files, target_dir, patient_id, session_id, modality,
             metadata_extractor=metadata_extractor, logger=logger,
         )
+        if copied != len(source_files):
+            # Partial/failed copy — do NOT touch session_data, recompute status,
+            # move the session directory, or write the mapping file back. Silently
+            # accepting this would let a session with fewer files than expected
+            # flow downstream to segmentation as "complete" (the exact failure
+            # mode this incomplete-patient feature exists to prevent).
+            raise ValueError(
+                f"Copy failed: only {copied}/{len(source_files)} files copied for "
+                f"{patient_id}/{session_id}/{modality} (source: {original_path})"
+            )
 
         # Move the series entry from unrecognized_series to series[modality]
         session_data['unrecognized_series'] = [

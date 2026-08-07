@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import pipeline_manager
 from pipeline_manager import PipelineManager
 
 
@@ -160,6 +161,67 @@ class TestRelabelSeries:
         # still under _incomplete/ — not yet complete
         assert (bids_dir / "_incomplete" / "sub-002" / "ses-001" / "anat" / "t2").exists()
         assert not (bids_dir / "sub-002").exists()
+
+    def test_relabel_raises_and_leaves_state_untouched_on_partial_copy(self, tmp_path, monkeypatch):
+        """Regression test: copy_and_anonymize_series catches per-file exceptions
+        internally and returns however many files actually succeeded, which can be
+        less than len(source_files). If relabel_series ignored that return value it
+        would still mark the session complete and move it into the main tree with
+        fewer files than expected — silently defeating the whole point of the
+        incomplete-patient review feature. Simulate a partial copy failure by
+        monkeypatching copy_and_anonymize_series to report fewer files copied than
+        were attempted (simplest reliable way — pydicom's force=True reader is too
+        lenient to reliably fail on crafted-garbage fixture bytes)."""
+        bids_dir = tmp_path / "bids_organized"
+        incomplete_dir = bids_dir / "_incomplete" / "sub-003" / "ses-001"
+        raw_series = self._make_dicom_series(tmp_path / "raw" / "weird_series_3")
+
+        original_series_entry = {
+            "original_path": str(raw_series),
+            "series_description": "xyz | xyz",
+            "slice_count": 2,
+        }
+        _write_mapping(tmp_path, {
+            "sub-003": {
+                "original_id": "P3",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}, "t2": {}, "t2fl": {}},
+                        "unrecognized_series": [dict(original_series_entry)],
+                    },
+                },
+            },
+        })
+        incomplete_dir.mkdir(parents=True, exist_ok=True)
+        mapping_file = bids_dir / "dataset_mapping.json"
+        mapping_before = mapping_file.read_text()
+
+        # source has 2 files, but only 1 "successfully" copies
+        monkeypatch.setattr(pipeline_manager, "copy_and_anonymize_series", lambda *a, **kw: 1)
+
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match=r"Copy failed: only 1/2 files copied"):
+            pm.relabel_series(
+                output_path=str(tmp_path),
+                patient_id="sub-003",
+                session_id="ses-001",
+                original_path=str(raw_series),
+                modality="t1c",
+            )
+
+        # dataset_mapping.json on disk is byte-for-byte unchanged — no partial state persisted
+        assert mapping_file.read_text() == mapping_before
+        mapping = json.loads(mapping_file.read_text())
+        session = mapping["patients"]["sub-003"]["sessions"]["ses-001"]
+        assert session["status"] == "incomplete"
+        assert "t1c" not in session["series"]
+        assert session["unrecognized_series"] == [original_series_entry]
+
+        # nothing moved out of _incomplete/
+        assert incomplete_dir.exists()
+        assert not (bids_dir / "sub-003").exists()
 
 
 class TestRelabelSeriesInputValidation:
