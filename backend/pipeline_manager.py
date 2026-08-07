@@ -2,6 +2,7 @@
 Модуль для управления запуском и мониторингом pipeline
 """
 
+import re
 import subprocess
 import yaml
 import shutil
@@ -18,10 +19,18 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from utils.dicom_file_ops import find_dicom_files, copy_and_anonymize_series
+from utils.dicom_file_ops import find_dicom_files, copy_and_anonymize_series, MODALITY_BIDS_SUFFIX
 from utils.config_loader import load_lesion_type_config
 
 logger = logging.getLogger(__name__)
+
+# BIDS ID format enforced by IDMapper/bids_allocator (scripts/01_reorganize_folders.py) —
+# relabel_series() uses patient_id/session_id (API path parameters, not sanitized by
+# FastAPI beyond excluding '/') to build filesystem paths and a shutil.move target, so
+# they're validated against this pattern before any path construction happens, rather
+# than relying on the dict lookup that follows to implicitly reject anything else.
+_BIDS_PATIENT_ID_PATTERN = re.compile(r'^sub-\d+$')
+_BIDS_SESSION_ID_PATTERN = re.compile(r'^ses-\d+$')
 
 
 class PipelineManager:
@@ -566,8 +575,21 @@ class PipelineManager:
             Dict with the updated session's "status" and "available" modalities.
 
         Raises:
-            ValueError if the patient/session/series isn't found in dataset_mapping.json.
+            ValueError if patient_id/session_id/modality are malformed, or if the
+            patient/session/series isn't found in dataset_mapping.json.
         """
+        # Validate BEFORE any path construction — patient_id/session_id come from
+        # the API path and are not sanitized beyond FastAPI excluding '/'; a bare
+        # ".." segment would otherwise reach the shutil.move()/Path() calls below.
+        if not _BIDS_PATIENT_ID_PATTERN.match(patient_id):
+            raise ValueError(f"Invalid patient_id: {patient_id!r}")
+        if not _BIDS_SESSION_ID_PATTERN.match(session_id):
+            raise ValueError(f"Invalid session_id: {session_id!r}")
+        if modality not in MODALITY_BIDS_SUFFIX:
+            raise ValueError(
+                f"Invalid modality: {modality!r} (must be one of {sorted(MODALITY_BIDS_SUFFIX)})"
+            )
+
         mapping_file = self._dataset_mapping_path(output_path)
         with open(mapping_file, 'r', encoding='utf-8') as f:
             mapping_data = json.load(f)

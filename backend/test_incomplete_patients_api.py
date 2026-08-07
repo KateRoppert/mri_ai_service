@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from pipeline_manager import PipelineManager
@@ -158,3 +160,46 @@ class TestRelabelSeries:
         # still under _incomplete/ — not yet complete
         assert (bids_dir / "_incomplete" / "sub-002" / "ses-001" / "anat" / "t2").exists()
         assert not (bids_dir / "sub-002").exists()
+
+
+class TestRelabelSeriesInputValidation:
+    """Regression tests for a path-traversal finding: patient_id/session_id come
+    from the API path (not sanitized by FastAPI beyond excluding '/') and used to
+    flow into Path()/shutil.move() construction — must be rejected before that,
+    not merely relying on the dataset_mapping.json dict lookup to happen to fail."""
+
+    def test_rejects_path_traversal_patient_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid patient_id"):
+            pm.relabel_series(
+                output_path=str(tmp_path),
+                patient_id="..",
+                session_id="ses-001",
+                original_path="/whatever",
+                modality="t1",
+            )
+
+    def test_rejects_path_traversal_session_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            pm.relabel_series(
+                output_path=str(tmp_path),
+                patient_id="sub-001",
+                session_id="..",
+                original_path="/whatever",
+                modality="t1",
+            )
+
+    def test_rejects_unknown_modality(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid modality"):
+            pm.relabel_series(
+                output_path=str(tmp_path),
+                patient_id="sub-001",
+                session_id="ses-001",
+                original_path="/whatever",
+                modality="not_a_real_modality",
+            )
