@@ -18,9 +18,17 @@ import sys
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+# scripts/metadata_extractor.py does `from performance_monitor import ...` (bare,
+# not `scripts.performance_monitor`) — it only resolves when 01_reorganize_folders.py
+# runs as a direct script (Python auto-adds the running script's own directory to
+# sys.path). Importing it as a module from here needs scripts/ on sys.path too.
+_SCRIPTS_DIR = _PROJECT_ROOT / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from utils.dicom_file_ops import find_dicom_files, copy_and_anonymize_series, MODALITY_BIDS_SUFFIX
 from utils.config_loader import load_lesion_type_config
+from scripts.metadata_extractor import MetadataExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +534,22 @@ class PipelineManager:
     def _dataset_mapping_path(self, output_path: str) -> Path:
         return Path(output_path) / "bids_organized" / "dataset_mapping.json"
 
+    def _build_metadata_extractor(self) -> Optional['MetadataExtractor']:
+        """
+        Same anonymization config stage 01 uses (configs/dicom_tags.yaml, see
+        pipeline_config.yaml's stage_01_reorganize.args.config) — relabel_series()
+        must anonymize exactly like the original reorganize pass, not skip it,
+        since this is still the first time these bytes are written into the
+        (supposedly anonymized) BIDS tree.
+        """
+        tags_config_path = _PROJECT_ROOT / "configs" / "dicom_tags.yaml"
+        if not tags_config_path.exists():
+            logger.error(f"Tags config not found: {tags_config_path} — cannot anonymize relabeled series")
+            return None
+        with open(tags_config_path, 'r', encoding='utf-8') as f:
+            tags_config = yaml.safe_load(f)
+        return MetadataExtractor(tags_config, logger)
+
     def get_incomplete_patients(self, output_path: str) -> List[Dict[str, Any]]:
         """
         Read dataset_mapping.json and return every session whose status is
@@ -633,10 +657,17 @@ class PipelineManager:
         target_dir = current_root / patient_id / session_id / "anat" / modality
         target_dir.mkdir(parents=True, exist_ok=True)
 
+        metadata_extractor = self._build_metadata_extractor()
+        if metadata_extractor is None:
+            raise ValueError(
+                "Anonymization config (configs/dicom_tags.yaml) not found — "
+                "refusing to copy patient DICOM data without anonymizing it"
+            )
+
         source_files = find_dicom_files(Path(original_path))
         copy_and_anonymize_series(
             source_files, target_dir, patient_id, session_id, modality,
-            metadata_extractor=None, logger=logger,
+            metadata_extractor=metadata_extractor, logger=logger,
         )
 
         # Move the series entry from unrecognized_series to series[modality]
