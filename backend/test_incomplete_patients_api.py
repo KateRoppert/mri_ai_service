@@ -95,11 +95,13 @@ class TestRelabelSeries:
                         "original_date": "20230101",
                         "status": "incomplete",
                         "series": {"t1": {}, "t2": {}, "t2fl": {}},
-                        "unrecognized_series": [
+                        "excluded_series": [
                             {
                                 "original_path": str(raw_series),
                                 "series_description": "xyz | xyz",
                                 "slice_count": 2,
+                                "detected_modality": None,
+                                "reason": "unrecognized",
                             }
                         ],
                     },
@@ -129,7 +131,7 @@ class TestRelabelSeries:
         session = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
         assert session["status"] == "complete"
         assert "t1c" in session["series"]
-        assert session["unrecognized_series"] == []
+        assert session["excluded_series"] == []
 
     def test_relabel_leaves_session_incomplete_if_still_missing_modalities(self, tmp_path):
         bids_dir = tmp_path / "bids_organized"
@@ -144,8 +146,11 @@ class TestRelabelSeries:
                         "original_date": "20230101",
                         "status": "incomplete",
                         "series": {"t1": {}},
-                        "unrecognized_series": [
-                            {"original_path": str(raw_series), "series_description": "xyz", "slice_count": 2}
+                        "excluded_series": [
+                            {
+                                "original_path": str(raw_series), "series_description": "xyz", "slice_count": 2,
+                                "detected_modality": None, "reason": "unrecognized",
+                            }
                         ],
                     },
                 },
@@ -185,6 +190,8 @@ class TestRelabelSeries:
             "original_path": str(raw_series),
             "series_description": "xyz | xyz",
             "slice_count": 2,
+            "detected_modality": None,
+            "reason": "unrecognized",
         }
         _write_mapping(tmp_path, {
             "sub-003": {
@@ -194,7 +201,7 @@ class TestRelabelSeries:
                         "original_date": "20230101",
                         "status": "incomplete",
                         "series": {"t1": {}, "t2": {}, "t2fl": {}},
-                        "unrecognized_series": [dict(original_series_entry)],
+                        "excluded_series": [dict(original_series_entry)],
                     },
                 },
             },
@@ -222,7 +229,7 @@ class TestRelabelSeries:
         session = mapping["patients"]["sub-003"]["sessions"]["ses-001"]
         assert session["status"] == "incomplete"
         assert "t1c" not in session["series"]
-        assert session["unrecognized_series"] == [original_series_entry]
+        assert session["excluded_series"] == [original_series_entry]
 
         # nothing moved out of _incomplete/
         assert incomplete_dir.exists()
@@ -282,7 +289,7 @@ class TestDiscardSession:
                         "original_date": "20230101",
                         "status": "incomplete",
                         "series": {"t1": {}},
-                        "unrecognized_series": [],
+                        "excluded_series": [],
                     },
                 },
             },
@@ -300,7 +307,7 @@ class TestDiscardSession:
                 "sessions": {
                     "ses-001": {
                         "original_date": "20230101", "status": "incomplete",
-                        "series": {}, "unrecognized_series": [],
+                        "series": {}, "excluded_series": [],
                     },
                 },
             },
@@ -327,3 +334,70 @@ class TestDiscardSessionInputValidation:
         pm = PipelineManager()
         with pytest.raises(ValueError, match="Invalid session_id"):
             pm.discard_session(str(tmp_path), "sub-001", "..")
+
+
+class TestRelabelSeriesReplace:
+    def _make_dicom_series(self, series_dir: Path, n_files=2):
+        series_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n_files):
+            (series_dir / f"IM-{i:04d}.dcm").write_bytes(b"fake dicom bytes")
+        return series_dir
+
+    def test_replacing_an_already_filled_modality_bumps_old_series_into_excluded(self, tmp_path):
+        bids_dir = tmp_path / "bids_organized"
+        incomplete_dir = bids_dir / "_incomplete" / "sub-001" / "ses-001"
+        new_series = self._make_dicom_series(tmp_path / "raw" / "better_t1")
+
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {
+                            "t1": {
+                                "original_path": "/raw/old_t1", "slice_count": 150,
+                                "series_description": "old_t1_series",
+                            },
+                            "t2": {}, "t2fl": {},
+                        },
+                        "excluded_series": [
+                            {
+                                "original_path": str(new_series), "series_description": "better_t1_series",
+                                "slice_count": 2, "detected_modality": "t1", "reason": "lost_deduplication",
+                            }
+                        ],
+                    },
+                },
+            },
+        })
+        incomplete_dir.mkdir(parents=True, exist_ok=True)
+
+        pm = PipelineManager()
+        result = pm.relabel_series(
+            output_path=str(tmp_path),
+            patient_id="sub-001",
+            session_id="ses-001",
+            original_path=str(new_series),
+            modality="t1",
+            # MS's required set is t1/t2/t2fl (no t1c) — matches this fixture.
+            # Default lesion_type is "glioblastoma", which requires t1c too and
+            # would never be satisfied by this fixture.
+            lesion_type="multiple_sclerosis",
+        )
+
+        assert result["status"] == "complete"  # t1/t2/t2fl all present now
+
+        mapping = json.loads((bids_dir / "dataset_mapping.json").read_text())
+        session = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+
+        # new series is now the active t1
+        assert session["series"]["t1"]["original_path"] == str(new_series)
+
+        # old t1 was NOT discarded — it's back in excluded_series
+        assert len(session["excluded_series"]) == 1
+        bumped = session["excluded_series"][0]
+        assert bumped["original_path"] == "/raw/old_t1"
+        assert bumped["detected_modality"] == "t1"
+        assert bumped["reason"] == "replaced_by_manual_relabel"

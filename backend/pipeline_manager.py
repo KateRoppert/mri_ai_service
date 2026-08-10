@@ -612,10 +612,12 @@ class PipelineManager:
     ) -> Dict[str, Any]:
         """
         Manually assign a modality to a series the automatic detector
-        couldn't classify (piece B's unrecognized_series). Copies it into
+        couldn't classify (piece B's excluded_series). Copies it into
         the correct BIDS location, updates dataset_mapping.json, and moves
         the whole session out of _incomplete/ into the main tree if this
-        was the last missing modality.
+        was the last missing modality. If the target modality slot is
+        already occupied, this replaces it — the previous occupant is
+        preserved in excluded_series rather than discarded.
 
         Returns:
             Dict with the updated session's "status" and "available" modalities.
@@ -642,11 +644,11 @@ class PipelineManager:
 
         session_data = mapping_data['patients'][patient_id]['sessions'][session_id]
 
-        unrecognized = session_data.get('unrecognized_series', [])
-        matches = [u for u in unrecognized if u['original_path'] == original_path]
+        excluded = session_data.get('excluded_series', [])
+        matches = [u for u in excluded if u['original_path'] == original_path]
         if not matches:
             raise ValueError(
-                f"No unrecognized series with original_path={original_path!r} "
+                f"No excluded series with original_path={original_path!r} "
                 f"in {patient_id}/{session_id}"
             )
         series_entry = matches[0]
@@ -680,10 +682,24 @@ class PipelineManager:
                 f"{patient_id}/{session_id}/{modality} (source: {original_path})"
             )
 
-        # Move the series entry from unrecognized_series to series[modality]
-        session_data['unrecognized_series'] = [
-            u for u in unrecognized if u['original_path'] != original_path
-        ]
+        # Remove the newly-chosen series from the excluded pool.
+        remaining_excluded = [u for u in excluded if u['original_path'] != original_path]
+
+        # If modality was already occupied, its previous occupant is not
+        # discarded — bumped back into excluded_series so the doctor can
+        # switch back later. This is what makes relabel a genuine replace,
+        # not just a fill-the-empty-slot operation.
+        previous = session_data['series'].get(modality)
+        if previous is not None:
+            remaining_excluded.append({
+                'original_path': previous['original_path'],
+                'series_description': previous['series_description'],
+                'slice_count': previous['slice_count'],
+                'detected_modality': modality,
+                'reason': 'replaced_by_manual_relabel',
+            })
+
+        session_data['excluded_series'] = remaining_excluded
         session_data['series'][modality] = {
             'original_path': original_path,
             'slice_count': len(source_files),
