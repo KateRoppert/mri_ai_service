@@ -128,11 +128,14 @@ class McDonaldReportListResponse(BaseModel):
     total: int = Field(..., description="Количество отчётов")
     reports: List[McDonaldReportResponse] = Field(..., description="Список отчётов")
 
-class UnrecognizedSeriesInfo(BaseModel):
-    """Серия, найденная на этапе 01, но не распознанная как требуемая модальность"""
+class ExcludedSeriesInfo(BaseModel):
+    """Серия, не попавшая в финальный набор — не распознана алгоритмом,
+    или распознана, но проиграла дедупликацию другому кандидату"""
     original_path: str = Field(..., description="Путь к исходной DICOM-серии")
     series_description: str = Field(..., description="ProtocolName | SeriesDescription")
     slice_count: int = Field(..., description="Число DICOM-файлов в серии")
+    detected_modality: Optional[str] = Field(None, description="Модальность по мнению алгоритма (null — вообще не распознана)")
+    reason: str = Field(..., description="unrecognized | lost_deduplication | replaced_by_manual_relabel")
 
 
 class IncompletePatientSession(BaseModel):
@@ -143,8 +146,8 @@ class IncompletePatientSession(BaseModel):
     date: str = Field(..., description="Дата сессии YYYYMMDD")
     status: str = Field(..., description="Статус сессии (сейчас всегда 'incomplete')")
     available: List[str] = Field(..., description="Модальности, которые уже есть")
-    unrecognized_series: List[UnrecognizedSeriesInfo] = Field(
-        default_factory=list, description="Нераспознанные серии — кандидаты на ручную переразметку"
+    excluded_series: List[ExcludedSeriesInfo] = Field(
+        default_factory=list, description="Серии вне финального набора — кандидаты на ручную переразметку"
     )
 
 
@@ -156,7 +159,7 @@ class IncompletePatientsResponse(BaseModel):
 
 class RelabelSeriesRequest(BaseModel):
     """Запрос на ручную переразметку нераспознанной серии"""
-    original_path: str = Field(..., description="Путь к исходной DICOM-серии (из unrecognized_series)")
+    original_path: str = Field(..., description="Путь к исходной DICOM-серии (из excluded_series)")
     modality: str = Field(..., description="Модальность, назначаемая врачом: t1, t1c, t2 или t2fl")
 
 

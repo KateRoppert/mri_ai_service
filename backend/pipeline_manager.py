@@ -575,7 +575,7 @@ class PipelineManager:
                     "date": session_data.get('original_date', ''),
                     "status": status,
                     "available": sorted(session_data.get('series', {}).keys()),
-                    "unrecognized_series": session_data.get('unrecognized_series', []),
+                    "excluded_series": session_data.get('excluded_series', []),
                 })
         return results
 

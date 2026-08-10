@@ -27,14 +27,17 @@ class TestGetIncompletePatients:
                         "original_date": "20230101",
                         "status": "complete",
                         "series": {"t1": {}, "t1c": {}, "t2": {}, "t2fl": {}},
-                        "unrecognized_series": [],
+                        "excluded_series": [],
                     },
                     "ses-002": {
                         "original_date": "20230115",
                         "status": "incomplete",
                         "series": {"t1c": {}},
-                        "unrecognized_series": [
-                            {"original_path": "/raw/weird", "series_description": "xyz", "slice_count": 20}
+                        "excluded_series": [
+                            {
+                                "original_path": "/raw/weird", "series_description": "xyz",
+                                "slice_count": 20, "detected_modality": None, "reason": "unrecognized",
+                            }
                         ],
                     },
                 },
@@ -46,7 +49,7 @@ class TestGetIncompletePatients:
                         "original_date": "20230101",
                         "status": "discarded",
                         "series": {"t1c": {}},
-                        "unrecognized_series": [],
+                        "excluded_series": [],
                     },
                 },
             },
@@ -59,7 +62,9 @@ class TestGetIncompletePatients:
         assert result[0]["session_id"] == "ses-002"
         assert result[0]["status"] == "incomplete"
         assert result[0]["available"] == ["t1c"]
-        assert len(result[0]["unrecognized_series"]) == 1
+        assert len(result[0]["excluded_series"]) == 1
+        assert result[0]["excluded_series"][0]["detected_modality"] is None
+        assert result[0]["excluded_series"][0]["reason"] == "unrecognized"
 
     def test_missing_mapping_file_returns_empty_list(self, tmp_path):
         pm = PipelineManager()
