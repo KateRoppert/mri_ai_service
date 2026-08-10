@@ -65,7 +65,7 @@ class SessionInfo:
     """Information about a session (grouped by date)."""
     date: str  # YYYYMMDD format
     series: Dict[str, SeriesInfo] = field(default_factory=dict)  # modality -> SeriesInfo
-    unrecognized_series: List[SeriesInfo] = field(default_factory=list)  # modality=None, found but not classified
+    excluded_series: List[SeriesInfo] = field(default_factory=list)  # modality=None (unrecognized) or lost deduplication
 
 
 # Result of processing one patient. Returned by process_single_patient
@@ -795,7 +795,7 @@ class SessionGrouper:
 
                     session.series[series.modality].append(series)
                 else:
-                    session.unrecognized_series.append(series)
+                    session.excluded_series.append(series)
 
             sessions.append(session)
 
@@ -887,16 +887,21 @@ class SeriesDeduplicator:
 
     def deduplicate_session(self, session: SessionInfo) -> SessionInfo:
         """
-        Keep only one series per modality (one with most slices).
+        Keep only one series per modality (one with most slices/best score).
+        Every other candidate for that modality is retained in
+        excluded_series (detected_modality = its own .modality field, reason
+        computed later at JSON-serialization time in _process_one_patient_core)
+        rather than discarded — a doctor may want to pick the loser instead.
 
         Args:
             session: Session with potentially duplicate modalities
 
         Returns:
-            Session with single series per modality
+            Session with single series per modality; excluded_series carries
+            forward session.excluded_series plus any new dedup losers.
         """
         deduplicated = SessionInfo(date=session.date)
-        deduplicated.unrecognized_series = session.unrecognized_series
+        deduplicated.excluded_series = list(session.excluded_series)
 
         for modality, series_list in session.series.items():
             if isinstance(series_list, list):
@@ -904,6 +909,9 @@ class SeriesDeduplicator:
                     # Multiple series for same modality — _select_best_series logs the INFO line
                     best_series = self._select_best_series(series_list, modality)
                     deduplicated.series[modality] = best_series
+
+                    losers = [s for s in series_list if s is not best_series]
+                    deduplicated.excluded_series.extend(losers)
 
                     removed_count = len(series_list) - 1
                     self.duplicates_removed += removed_count
@@ -1494,13 +1502,15 @@ def _process_one_patient_core(
             'original_date': session.date,
             'status': 'complete' if is_complete else 'incomplete',
             'series': {},
-            'unrecognized_series': [
+            'excluded_series': [
                 {
                     'original_path': str(u.original_path),
                     'series_description': u.series_description,
                     'slice_count': u.slice_count,
+                    'detected_modality': u.modality,
+                    'reason': 'unrecognized' if u.modality is None else 'lost_deduplication',
                 }
-                for u in session.unrecognized_series
+                for u in session.excluded_series
             ],
         }
 

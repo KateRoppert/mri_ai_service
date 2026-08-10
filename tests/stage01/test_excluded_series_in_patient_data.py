@@ -1,3 +1,4 @@
+# tests/stage01/test_excluded_series_in_patient_data.py
 import logging
 import sys
 import importlib.util
@@ -17,15 +18,14 @@ def _load_module(filename, module_name):
     return mod
 
 
-reorganize_mod = _load_module("01_reorganize_folders.py", "reorganize_folders_patientdata")
+reorganize_mod = _load_module("01_reorganize_folders.py", "reorganize_folders_excluded_patientdata")
 
 
-class TestUnrecognizedSeriesInPatientData:
-    def test_incomplete_session_has_status_and_unrecognized_series(
+class TestExcludedSeriesInPatientData:
+    def test_incomplete_session_has_status_and_unrecognized_excluded_series(
         self, make_dicom_series, tmp_path
     ):
         patient_dir = tmp_path / "PAT001"
-        # Recognized: t1, t2, t2fl (missing t1c) — glioblastoma requires all 4
         make_dicom_series(
             patient_dir / "2023-01-01" / "t1_series",
             protocol_name="t1_mprage_sag", series_description="t1_mprage_sag",
@@ -41,14 +41,13 @@ class TestUnrecognizedSeriesInPatientData:
             protocol_name="t2_flair", series_description="t2_flair",
             image_type=['ORIGINAL', 'PRIMARY'],
         )
-        # Unrecognized: nonsense protocol name, no modality keyword matches
         make_dicom_series(
             patient_dir / "2023-01-01" / "weird_series",
             protocol_name="xyz_47_unknown", series_description="xyz_47_unknown",
             image_type=['ORIGINAL', 'PRIMARY'],
         )
 
-        logger = logging.getLogger("test_patientdata")
+        logger = logging.getLogger("test_excluded_patientdata")
         modality_detector = reorganize_mod.ModalityDetector(logger)
         scanner = reorganize_mod.DatasetScanner(logger)
         grouper = reorganize_mod.SessionGrouper(logger)
@@ -71,24 +70,31 @@ class TestUnrecognizedSeriesInPatientData:
 
         session = patient_data['sessions']['ses-001']
         assert session['status'] == 'incomplete'
-        assert len(session['unrecognized_series']) == 1
-        assert session['unrecognized_series'][0]['series_description'] == "xyz_47_unknown | xyz_47_unknown"
-        assert 'original_path' in session['unrecognized_series'][0]
-        assert 'slice_count' in session['unrecognized_series'][0]
+        assert len(session['excluded_series']) == 1
+        entry = session['excluded_series'][0]
+        assert entry['series_description'] == "xyz_47_unknown | xyz_47_unknown"
+        assert entry['detected_modality'] is None
+        assert entry['reason'] == 'unrecognized'
+        assert 'original_path' in entry
+        assert 'slice_count' in entry
 
-    def test_complete_session_has_status_complete(self, make_dicom_series, tmp_path):
+    def test_dedup_loser_appears_in_excluded_series_with_modality_and_reason(
+        self, make_dicom_series, tmp_path
+    ):
         patient_dir = tmp_path / "PAT002"
-        for mod_kw, name in [
-            ("t1_mprage_sag", "t1"), ("t1_mprage_sag_KM", "t1c"),
-            ("t2_tse_tra", "t2"), ("t2_flair", "t2fl"),
-        ]:
-            make_dicom_series(
-                patient_dir / "2023-01-01" / name,
-                protocol_name=mod_kw, series_description=mod_kw,
-                image_type=['ORIGINAL', 'PRIMARY'],
-            )
+        # Two plain T1 candidates for the same session -> one wins dedup, one is retained as excluded
+        make_dicom_series(
+            patient_dir / "2023-01-01" / "t1_a",
+            protocol_name="t1_mprage_sag", series_description="t1_mprage_sag",
+            image_type=['ORIGINAL', 'PRIMARY'],
+        )
+        make_dicom_series(
+            patient_dir / "2023-01-01" / "t1_b",
+            protocol_name="t1_mprage_sag_repeat", series_description="t1_mprage_sag_repeat",
+            image_type=['ORIGINAL', 'PRIMARY'],
+        )
 
-        logger = logging.getLogger("test_patientdata_complete")
+        logger = logging.getLogger("test_excluded_dedup")
         modality_detector = reorganize_mod.ModalityDetector(logger)
         scanner = reorganize_mod.DatasetScanner(logger)
         grouper = reorganize_mod.SessionGrouper(logger)
@@ -110,5 +116,9 @@ class TestUnrecognizedSeriesInPatientData:
         )
 
         session = patient_data['sessions']['ses-001']
-        assert session['status'] == 'complete'
-        assert session['unrecognized_series'] == []
+        assert len(session['excluded_series']) == 1
+        entry = session['excluded_series'][0]
+        assert entry['detected_modality'] == 't1'
+        assert entry['reason'] == 'lost_deduplication'
+        # the winning t1 is still the one actually present in series
+        assert 't1' in session['series']
