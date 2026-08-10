@@ -1562,13 +1562,15 @@ def _process_one_patient_core(
             'original_date': session.date,
             'status': 'complete' if is_complete else 'incomplete',
             'series': {},
-            'unrecognized_series': [
+            'excluded_series': [
                 {
                     'original_path': str(u.original_path),
                     'series_description': u.series_description,
                     'slice_count': u.slice_count,
+                    'detected_modality': u.modality,
+                    'reason': 'unrecognized' if u.modality is None else 'lost_deduplication',
                 }
-                for u in session.unrecognized_series
+                for u in session.excluded_series
             ],
         }
 
