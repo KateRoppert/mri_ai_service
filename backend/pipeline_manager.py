@@ -659,6 +659,20 @@ class PipelineManager:
         target_dir = current_root / patient_id / session_id / "anat" / modality
         target_dir.mkdir(parents=True, exist_ok=True)
 
+        # Replacing an already-filled slot: target_dir holds the previous
+        # occupant's files under the same deterministic naming scheme
+        # (..._0001.dcm, _0002.dcm, ...) that copy_and_anonymize_series is
+        # about to reuse. Without clearing first, a replacement with FEWER
+        # files than the previous occupant only overwrites the first N —
+        # the old occupant's tail files survive, so the modality directory
+        # ends up holding a silent mix of two different series while
+        # dataset_mapping.json reports it as a single, complete one. Clear
+        # unconditionally (a no-op for the fill case, where target_dir is
+        # freshly created and already empty).
+        for stale_file in target_dir.iterdir():
+            if stale_file.is_file():
+                stale_file.unlink()
+
         metadata_extractor = self._build_metadata_extractor()
         if metadata_extractor is None:
             raise ValueError(

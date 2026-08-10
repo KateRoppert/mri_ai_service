@@ -401,3 +401,63 @@ class TestRelabelSeriesReplace:
         assert bumped["original_path"] == "/raw/old_t1"
         assert bumped["detected_modality"] == "t1"
         assert bumped["reason"] == "replaced_by_manual_relabel"
+
+    def test_replacing_with_fewer_files_leaves_no_stale_files_from_old_occupant(self, tmp_path):
+        """Regression for a final-review Critical finding: target_dir used
+        deterministic _0001.dcm-style naming, so replacing a 5-file series
+        with a 2-file one only overwrote files 1-2, leaving files 3-5 from
+        the OLD series physically mixed into the modality dir while
+        dataset_mapping.json reported the session as cleanly complete."""
+        bids_dir = tmp_path / "bids_organized"
+        target_dir = bids_dir / "_incomplete" / "sub-001" / "ses-001" / "anat" / "t1"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # Simulate the OLD occupant's already-copied files (5 of them).
+        for i in range(1, 6):
+            (target_dir / f"sub-001_ses-001_T1w_{i:04d}.dcm").write_bytes(b"old series bytes")
+
+        new_series = self._make_dicom_series(tmp_path / "raw" / "shorter_t1", n_files=2)
+
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {
+                            "t1": {
+                                "original_path": "/raw/old_t1", "slice_count": 5,
+                                "series_description": "old_t1_series",
+                            },
+                            "t2": {}, "t2fl": {},
+                        },
+                        "excluded_series": [
+                            {
+                                "original_path": str(new_series), "series_description": "shorter_t1_series",
+                                "slice_count": 2, "detected_modality": "t1", "reason": "lost_deduplication",
+                            }
+                        ],
+                    },
+                },
+            },
+        })
+
+        pm = PipelineManager()
+        pm.relabel_series(
+            output_path=str(tmp_path),
+            patient_id="sub-001",
+            session_id="ses-001",
+            original_path=str(new_series),
+            modality="t1",
+            lesion_type="multiple_sclerosis",
+        )
+
+        # Session became complete -> moved out of _incomplete/ into the main tree.
+        final_dir = bids_dir / "sub-001" / "ses-001" / "anat" / "t1"
+        remaining_files = sorted(f.name for f in final_dir.glob("*.dcm"))
+        assert len(remaining_files) == 2, (
+            f"expected exactly 2 files (the new series), found {remaining_files} "
+            f"— stale files from the old occupant were not cleared"
+        )
+        for f in final_dir.glob("*.dcm"):
+            assert f.read_bytes() != b"old series bytes"
