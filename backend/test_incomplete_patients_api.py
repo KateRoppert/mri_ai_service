@@ -66,6 +66,44 @@ class TestGetIncompletePatients:
         assert result[0]["excluded_series"][0]["detected_modality"] is None
         assert result[0]["excluded_series"][0]["reason"] == "unrecognized"
 
+    def test_includes_complete_sessions_that_still_have_excluded_series(self, tmp_path):
+        """A complete session with leftover excluded_series (e.g. a dedup loser
+        that lost to the winner but is still a plausible alternative) belongs
+        in the review queue too — the doctor may want to reconsider which
+        series won, not just fill a gap. A complete session with NOTHING left
+        to reconsider (excluded_series == []) stays excluded."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "complete",
+                        "series": {"t1": {}, "t2": {}, "t2fl": {}},
+                        "excluded_series": [
+                            {
+                                "original_path": "/raw/dup_t1", "series_description": "sT1W_3D_TFE",
+                                "slice_count": 200, "detected_modality": "t1", "reason": "lost_deduplication",
+                            }
+                        ],
+                    },
+                    "ses-002": {
+                        "original_date": "20230201",
+                        "status": "complete",
+                        "series": {"t1": {}, "t2": {}, "t2fl": {}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        result = pm.get_incomplete_patients(str(tmp_path))
+
+        assert len(result) == 1
+        assert result[0]["session_id"] == "ses-001"
+        assert result[0]["status"] == "complete"
+        assert len(result[0]["excluded_series"]) == 1
+
     def test_missing_mapping_file_returns_empty_list(self, tmp_path):
         pm = PipelineManager()
         result = pm.get_incomplete_patients(str(tmp_path))

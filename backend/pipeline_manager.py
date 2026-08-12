@@ -552,8 +552,13 @@ class PipelineManager:
 
     def get_incomplete_patients(self, output_path: str) -> List[Dict[str, Any]]:
         """
-        Read dataset_mapping.json and return every session whose status is
-        not "complete" and not "discarded" — the doctor-review queue for a run.
+        Read dataset_mapping.json and return the doctor-review queue for a
+        run: every incomplete session, PLUS every complete session that
+        still has excluded_series (e.g. a dedup loser that lost to the
+        winner but is still a plausible alternative — a doctor may want to
+        reconsider which series won, not just fill a gap). A complete
+        session with nothing left to reconsider is excluded, as is any
+        discarded session.
         """
         mapping_file = self._dataset_mapping_path(output_path)
         if not mapping_file.exists():
@@ -566,7 +571,9 @@ class PipelineManager:
         for patient_id, patient_data in mapping_data.get('patients', {}).items():
             for session_id, session_data in patient_data.get('sessions', {}).items():
                 status = session_data.get('status')
-                if status not in ('incomplete',):
+                has_alternatives = bool(session_data.get('excluded_series'))
+                needs_review = status == 'incomplete' or (status == 'complete' and has_alternatives)
+                if not needs_review:
                     continue
                 results.append({
                     "patient_id": patient_id,
