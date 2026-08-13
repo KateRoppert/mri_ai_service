@@ -553,12 +553,16 @@ class PipelineManager:
     def get_incomplete_patients(self, output_path: str, lesion_type: str = 'glioblastoma') -> List[Dict[str, Any]]:
         """
         Read dataset_mapping.json and return the doctor-review queue for a
-        run: every incomplete session, PLUS every complete session that
-        still has excluded_series (e.g. a dedup loser that lost to the
-        winner but is still a plausible alternative — a doctor may want to
-        reconsider which series won, not just fill a gap). A complete
-        session with nothing left to reconsider is excluded, as is any
-        discarded session.
+        run: every incomplete session, every complete session that still has
+        excluded_series (e.g. a dedup loser that lost to the winner but is
+        still a plausible alternative), every discarded session, and any
+        session the doctor has ever manually touched (relabeled or
+        discarded) — even if that action fully resolved it. This makes the
+        report a durable audit trail: once you've acted on a session, it
+        keeps showing up (with its current status), so a resolved-complete
+        or discarded row confirms the action worked instead of silently
+        vanishing. A session nobody has ever needed to look at (always
+        complete, no alternatives, never touched) is excluded.
         """
         mapping_file = self._dataset_mapping_path(output_path)
         if not mapping_file.exists():
@@ -577,7 +581,12 @@ class PipelineManager:
             for session_id, session_data in patient_data.get('sessions', {}).items():
                 status = session_data.get('status')
                 has_alternatives = bool(session_data.get('excluded_series'))
-                needs_review = status == 'incomplete' or (status == 'complete' and has_alternatives)
+                needs_review = (
+                    status == 'incomplete'
+                    or (status == 'complete' and has_alternatives)
+                    or status == 'discarded'
+                    or session_data.get('manually_reviewed', False)
+                )
                 if not needs_review:
                     continue
                 available = sorted(session_data.get('series', {}).keys())
@@ -611,6 +620,7 @@ class PipelineManager:
 
         session_data = mapping_data['patients'][patient_id]['sessions'][session_id]
         session_data['status'] = 'discarded'
+        session_data['manually_reviewed'] = True
 
         with open(mapping_file, 'w', encoding='utf-8') as f:
             json.dump(mapping_data, f, indent=2, ensure_ascii=False)
@@ -744,6 +754,7 @@ class PipelineManager:
             required = {'t1', 't1c', 't2', 't2fl'}
         is_complete = required.issubset(session_data['series'].keys())
         session_data['status'] = 'complete' if is_complete else 'incomplete'
+        session_data['manually_reviewed'] = True
 
         # If now complete and it was previously under _incomplete/, move the whole session
         if is_complete and was_incomplete:

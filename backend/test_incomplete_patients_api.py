@@ -18,7 +18,7 @@ def _write_mapping(output_dir: Path, patients: dict):
 
 
 class TestGetIncompletePatients:
-    def test_returns_only_incomplete_non_discarded_sessions(self, tmp_path):
+    def test_returns_incomplete_and_discarded_but_not_untouched_complete_sessions(self, tmp_path):
         _write_mapping(tmp_path, {
             "sub-001": {
                 "original_id": "P1",
@@ -57,14 +57,16 @@ class TestGetIncompletePatients:
         pm = PipelineManager()
         result = pm.get_incomplete_patients(str(tmp_path))
 
-        assert len(result) == 1
-        assert result[0]["patient_id"] == "sub-001"
-        assert result[0]["session_id"] == "ses-002"
-        assert result[0]["status"] == "incomplete"
-        assert result[0]["available"] == ["t1c"]
-        assert len(result[0]["excluded_series"]) == 1
-        assert result[0]["excluded_series"][0]["detected_modality"] is None
-        assert result[0]["excluded_series"][0]["reason"] == "unrecognized"
+        # sub-001/ses-001 is untouched, always-complete, no alternatives — excluded.
+        # sub-001/ses-002 is incomplete — included.
+        # sub-002/ses-001 is discarded — now included (this is the behavior change).
+        assert len(result) == 2
+        by_key = {(r["patient_id"], r["session_id"]): r for r in result}
+        assert ("sub-001", "ses-002") in by_key
+        assert by_key[("sub-001", "ses-002")]["status"] == "incomplete"
+        assert ("sub-002", "ses-001") in by_key
+        assert by_key[("sub-002", "ses-001")]["status"] == "discarded"
+        assert ("sub-001", "ses-001") not in by_key
 
     def test_includes_complete_sessions_that_still_have_excluded_series(self, tmp_path):
         """A complete session with leftover excluded_series (e.g. a dedup loser
@@ -295,6 +297,63 @@ class TestRelabelSeries:
         assert incomplete_dir.exists()
         assert not (bids_dir / "sub-003").exists()
 
+    def test_relabel_that_completes_session_still_appears_in_review_queue(self, tmp_path):
+        """Filling the last missing modality makes excluded_series empty and
+        status complete — under the OLD filter this would silently drop out
+        of the review queue with no confirmation the action worked. The new
+        manually_reviewed marker keeps it visible."""
+        raw_series = self._make_dicom_series(tmp_path / "raw" / "candidate_t1c")
+
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}, "t2": {}, "t2fl": {}},
+                        "excluded_series": [
+                            {
+                                "original_path": str(raw_series), "series_description": "candidate t1c",
+                                "slice_count": 2, "detected_modality": "t1c", "reason": "unrecognized",
+                            }
+                        ],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.relabel_series(
+            output_path=str(tmp_path),
+            patient_id="sub-001",
+            session_id="ses-001",
+            original_path=str(raw_series),
+            modality="t1c",
+        )
+
+        result = pm.get_incomplete_patients(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["status"] == "complete"
+        assert result[0]["excluded_series"] == []
+
+    def test_untouched_complete_session_has_manually_reviewed_false_by_default(self, tmp_path):
+        """Regression guard: manually_reviewed must default False for session
+        dicts that predate this feature (no key present at all), not True."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "complete",
+                        "series": {"t1": {}, "t1c": {}, "t2": {}, "t2fl": {}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        assert pm.get_incomplete_patients(str(tmp_path)) == []
+
 
 class TestRelabelSeriesInputValidation:
     """Regression tests for a path-traversal finding: patient_id/session_id come
@@ -360,7 +419,7 @@ class TestDiscardSession:
         mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
         assert mapping["patients"]["sub-001"]["sessions"]["ses-001"]["status"] == "discarded"
 
-    def test_discarded_session_excluded_from_incomplete_list(self, tmp_path):
+    def test_discarded_session_still_appears_in_review_queue(self, tmp_path):
         _write_mapping(tmp_path, {
             "sub-001": {
                 "original_id": "P1",
@@ -374,7 +433,10 @@ class TestDiscardSession:
         })
         pm = PipelineManager()
         pm.discard_session(str(tmp_path), "sub-001", "ses-001")
-        assert pm.get_incomplete_patients(str(tmp_path)) == []
+
+        result = pm.get_incomplete_patients(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["status"] == "discarded"
 
 
 class TestDiscardSessionInputValidation:
