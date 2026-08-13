@@ -81,3 +81,68 @@ class TestIncompleteSessionRouting:
         )
         assert (output_dir / "sub-001" / "ses-001" / "anat" / "t1").exists()
         assert not (output_dir / "_incomplete").exists()
+
+
+class TestCheckPatientExists:
+    """
+    Regression coverage for check_patient_exists() also recognizing patients
+    who are still routed under output_dir/_incomplete/<patient_id>/... after a
+    manual relabel — previously it only looked at output_dir/<patient_id>,
+    which caused requeue to silently re-scan raw DICOM and discard whatever
+    relabel_series() had already written into _incomplete/.
+    """
+
+    def _logger(self, name):
+        return logging.getLogger(name)
+
+    def test_patient_only_in_incomplete_dir_no_force_skips_and_preserves(self, tmp_path):
+        output_dir = tmp_path / "output"
+        incomplete_dir = output_dir / "_incomplete" / "sub-001"
+        (incomplete_dir / "ses-001" / "anat").mkdir(parents=True)
+        (incomplete_dir / "ses-001" / "anat" / "marker.txt").write_text("relabel work")
+
+        result = reorganize_mod.check_patient_exists(
+            output_dir, "sub-001", force=False, dry_run=False, logger=self._logger("t1")
+        )
+
+        assert result is True
+        assert incomplete_dir.exists()
+        assert (incomplete_dir / "ses-001" / "anat" / "marker.txt").exists()
+
+    def test_patient_only_in_incomplete_dir_with_force_deletes_and_processes(self, tmp_path):
+        output_dir = tmp_path / "output"
+        incomplete_dir = output_dir / "_incomplete" / "sub-001"
+        (incomplete_dir / "ses-001" / "anat").mkdir(parents=True)
+        (incomplete_dir / "ses-001" / "anat" / "marker.txt").write_text("relabel work")
+
+        result = reorganize_mod.check_patient_exists(
+            output_dir, "sub-001", force=True, dry_run=False, logger=self._logger("t2")
+        )
+
+        assert result is False
+        assert not incomplete_dir.exists()
+
+    def test_patient_in_neither_location_processes(self, tmp_path):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(parents=True)
+
+        result = reorganize_mod.check_patient_exists(
+            output_dir, "sub-001", force=False, dry_run=False, logger=self._logger("t3")
+        )
+
+        assert result is False
+
+    def test_patient_in_main_dir_no_force_skips_and_preserves(self, tmp_path):
+        output_dir = tmp_path / "output"
+        complete_dir = output_dir / "sub-001"
+        (complete_dir / "ses-001" / "anat").mkdir(parents=True)
+        (complete_dir / "ses-001" / "anat" / "marker.txt").write_text("complete data")
+
+        result = reorganize_mod.check_patient_exists(
+            output_dir, "sub-001", force=False, dry_run=False, logger=self._logger("t4")
+        )
+
+        assert result is True
+        assert complete_dir.exists()
+        assert (complete_dir / "ses-001" / "anat" / "marker.txt").exists()
+        assert not (output_dir / "_incomplete").exists()
