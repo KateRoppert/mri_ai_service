@@ -68,6 +68,7 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
 
   const columns = [
     { title: 'Пациент', dataIndex: 'original_id', key: 'original_id' },
+    { title: 'Сессия', dataIndex: 'session_id', key: 'session_id' },
     { title: 'Дата', dataIndex: 'date', key: 'date' },
     {
       title: 'Статус',
