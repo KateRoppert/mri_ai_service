@@ -2,17 +2,18 @@
  * Компонент для отображения прогресса одного этапа
  */
 import { Progress, Space, Tag, Button } from 'antd';
-import { 
-  CheckCircleOutlined, 
-  CloseCircleOutlined, 
+import {
+  CheckCircleOutlined,
+  CloseCircleOutlined,
   SyncOutlined,
   ClockCircleOutlined,
   FileTextOutlined,
   EyeOutlined,
-  MedicineBoxOutlined
+  MedicineBoxOutlined,
+  TeamOutlined
 } from '@ant-design/icons';
 
-const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization, onShowClinicalReport }) => {
+const StageProgress = ({ stageNumber, stageName, status, progress, onShowQualityReport, onShowVisualization, onShowClinicalReport, onShowIncompletePatients }) => {
   /**
    * Определяем цвет и иконку в зависимости от статуса
    */
@@ -59,6 +60,9 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
   const showVisualizationButton = stageNumber === 6 && status === 'completed' && onShowVisualization;
   const showClinicalButton = (stageNumber === 6 || stageNumber === 7) && status === 'completed' && onShowClinicalReport;
 
+  // Показываем кнопку неполных пациентов только для 1-го этапа после завершения
+  const showIncompletePatientsButton = stageNumber === 1 && status === 'completed' && onShowIncompletePatients;
+
   return (
     <div style={{ marginBottom: 16 }}>
       <Space style={{ width: '100%', marginBottom: 8, justifyContent: 'space-between' }}>
@@ -71,6 +75,18 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
         </Space>
         
         <Space>
+          {/* Кнопка неполных пациентов */}
+          {showIncompletePatientsButton && (
+            <Button
+              type="link"
+              size="small"
+              icon={<TeamOutlined />}
+              onClick={onShowIncompletePatients}
+            >
+              Неполные пациенты
+            </Button>
+          )}
+
           {/* Кнопка отчёта о качестве */}
           {showQualityButton && (
             <Button
