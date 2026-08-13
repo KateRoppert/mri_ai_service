@@ -27,7 +27,15 @@ const IncompletePatients = ({ runId, visible, onClose }) => {
     setError(null);
     try {
       const data = await getIncompletePatients(runId);
-      setSessions(data.sessions || []);
+      const newSessions = data.sessions || [];
+      setSessions(newSessions);
+      setSelectedSession((prev) => {
+        if (!prev) return prev;
+        const updated = newSessions.find(
+          (s) => s.patient_id === prev.patient_id && s.session_id === prev.session_id
+        );
+        return updated || null;
+      });
     } catch (err) {
       console.error('Ошибка загрузки списка неполных пациентов:', err);
       setError('Не удалось загрузить список');
