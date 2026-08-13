@@ -109,6 +109,28 @@ class TestGetIncompletePatients:
         result = pm.get_incomplete_patients(str(tmp_path))
         assert result == []
 
+    def test_missing_field_is_lesion_type_aware(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}, "t2": {}, "t2fl": {}},  # MS-complete, glio-incomplete (no t1c)
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+
+        glio_result = pm.get_incomplete_patients(str(tmp_path), lesion_type="glioblastoma")
+        assert glio_result[0]["missing"] == ["t1c"]
+
+        ms_result = pm.get_incomplete_patients(str(tmp_path), lesion_type="multiple_sclerosis")
+        assert ms_result[0]["missing"] == []
+
 
 import shutil
 

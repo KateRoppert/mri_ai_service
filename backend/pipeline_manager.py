@@ -550,7 +550,7 @@ class PipelineManager:
             tags_config = yaml.safe_load(f)
         return MetadataExtractor(tags_config, logger)
 
-    def get_incomplete_patients(self, output_path: str) -> List[Dict[str, Any]]:
+    def get_incomplete_patients(self, output_path: str, lesion_type: str = 'glioblastoma') -> List[Dict[str, Any]]:
         """
         Read dataset_mapping.json and return the doctor-review queue for a
         run: every incomplete session, PLUS every complete session that
@@ -567,6 +567,11 @@ class PipelineManager:
         with open(mapping_file, 'r', encoding='utf-8') as f:
             mapping_data = json.load(f)
 
+        try:
+            required = set(load_lesion_type_config(lesion_type)['required_modalities'])
+        except KeyError:
+            required = {'t1', 't1c', 't2', 't2fl'}
+
         results: List[Dict[str, Any]] = []
         for patient_id, patient_data in mapping_data.get('patients', {}).items():
             for session_id, session_data in patient_data.get('sessions', {}).items():
@@ -575,13 +580,15 @@ class PipelineManager:
                 needs_review = status == 'incomplete' or (status == 'complete' and has_alternatives)
                 if not needs_review:
                     continue
+                available = sorted(session_data.get('series', {}).keys())
                 results.append({
                     "patient_id": patient_id,
                     "original_id": patient_data.get('original_id', ''),
                     "session_id": session_id,
                     "date": session_data.get('original_date', ''),
                     "status": status,
-                    "available": sorted(session_data.get('series', {}).keys()),
+                    "available": available,
+                    "missing": sorted(required - set(available)),
                     "excluded_series": session_data.get('excluded_series', []),
                 })
         return results

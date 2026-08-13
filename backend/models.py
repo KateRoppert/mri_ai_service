@@ -146,6 +146,7 @@ class IncompletePatientSession(BaseModel):
     date: str = Field(..., description="Дата сессии YYYYMMDD")
     status: str = Field(..., description="Статус сессии: 'incomplete', или 'complete' если есть excluded_series кандидаты на пересмотр")
     available: List[str] = Field(..., description="Модальности, которые уже есть")
+    missing: List[str] = Field(..., description="Модальности, которых не хватает (lesion-type-aware)")
     excluded_series: List[ExcludedSeriesInfo] = Field(
         default_factory=list, description="Серии вне финального набора — кандидаты на ручную переразметку"
     )

@@ -898,7 +898,7 @@ async def get_incomplete_patients(
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
 
-    sessions = pipeline_manager.get_incomplete_patients(run.output_path)
+    sessions = pipeline_manager.get_incomplete_patients(run.output_path, lesion_type=run.lesion_type or 'glioblastoma')
 
     return IncompletePatientsResponse(
         total=len(sessions),
