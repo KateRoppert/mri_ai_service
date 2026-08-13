@@ -1,0 +1,137 @@
+/**
+ * Модальное окно со списком сессий текущего запуска, требующих
+ * внимания врача — неполные, и полные, где есть альтернативные
+ * (исключённые) серии-кандидаты.
+ */
+import { useState, useEffect } from 'react';
+import { Modal, Table, Tag, Space, Button, Alert, Spin, message, Popconfirm } from 'antd';
+import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
+import { getIncompletePatients, requeuePipelineRun } from '../services/api';
+import IncompletePatientDetail from './IncompletePatientDetail';
+
+const IncompletePatients = ({ runId, visible, onClose }) => {
+  const [loading, setLoading] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [error, setError] = useState(null);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [requeuing, setRequeuing] = useState(false);
+
+  useEffect(() => {
+    if (visible && runId) {
+      fetchSessions();
+    }
+  }, [visible, runId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchSessions = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await getIncompletePatients(runId);
+      setSessions(data.sessions || []);
+    } catch (err) {
+      console.error('Ошибка загрузки списка неполных пациентов:', err);
+      setError('Не удалось загрузить список');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRequeue = async () => {
+    setRequeuing(true);
+    try {
+      const result = await requeuePipelineRun(runId);
+      message.success(`Обработка перезапущена (новый run_id: ${result.run_id.substring(0, 8)}...)`);
+    } catch (err) {
+      console.error('Ошибка перезапуска:', err);
+      message.error('Не удалось перезапустить обработку');
+    } finally {
+      setRequeuing(false);
+    }
+  };
+
+  const columns = [
+    { title: 'Пациент', dataIndex: 'original_id', key: 'original_id' },
+    { title: 'Дата', dataIndex: 'date', key: 'date' },
+    {
+      title: 'Статус',
+      dataIndex: 'status',
+      key: 'status',
+      render: (status) => (
+        <Tag color={status === 'incomplete' ? 'orange' : 'blue'}>
+          {status === 'incomplete' ? 'Неполная' : 'Есть альтернативы'}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Модальности',
+      dataIndex: 'available',
+      key: 'available',
+      render: (available) => (
+        <Space wrap>
+          {available.map((m) => <Tag color="green" key={m}>{m}</Tag>)}
+        </Space>
+      ),
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, record) => (
+        <Button size="small" onClick={() => setSelectedSession(record)}>
+          Подробнее
+        </Button>
+      ),
+    },
+  ];
+
+  return (
+    <Modal
+      title="Пациенты, требующие внимания"
+      open={visible}
+      onCancel={onClose}
+      width={900}
+      footer={null}
+    >
+      <Space style={{ marginBottom: 16 }}>
+        <Popconfirm
+          title="Перезапустить обработку? Уже обработанные пациенты будут пропущены."
+          onConfirm={handleRequeue}
+          okText="Да"
+          cancelText="Нет"
+        >
+          <Button type="primary" icon={<SyncOutlined />} loading={requeuing}>
+            Запустить обработку
+          </Button>
+        </Popconfirm>
+        <Button icon={<ReloadOutlined />} onClick={fetchSessions}>
+          Обновить
+        </Button>
+      </Space>
+
+      {error && <Alert type="error" description={error} showIcon style={{ marginBottom: 16 }} />}
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px 0' }}>
+          <Spin size="large" />
+        </div>
+      ) : (
+        <Table
+          columns={columns}
+          dataSource={sessions}
+          rowKey={(r) => `${r.patient_id}_${r.session_id}`}
+          pagination={{ pageSize: 10 }}
+          locale={{ emptyText: 'Нет сессий, требующих внимания' }}
+        />
+      )}
+
+      <IncompletePatientDetail
+        runId={runId}
+        session={selectedSession}
+        visible={!!selectedSession}
+        onClose={() => setSelectedSession(null)}
+        onActionComplete={fetchSessions}
+      />
+    </Modal>
+  );
+};
+
+export default IncompletePatients;
