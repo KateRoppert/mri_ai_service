@@ -289,6 +289,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
         runId={runId}
         visible={showIncompletePatients}
         onClose={() => setShowIncompletePatients(false)}
+        canRequeue={status === 'completed' || status === 'failed'}
       />
     </Card>
   );

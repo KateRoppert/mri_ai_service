@@ -375,6 +375,12 @@ async def requeue_pipeline_run(
     if not original_run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
 
+    if original_run.status in (PipelineStatus.PENDING, PipelineStatus.RUNNING):
+        raise HTTPException(
+            status_code=409,
+            detail="Запуск ещё выполняется — дождитесь завершения перед повторным запуском",
+        )
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,

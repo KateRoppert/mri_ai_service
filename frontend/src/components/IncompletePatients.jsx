@@ -4,12 +4,12 @@
  * (исключённые) серии-кандидаты.
  */
 import { useState, useEffect } from 'react';
-import { Modal, Table, Tag, Space, Button, Alert, Spin, message, Popconfirm } from 'antd';
+import { Modal, Table, Tag, Space, Button, Alert, Spin, message, Popconfirm, Tooltip } from 'antd';
 import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { getIncompletePatients, requeuePipelineRun } from '../services/api';
 import IncompletePatientDetail from './IncompletePatientDetail';
 
-const IncompletePatients = ({ runId, visible, onClose }) => {
+const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [error, setError] = useState(null);
@@ -48,10 +48,19 @@ const IncompletePatients = ({ runId, visible, onClose }) => {
     setRequeuing(true);
     try {
       const result = await requeuePipelineRun(runId);
-      message.success(`Обработка перезапущена (новый run_id: ${result.run_id.substring(0, 8)}...)`);
+      message.success(
+        `Обработка перезапущена (run_id: ${result.run_id.substring(0, 8)}...). ` +
+        'Отслеживайте прогресс во вкладке «История запусков».'
+      );
+      onClose();
     } catch (err) {
       console.error('Ошибка перезапуска:', err);
-      message.error('Не удалось перезапустить обработку');
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 409 && detail) {
+        message.error(detail);
+      } else {
+        message.error('Не удалось перезапустить обработку');
+      }
     } finally {
       setRequeuing(false);
     }
@@ -100,16 +109,26 @@ const IncompletePatients = ({ runId, visible, onClose }) => {
       footer={null}
     >
       <Space style={{ marginBottom: 16 }}>
-        <Popconfirm
-          title="Перезапустить обработку? Уже обработанные пациенты будут пропущены."
-          onConfirm={handleRequeue}
-          okText="Да"
-          cancelText="Нет"
-        >
-          <Button type="primary" icon={<SyncOutlined />} loading={requeuing}>
-            Запустить обработку
-          </Button>
-        </Popconfirm>
+        {canRequeue ? (
+          <Popconfirm
+            title="Перезапустить обработку? Уже обработанные пациенты будут пропущены."
+            onConfirm={handleRequeue}
+            okText="Да"
+            cancelText="Нет"
+          >
+            <Button type="primary" icon={<SyncOutlined />} loading={requeuing}>
+              Запустить обработку
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Tooltip title="Запуск ещё выполняется — дождитесь завершения перед повторным запуском">
+            <span>
+              <Button type="primary" icon={<SyncOutlined />} disabled>
+                Запустить обработку
+              </Button>
+            </span>
+          </Tooltip>
+        )}
         <Button icon={<ReloadOutlined />} onClick={fetchSessions}>
           Обновить
         </Button>

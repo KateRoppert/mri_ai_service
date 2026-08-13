@@ -32,6 +32,7 @@ function App() {
   const [historyClinicalReportLesionType, setHistoryClinicalReportLesionType] = useState('glioblastoma');
   const [showHistoryClinicalReport, setShowHistoryClinicalReport] = useState(false);
   const [historyIncompletePatientsRunId, setHistoryIncompletePatientsRunId] = useState(null);
+  const [historyIncompletePatientsStatus, setHistoryIncompletePatientsStatus] = useState(null);
   const [showHistoryIncompletePatients, setShowHistoryIncompletePatients] = useState(false);
   const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
@@ -98,8 +99,9 @@ function App() {
   /**
    * Показать неполных пациентов из истории
    */
-  const handleShowHistoryIncompletePatients = (runId) => {
+  const handleShowHistoryIncompletePatients = (runId, status) => {
     setHistoryIncompletePatientsRunId(runId);
+    setHistoryIncompletePatientsStatus(status);
     setShowHistoryIncompletePatients(true);
   };
 
@@ -266,6 +268,10 @@ function App() {
                 runId={historyIncompletePatientsRunId}
                 visible={showHistoryIncompletePatients}
                 onClose={() => setShowHistoryIncompletePatients(false)}
+                canRequeue={
+                  historyIncompletePatientsStatus === 'completed' ||
+                  historyIncompletePatientsStatus === 'failed'
+                }
               />
             )}
           </>

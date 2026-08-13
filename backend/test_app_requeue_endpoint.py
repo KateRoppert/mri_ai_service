@@ -13,12 +13,13 @@ from app import app
 client = TestClient(app)
 
 
-def _fake_original_run(run_id="orig-run", input_path="/in", output_path="/out", lesion_type="glioblastoma"):
+def _fake_original_run(run_id="orig-run", input_path="/in", output_path="/out", lesion_type="glioblastoma", status="completed"):
     return SimpleNamespace(
         run_id=run_id,
         input_path=input_path,
         output_path=output_path,
         lesion_type=lesion_type,
+        status=status,
     )
 
 
@@ -36,6 +37,35 @@ def test_404_when_run_not_found():
     with patch("app.get_pipeline_run", return_value=None):
         response = client.post("/api/pipeline-runs/nonexistent-run/requeue")
     assert response.status_code == 404
+
+
+def test_409_when_original_run_is_still_running():
+    original = _fake_original_run(status="running")
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.create_pipeline_run") as mock_create, \
+         patch("app.run_pipeline_background") as mock_bg, \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 409
+    assert "выполняется" in response.json()["detail"]
+
+    # must not start a second orchestrator over the same output_path
+    mock_create.assert_not_called()
+    mock_bg.assert_not_called()
+    mock_monitor.assert_not_called()
+
+
+def test_409_when_original_run_is_pending():
+    original = _fake_original_run(status="pending")
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.create_pipeline_run") as mock_create:
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 409
+    mock_create.assert_not_called()
 
 
 def test_creates_new_run_with_same_paths_and_does_not_run_pipeline_synchronously():

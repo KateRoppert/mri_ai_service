@@ -244,11 +244,11 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
               3D
             </Button>
           )}
-          {record.status === 'completed' && (
+          {record.current_stage >= 1 && record.status !== 'pending' && (
             <Button
               type="link"
               size="small"
-              onClick={() => onShowIncompletePatients(record.run_id)}
+              onClick={() => onShowIncompletePatients(record.run_id, record.status)}
             >
               Неполные пациенты
             </Button>
