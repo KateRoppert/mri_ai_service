@@ -68,6 +68,7 @@ from database import (
     init_db,
     create_pipeline_run,
     get_pipeline_run,
+    get_active_run_by_output_path,
     update_pipeline_run,
     get_stage_executions,
     update_stage_execution,
@@ -379,6 +380,18 @@ async def requeue_pipeline_run(
         raise HTTPException(
             status_code=409,
             detail="Запуск ещё выполняется — дождитесь завершения перед повторным запуском",
+        )
+
+    # A DIFFERENT run row (e.g. an earlier requeue-child of this same run) may
+    # already be actively writing to this output_path. Requeuing again would
+    # start a second orchestrator subprocess over the same
+    # bids_organized/dataset_mapping.json concurrently — check by path, not
+    # just by this run's own status.
+    active_on_path = get_active_run_by_output_path(db, original_run.output_path)
+    if active_on_path:
+        raise HTTPException(
+            status_code=409,
+            detail="На этом пути уже выполняется другая обработка — дождитесь её завершения",
         )
 
     run = create_pipeline_run(
