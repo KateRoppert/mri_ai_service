@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { Modal, Tag, Space, List, Select, Button, Popconfirm, message, Divider, Typography } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
-import { relabelSeries, discardSession } from '../services/api';
+import { relabelSeries, discardSession, mergeSessions } from '../services/api';
 
 const { Text } = Typography;
 
@@ -21,16 +21,19 @@ const REASON_LABELS = {
   unrecognized: 'алгоритм не распознал',
   lost_deduplication: 'алгоритм распознал, но выбрал другую копию',
   replaced_by_manual_relabel: 'заменена вручную ранее',
+  from_other_session: 'перенесена из другой сессии пациента',
 };
 
-const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionComplete }) => {
+const IncompletePatientDetail = ({ runId, session, sessions = [], visible, onClose, onActionComplete }) => {
   const [selectedModality, setSelectedModality] = useState({});
   const [loadingPath, setLoadingPath] = useState(null);
   const [discarding, setDiscarding] = useState(false);
+  const [donorSessionId, setDonorSessionId] = useState(undefined);
+  const [merging, setMerging] = useState(false);
 
   if (!session) return null;
 
-  const isReadOnly = session.status === 'discarded';
+  const isReadOnly = session.status === 'discarded' || session.status === 'merged';
 
   const handleRelabel = async (excludedEntry) => {
     const modality = selectedModality[excludedEntry.original_path] || excludedEntry.detected_modality;
@@ -71,6 +74,32 @@ const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionCom
       setDiscarding(false);
     }
   };
+
+  const handleMerge = async () => {
+    if (!donorSessionId) {
+      message.error('Выберите сессию для объединения');
+      return;
+    }
+    setMerging(true);
+    try {
+      const result = await mergeSessions(runId, session.patient_id, session.session_id, donorSessionId);
+      message.success(`Серии из ${donorSessionId} добавлены как альтернативы (${result.pulled_series})`);
+      setDonorSessionId(undefined);
+      onActionComplete();
+    } catch (err) {
+      console.error('Ошибка объединения:', err);
+      message.error(err.response?.data?.detail || 'Не удалось объединить сессии');
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  const otherSessions = sessions.filter(
+    (s) => s.patient_id === session.patient_id
+      && s.session_id !== session.session_id
+      && s.status !== 'merged'
+      && s.status !== 'discarded'
+  );
 
   const isAlreadyFilled = (modality) => session.available.includes(modality);
 
@@ -165,6 +194,40 @@ const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionCom
             />
           )}
         </div>
+
+        {!isReadOnly && otherSessions.length > 0 && (
+          <>
+            <Divider style={{ margin: '8px 0' }} />
+            <div>
+              <Text strong>Объединить с другой сессией пациента:</Text>
+              <div style={{ marginTop: 8 }}>
+                <Space>
+                  <Select
+                    size="small"
+                    style={{ width: 220 }}
+                    placeholder="Выберите сессию"
+                    value={donorSessionId}
+                    onChange={setDonorSessionId}
+                    options={otherSessions.map((s) => ({
+                      label: `${s.session_id} (${s.date})`,
+                      value: s.session_id,
+                    }))}
+                  />
+                  <Popconfirm
+                    title="Перенести серии выбранной сессии сюда как альтернативы?"
+                    onConfirm={handleMerge}
+                    okText="Да"
+                    cancelText="Нет"
+                  >
+                    <Button size="small" loading={merging} disabled={!donorSessionId}>
+                      Объединить
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              </div>
+            </div>
+          </>
+        )}
 
         <Divider style={{ margin: '8px 0' }} />
 
