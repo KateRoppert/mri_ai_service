@@ -242,6 +242,7 @@ class PipelineStatusResponse(BaseModel):
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     error: Optional[str] = Field(None, description="Сообщение об ошибке")
     lesion_type: Optional[str] = Field(None, description="Тип поражения (glioblastoma / multiple_sclerosis)")
+    parent_run_id: Optional[str] = Field(None, description="ID исходного запуска, если это requeue")
 
 
 # ============================================

@@ -399,6 +399,7 @@ async def requeue_pipeline_run(
         input_path=original_run.input_path,
         output_path=original_run.output_path,
         lesion_type=original_run.lesion_type or "glioblastoma",
+        parent_run_id=run_id,
     )
 
     background_tasks.add_task(
@@ -490,6 +491,7 @@ async def get_pipeline_status(
         completed_at=run.completed_at,
         error=run.error_message,
         lesion_type=getattr(run, "lesion_type", None),
+        parent_run_id=getattr(run, "parent_run_id", None),
     )
 
 
