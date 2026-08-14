@@ -9,7 +9,7 @@ import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { getIncompletePatients, requeuePipelineRun } from '../services/api';
 import IncompletePatientDetail from './IncompletePatientDetail';
 
-const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
+const IncompletePatients = ({ runId, visible, onClose, canRequeue = true, onRequeued }) => {
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [error, setError] = useState(null);
@@ -53,6 +53,9 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
         'Отслеживайте прогресс во вкладке «История запусков».'
       );
       onClose();
+      if (onRequeued) {
+        onRequeued(result);
+      }
     } catch (err) {
       console.error('Ошибка перезапуска:', err);
       const detail = err.response?.data?.detail;
