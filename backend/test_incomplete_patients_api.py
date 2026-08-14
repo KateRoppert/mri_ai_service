@@ -488,6 +488,152 @@ class TestDiscardSessionInputValidation:
             pm.discard_session(str(tmp_path), "sub-001", "..")
 
 
+class TestMergeSessions:
+    def test_merge_pulls_assigned_and_excluded_series_from_donor(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {"t1": {}, "t2": {}},
+                        "excluded_series": [],
+                    },
+                    "ses-002": {
+                        "original_date": "20230201", "status": "incomplete",
+                        "series": {
+                            "t1c": {"original_path": "/raw/donor_t1c", "series_description": "t1c series", "slice_count": 30},
+                        },
+                        "excluded_series": [
+                            {
+                                "original_path": "/raw/donor_extra", "series_description": "extra t2fl",
+                                "slice_count": 20, "detected_modality": "t2fl", "reason": "unrecognized",
+                            },
+                        ],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        result = pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        assert result == {
+            "status": "merged",
+            "primary_session_id": "ses-001",
+            "donor_session_id": "ses-002",
+            "pulled_series": 2,
+        }
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        primary = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        excluded_paths = {u["original_path"]: u for u in primary["excluded_series"]}
+        assert "/raw/donor_t1c" in excluded_paths
+        assert excluded_paths["/raw/donor_t1c"]["detected_modality"] == "t1c"
+        assert excluded_paths["/raw/donor_t1c"]["reason"] == "from_other_session"
+        assert "/raw/donor_extra" in excluded_paths
+        assert excluded_paths["/raw/donor_extra"]["detected_modality"] == "t2fl"
+        assert excluded_paths["/raw/donor_extra"]["reason"] == "from_other_session"
+
+    def test_merge_conflicting_modality_offers_both_versions(self, tmp_path):
+        """Primary already has a t1; donor also has a t1 — both must be
+        offered as alternatives, not silently preferred either way."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {"t1": {"original_path": "/raw/primary_t1", "series_description": "primary t1", "slice_count": 10}},
+                        "excluded_series": [],
+                    },
+                    "ses-002": {
+                        "original_date": "20230201", "status": "incomplete",
+                        "series": {"t1": {"original_path": "/raw/donor_t1", "series_description": "donor t1", "slice_count": 12}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        primary = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        # primary's own t1 assignment is untouched
+        assert primary["series"]["t1"]["original_path"] == "/raw/primary_t1"
+        # donor's t1 is offered as an alternative, not silently dropped
+        assert len(primary["excluded_series"]) == 1
+        assert primary["excluded_series"][0]["original_path"] == "/raw/donor_t1"
+        assert primary["excluded_series"][0]["detected_modality"] == "t1"
+
+    def test_merge_marks_donor_session_merged_with_pointer(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        donor = mapping["patients"]["sub-001"]["sessions"]["ses-002"]
+        assert donor["status"] == "merged"
+        assert donor["merged_into_session_id"] == "ses-001"
+
+    def test_merge_is_idempotent_no_duplicate_candidates(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {
+                        "original_date": "20230201", "status": "incomplete",
+                        "series": {"t1c": {"original_path": "/raw/donor_t1c", "series_description": "t1c", "slice_count": 30}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+        result_second_call = pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        assert result_second_call["pulled_series"] == 0
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        primary = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        assert len(primary["excluded_series"]) == 1
+
+
+class TestMergeSessionsInputValidation:
+    def test_rejects_path_traversal_patient_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid patient_id"):
+            pm.merge_sessions(str(tmp_path), "..", "ses-001", "ses-002")
+
+    def test_rejects_path_traversal_primary_session_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid primary_session_id"):
+            pm.merge_sessions(str(tmp_path), "sub-001", "..", "ses-002")
+
+    def test_rejects_path_traversal_donor_session_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid donor_session_id"):
+            pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "..")
+
+    def test_rejects_same_session_as_primary_and_donor(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="must be different"):
+            pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-001")
+
+
 class TestRelabelSeriesReplace:
     def _make_dicom_series(self, series_dir: Path, n_files=2):
         series_dir.mkdir(parents=True, exist_ok=True)
