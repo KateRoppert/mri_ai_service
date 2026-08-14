@@ -74,11 +74,18 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
       title: 'Статус',
       dataIndex: 'status',
       key: 'status',
-      render: (status) => (
-        <Tag color={status === 'incomplete' ? 'orange' : 'blue'}>
-          {status === 'incomplete' ? 'Неполная' : 'Есть альтернативы'}
-        </Tag>
-      ),
+      render: (status, record) => {
+        if (status === 'incomplete') {
+          return <Tag color="orange">Неполная</Tag>;
+        }
+        if (status === 'discarded') {
+          return <Tag color="default">Отброшена</Tag>;
+        }
+        const hasAlternatives = (record.excluded_series || []).length > 0;
+        return hasAlternatives
+          ? <Tag color="blue">Есть альтернативы</Tag>
+          : <Tag color="green">Полная</Tag>;
+      },
     },
     {
       title: 'Модальности',

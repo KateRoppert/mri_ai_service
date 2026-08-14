@@ -30,6 +30,8 @@ const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionCom
 
   if (!session) return null;
 
+  const isReadOnly = session.status === 'discarded';
+
   const handleRelabel = async (excludedEntry) => {
     const modality = selectedModality[excludedEntry.original_path] || excludedEntry.detected_modality;
     if (!modality) {
@@ -81,6 +83,11 @@ const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionCom
       footer={null}
     >
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        {isReadOnly && (
+          <Text type="secondary" style={{ fontStyle: 'italic' }}>
+            Сессия отброшена — показано только для справки, действия недоступны.
+          </Text>
+        )}
         <div>
           <Text strong>Модальности: </Text>
           <Space wrap>
@@ -125,30 +132,32 @@ const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionCom
                           ? `Похоже на: ${entry.detected_modality} — ${REASON_LABELS[entry.reason] || entry.reason}`
                           : REASON_LABELS[entry.reason] || entry.reason}
                       </Text>
-                      <Space>
-                        <Select
-                          size="small"
-                          style={{ width: 160 }}
-                          placeholder="Модальность"
-                          options={MODALITY_OPTIONS}
-                          value={modality}
-                          onChange={(value) =>
-                            setSelectedModality((prev) => ({ ...prev, [entry.original_path]: value }))
-                          }
-                        />
-                        {willReplace ? (
-                          <Popconfirm
-                            title="Эта модальность уже заполнена другой серией — заменить?"
-                            onConfirm={() => handleRelabel(entry)}
-                            okText="Да"
-                            cancelText="Нет"
-                          >
-                            {relabelButton}
-                          </Popconfirm>
-                        ) : (
-                          relabelButton
-                        )}
-                      </Space>
+                      {!isReadOnly && (
+                        <Space>
+                          <Select
+                            size="small"
+                            style={{ width: 160 }}
+                            placeholder="Модальность"
+                            options={MODALITY_OPTIONS}
+                            value={modality}
+                            onChange={(value) =>
+                              setSelectedModality((prev) => ({ ...prev, [entry.original_path]: value }))
+                            }
+                          />
+                          {willReplace ? (
+                            <Popconfirm
+                              title="Эта модальность уже заполнена другой серией — заменить?"
+                              onConfirm={() => handleRelabel(entry)}
+                              okText="Да"
+                              cancelText="Нет"
+                            >
+                              {relabelButton}
+                            </Popconfirm>
+                          ) : (
+                            relabelButton
+                          )}
+                        </Space>
+                      )}
                     </Space>
                   </List.Item>
                 );
@@ -159,16 +168,18 @@ const IncompletePatientDetail = ({ runId, session, visible, onClose, onActionCom
 
         <Divider style={{ margin: '8px 0' }} />
 
-        <Popconfirm
-          title="Отбросить сессию? Данные не удаляются, но она уйдёт из очереди review."
-          onConfirm={handleDiscard}
-          okText="Да"
-          cancelText="Нет"
-        >
-          <Button danger icon={<DeleteOutlined />} loading={discarding}>
-            Отбросить сессию
-          </Button>
-        </Popconfirm>
+        {!isReadOnly && (
+          <Popconfirm
+            title="Отбросить сессию? Данные не удаляются, но она уйдёт из очереди review."
+            onConfirm={handleDiscard}
+            okText="Да"
+            cancelText="Нет"
+          >
+            <Button danger icon={<DeleteOutlined />} loading={discarding}>
+              Отбросить сессию
+            </Button>
+          </Popconfirm>
+        )}
       </Space>
     </Modal>
   );
