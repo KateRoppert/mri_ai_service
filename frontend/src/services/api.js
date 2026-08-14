@@ -248,6 +248,44 @@ export const getEntityRunInfo = async (entityId) => {
 };
 
 /**
+ * Список сессий текущего запуска, требующих внимания врача
+ * (неполные + полные с непустым excluded_series)
+ */
+export const getIncompletePatients = async (runId) => {
+  const response = await apiClient.get(`/incomplete-patients/${runId}`);
+  return response.data;
+};
+
+/**
+ * Вручную назначить (или заменить) модальность для серии из excluded_series
+ */
+export const relabelSeries = async (runId, patientId, sessionId, originalPath, modality) => {
+  const response = await apiClient.post(
+    `/incomplete-patients/${runId}/${patientId}/${sessionId}/relabel`,
+    { original_path: originalPath, modality }
+  );
+  return response.data;
+};
+
+/**
+ * Отбросить сессию — пометить как намеренно исключённую из очереди review
+ */
+export const discardSession = async (runId, patientId, sessionId) => {
+  const response = await apiClient.post(
+    `/incomplete-patients/${runId}/${patientId}/${sessionId}/discard`
+  );
+  return response.data;
+};
+
+/**
+ * Перезапустить pipeline на тех же путях (skip_existing обработает только новое)
+ */
+export const requeuePipelineRun = async (runId) => {
+  const response = await apiClient.post(`/pipeline-runs/${runId}/requeue`);
+  return response.data;
+};
+
+/**
  * Скачать zip-пакет для 3D Slicer
  */
 export const getSlicerPackageUrl = (runId) => {
@@ -347,6 +385,10 @@ export default {
   checkSlicerAgent,
   openInSlicer,
   getEntityRunInfo,
+  getIncompletePatients,
+  relabelSeries,
+  discardSession,
+  requeuePipelineRun,
   getSlicerPackageUrl,
   uploadMask,
   getMaskVersions,

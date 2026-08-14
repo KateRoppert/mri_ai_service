@@ -12,6 +12,7 @@ import QualityReport from './components/QualityReport';
 import ClinicalReport from './components/ClinicalReport';
 import NIfTIViewer from './components/NIfTIViewer';
 import ValidationPanel from './components/ValidationPanel';
+import IncompletePatients from './components/IncompletePatients';
 import './App.css';
 import { getEntitiesForRun } from './services/api';
 
@@ -30,6 +31,9 @@ function App() {
   const [historyClinicalReportRunId, setHistoryClinicalReportRunId] = useState(null);
   const [historyClinicalReportLesionType, setHistoryClinicalReportLesionType] = useState('glioblastoma');
   const [showHistoryClinicalReport, setShowHistoryClinicalReport] = useState(false);
+  const [historyIncompletePatientsRunId, setHistoryIncompletePatientsRunId] = useState(null);
+  const [historyIncompletePatientsStatus, setHistoryIncompletePatientsStatus] = useState(null);
+  const [showHistoryIncompletePatients, setShowHistoryIncompletePatients] = useState(false);
   const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
 
@@ -90,6 +94,15 @@ function App() {
     setHistoryClinicalReportRunId(runId);
     setHistoryClinicalReportLesionType(lesionType);
     setShowHistoryClinicalReport(true);
+  };
+
+  /**
+   * Показать неполных пациентов из истории
+   */
+  const handleShowHistoryIncompletePatients = (runId, status) => {
+    setHistoryIncompletePatientsRunId(runId);
+    setHistoryIncompletePatientsStatus(status);
+    setShowHistoryIncompletePatients(true);
   };
 
   /**
@@ -206,6 +219,7 @@ function App() {
                       onShowQualityReport={handleShowHistoryQualityReport}
                       onShowVisualization={handleShowHistoryVisualization}
                       onShowClinicalReport={handleShowHistoryClinicalReport}
+                      onShowIncompletePatients={handleShowHistoryIncompletePatients}
                     />
                   ),
                 },
@@ -247,6 +261,17 @@ function App() {
                 visible={showHistoryClinicalReport}
                 onClose={() => setShowHistoryClinicalReport(false)}
                 lesionType={historyClinicalReportLesionType}
+              />
+            )}
+            {showHistoryIncompletePatients && (
+              <IncompletePatients
+                runId={historyIncompletePatientsRunId}
+                visible={showHistoryIncompletePatients}
+                onClose={() => setShowHistoryIncompletePatients(false)}
+                canRequeue={
+                  historyIncompletePatientsStatus === 'completed' ||
+                  historyIncompletePatientsStatus === 'failed'
+                }
               />
             )}
           </>

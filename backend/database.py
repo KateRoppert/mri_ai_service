@@ -132,6 +132,21 @@ def get_pipeline_run(db: Session, run_id: str) -> Optional[PipelineRun]:
     return db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
 
 
+def get_active_run_by_output_path(db: Session, output_path: str) -> Optional[PipelineRun]:
+    """Найти запуск в статусе pending/running на заданном output_path.
+
+    Несколько разных run_id (например, run и его собственный requeue-потомок)
+    могут указывать на один и тот же output_path. Перед тем как поставить в
+    очередь ещё один запуск на этот путь, нужно убедиться, что там прямо
+    сейчас не работает другой процесс — иначе два orchestrator-процесса
+    начнут конкурентно писать в один bids_organized/dataset_mapping.json.
+    """
+    return db.query(PipelineRun).filter(
+        PipelineRun.output_path == output_path,
+        PipelineRun.status.in_(["running", "pending"])
+    ).first()
+
+
 def update_pipeline_run(
     db: Session,
     run_id: str,

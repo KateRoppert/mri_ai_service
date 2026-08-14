@@ -10,9 +10,10 @@ import {
   ReloadOutlined 
 } from '@ant-design/icons';
 import StageProgress from './StageProgress';
-import QualityReport from './QualityReport'; 
-import NIfTIViewer from './NIfTIViewer'; 
+import QualityReport from './QualityReport';
+import NIfTIViewer from './NIfTIViewer';
 import ClinicalReport from './ClinicalReport';
+import IncompletePatients from './IncompletePatients';
 import wsService from '../services/websocket';
 import { getPipelineStatus, getEntitiesForRun } from '../services/api';
 
@@ -26,6 +27,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
   const [showQualityReport, setShowQualityReport] = useState(false); 
   const [showVisualization, setShowVisualization] = useState(false);
   const [showClinicalReport, setShowClinicalReport] = useState(false);
+  const [showIncompletePatients, setShowIncompletePatients] = useState(false);
   const [validationRef, setValidationRef] = useState(null);
 
   /**
@@ -118,6 +120,10 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
 
   const handleShowClinicalReport = () => setShowClinicalReport(true);
   const handleCloseClinicalReport = () => setShowClinicalReport(false);
+
+  const handleShowIncompletePatients = () => {
+    setShowIncompletePatients(true);
+  };
 
   /**
    * Обновить состояние на основе данных от backend
@@ -237,6 +243,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
             onShowQualityReport={stageData.stage_number === 3 ? handleShowQualityReport : null}
             onShowVisualization={stageData.stage_number === 6 ? handleShowVisualization : null}
             onShowClinicalReport={(stageData.stage_number === 6 || stageData.stage_number === 7) ? handleShowClinicalReport : null}
+            onShowIncompletePatients={stageData.stage_number === 1 ? handleShowIncompletePatients : null}
             />
         ))
         ) : (
@@ -277,6 +284,12 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
         visible={showClinicalReport}
         onClose={handleCloseClinicalReport}
         lesionType={lesionType}
+      />
+      <IncompletePatients
+        runId={runId}
+        visible={showIncompletePatients}
+        onClose={() => setShowIncompletePatients(false)}
+        canRequeue={status === 'completed' || status === 'failed'}
       />
     </Card>
   );

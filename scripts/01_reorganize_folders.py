@@ -1682,21 +1682,28 @@ def check_patient_exists(output_dir: Path, patient_id: str, force: bool, dry_run
     if dry_run:
         # In dry run, always process to simulate
         return False
-    
-    patient_dir = output_dir / patient_id
-    
-    if not patient_dir.exists():
+
+    # A patient may live either in the main tree (fully processed) or under
+    # _incomplete/ (still incomplete after e.g. a manual relabel). Either
+    # location counts as "already processed" for skip/force purposes —
+    # otherwise requeue would silently re-scan raw DICOM from scratch and
+    # discard any manual relabel work already written into _incomplete/.
+    complete_dir = output_dir / patient_id
+    incomplete_dir = output_dir / '_incomplete' / patient_id
+    existing_dir = complete_dir if complete_dir.exists() else (incomplete_dir if incomplete_dir.exists() else None)
+
+    if existing_dir is None:
         # Patient not processed yet
         return False
-    
+
     if force:
         # Force flag set - delete existing and reprocess
-        logger.info(f"  Force flag set: deleting existing {patient_id}")
+        logger.info(f"  Force flag set: deleting existing {patient_id} ({existing_dir})")
         try:
-            shutil.rmtree(patient_dir)
+            shutil.rmtree(existing_dir)
             return False  # Process after deletion
         except Exception as e:
-            logger.error(f"  Failed to delete {patient_dir}: {e}")
+            logger.error(f"  Failed to delete {existing_dir}: {e}")
             return True  # Skip if can't delete
     else:
         # Patient exists and no force flag - skip
