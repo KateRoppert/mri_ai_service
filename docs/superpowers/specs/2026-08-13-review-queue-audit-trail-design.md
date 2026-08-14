@@ -1,5 +1,7 @@
 # Review Queue Audit Trail — Design
 
+> **Update (2026-08-14):** based on further manual testing, the "became complete via relabel" confirmation was refined from *permanent* to *one-shot*: `manually_reviewed` now clears itself the moment it's the sole reason a resolved session is included in the response, so it shows exactly once (right after the action) rather than forever. The `discarded` case is unaffected — it stays a permanent audit-trail entry, per the original design below. See `backend/pipeline_manager.py::get_incomplete_patients` (commit `c56cf9a`) for the implementation.
+
 ## Context
 
 The incomplete-patients review UI (built in `feat/incomplete-patients-frontend`) currently treats the review queue as an *ephemeral filter*: `get_incomplete_patients()` returns only sessions currently needing attention (incomplete, or complete-with-unused-alternatives). The moment a session is resolved — either because a manual relabel completed it, or because the doctor discarded it — it drops out of the report entirely on the next fetch.
