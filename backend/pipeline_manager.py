@@ -603,8 +603,10 @@ class PipelineManager:
         return results
 
     def discard_session(self, output_path: str, patient_id: str, session_id: str) -> None:
-        """Mark a session as intentionally excluded from review — stays out of
-        get_incomplete_patients() without deleting any data."""
+        """Mark a session as intentionally skipped by the doctor. Still
+        returned by get_incomplete_patients() (with status "discarded") as
+        an audit-trail record that it was reviewed and rejected — no data
+        is deleted."""
         # Same validation as relabel_series — patient_id/session_id are API path
         # parameters (not sanitized by FastAPI beyond excluding '/'). This method
         # only does a dict lookup (no path construction), so the risk is lower,
