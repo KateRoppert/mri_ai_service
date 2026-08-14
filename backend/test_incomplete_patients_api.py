@@ -634,6 +634,33 @@ class TestMergeSessionsInputValidation:
             pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-001")
 
 
+class TestGetIncompletePatientsMerged:
+    def test_merged_session_appears_permanently_in_review_queue(self, tmp_path):
+        """Like discarded, merged is a permanent audit-trail entry — must
+        NOT disappear after being read once (unlike the one-shot
+        manually_reviewed 'became complete' confirmation)."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        first = pm.get_incomplete_patients(str(tmp_path))
+        second = pm.get_incomplete_patients(str(tmp_path))
+
+        by_key_first = {(r["patient_id"], r["session_id"]): r for r in first}
+        by_key_second = {(r["patient_id"], r["session_id"]): r for r in second}
+        assert by_key_first[("sub-001", "ses-002")]["status"] == "merged"
+        assert by_key_first[("sub-001", "ses-002")]["merged_into_session_id"] == "ses-001"
+        assert by_key_second[("sub-001", "ses-002")]["status"] == "merged"
+
+
 class TestRelabelSeriesReplace:
     def _make_dicom_series(self, series_dir: Path, n_files=2):
         series_dir.mkdir(parents=True, exist_ok=True)

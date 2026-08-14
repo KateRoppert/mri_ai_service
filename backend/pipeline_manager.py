@@ -589,6 +589,7 @@ class PipelineManager:
                     status == 'incomplete'
                     or (status == 'complete' and has_alternatives)
                     or status == 'discarded'
+                    or status == 'merged'
                     or manually_reviewed
                 )
                 if not needs_review:
@@ -613,6 +614,7 @@ class PipelineManager:
                     "available": available,
                     "missing": sorted(required - set(available)),
                     "excluded_series": session_data.get('excluded_series', []),
+                    "merged_into_session_id": session_data.get('merged_into_session_id'),
                 })
 
         if mapping_changed:
