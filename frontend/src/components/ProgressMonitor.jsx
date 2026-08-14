@@ -17,18 +17,19 @@ import IncompletePatients from './IncompletePatients';
 import wsService from '../services/websocket';
 import { getPipelineStatus, getEntitiesForRun } from '../services/api';
 
-const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => {
+const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [stages, setStages] = useState({});
   const [overallProgress, setOverallProgress] = useState(0);
   const [currentStage, setCurrentStage] = useState(0);
   const [status, setStatus] = useState('running');
   const [error, setError] = useState(null);
-  const [showQualityReport, setShowQualityReport] = useState(false); 
+  const [showQualityReport, setShowQualityReport] = useState(false);
   const [showVisualization, setShowVisualization] = useState(false);
   const [showClinicalReport, setShowClinicalReport] = useState(false);
   const [showIncompletePatients, setShowIncompletePatients] = useState(false);
   const [validationRef, setValidationRef] = useState(null);
+  const [parentRunId, setParentRunId] = useState(null);
 
   /**
    * Подключение к WebSocket при монтировании компонента
@@ -66,6 +67,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
     try {
       const data = await getPipelineStatus(runId);
       updateStatus(data);
+      setParentRunId(data.parent_run_id || null);
     } catch (error) {
       // Не показываем ошибку — WebSocket подхватит обновления
       console.warn('Начальный запрос статуса не удался, ожидаем WebSocket:', error);
@@ -202,6 +204,20 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
         </Tag>
       }
     >
+      {parentRunId && (
+        <Alert
+          type="info"
+          showIcon
+          message={`Это повторный запуск после ручной правки (исходный запуск: ${parentRunId.substring(0, 8)}...)`}
+          action={
+            <Button size="small" onClick={onSwitchToHistory}>
+              Перейти к истории
+            </Button>
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       {/* Общий прогресс */}
       <div style={{ marginBottom: 24 }}>
         <div style={{ marginBottom: 8 }}>
@@ -290,6 +306,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma' }) => 
         visible={showIncompletePatients}
         onClose={() => setShowIncompletePatients(false)}
         canRequeue={status === 'completed' || status === 'failed'}
+        onRequeued={onRequeued}
       />
     </Card>
   );

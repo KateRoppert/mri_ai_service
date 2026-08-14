@@ -62,6 +62,8 @@ from models import (
     RelabelSeriesRequest,
     RelabelSeriesResponse,
     DiscardSessionResponse,
+    MergeSessionsRequest,
+    MergeSessionsResponse,
 )
 from database import (
     get_db,
@@ -399,6 +401,7 @@ async def requeue_pipeline_run(
         input_path=original_run.input_path,
         output_path=original_run.output_path,
         lesion_type=original_run.lesion_type or "glioblastoma",
+        parent_run_id=run_id,
     )
 
     background_tasks.add_task(
@@ -490,6 +493,7 @@ async def get_pipeline_status(
         completed_at=run.completed_at,
         error=run.error_message,
         lesion_type=getattr(run, "lesion_type", None),
+        parent_run_id=getattr(run, "parent_run_id", None),
     )
 
 
@@ -977,6 +981,37 @@ async def discard_session(
 
     logger.info(f"Сессия {patient_id}/{session_id} отброшена (run_id={run_id})")
     return DiscardSessionResponse(status="discarded")
+
+@app.post(
+    "/api/incomplete-patients/{run_id}/{patient_id}/merge",
+    response_model=MergeSessionsResponse,
+)
+async def merge_sessions(
+    run_id: str,
+    patient_id: str,
+    request: MergeSessionsRequest,
+    db: Session = Depends(get_db)
+):
+    """Объединить сессию-донора с основной сессией пациента"""
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    try:
+        result = pipeline_manager.merge_sessions(
+            output_path=run.output_path,
+            patient_id=patient_id,
+            primary_session_id=request.primary_session_id,
+            donor_session_id=request.donor_session_id,
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    logger.info(
+        f"Объединение {patient_id}: донор {request.donor_session_id} -> "
+        f"основная {request.primary_session_id} (run_id={run_id})"
+    )
+    return MergeSessionsResponse(**result)
 
 @app.get("/api/lesion-stats/{run_id}", response_model=LesionStatsListResponse)
 async def get_lesion_stats(

@@ -9,7 +9,7 @@ import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { getIncompletePatients, requeuePipelineRun } from '../services/api';
 import IncompletePatientDetail from './IncompletePatientDetail';
 
-const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
+const IncompletePatients = ({ runId, visible, onClose, canRequeue = true, onRequeued }) => {
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [error, setError] = useState(null);
@@ -53,6 +53,9 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
         'Отслеживайте прогресс во вкладке «История запусков».'
       );
       onClose();
+      if (onRequeued) {
+        onRequeued(result);
+      }
     } catch (err) {
       console.error('Ошибка перезапуска:', err);
       const detail = err.response?.data?.detail;
@@ -66,8 +69,34 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
     }
   };
 
+  const sortedSessions = [...sessions].sort((a, b) => {
+    if (a.original_id !== b.original_id) return a.original_id.localeCompare(b.original_id);
+    return a.session_id.localeCompare(b.session_id);
+  });
+
+  const patientRowSpans = {};
+  sortedSessions.forEach((s, idx) => {
+    if (idx === 0 || sortedSessions[idx - 1].original_id !== s.original_id) {
+      let count = 1;
+      while (sortedSessions[idx + count] && sortedSessions[idx + count].original_id === s.original_id) {
+        count++;
+      }
+      patientRowSpans[idx] = count;
+    } else {
+      patientRowSpans[idx] = 0;
+    }
+  });
+
   const columns = [
-    { title: 'Пациент', dataIndex: 'original_id', key: 'original_id' },
+    {
+      title: 'Пациент',
+      dataIndex: 'original_id',
+      key: 'original_id',
+      render: (value, record, index) => ({
+        children: value,
+        props: { rowSpan: patientRowSpans[index] },
+      }),
+    },
     { title: 'Сессия', dataIndex: 'session_id', key: 'session_id' },
     { title: 'Дата', dataIndex: 'date', key: 'date' },
     {
@@ -80,6 +109,9 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
         }
         if (status === 'discarded') {
           return <Tag color="default">Отброшена</Tag>;
+        }
+        if (status === 'merged') {
+          return <Tag color="default">Объединена → {record.merged_into_session_id}</Tag>;
         }
         const hasAlternatives = (record.excluded_series || []).length > 0;
         return hasAlternatives
@@ -151,9 +183,9 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
       ) : (
         <Table
           columns={columns}
-          dataSource={sessions}
+          dataSource={sortedSessions}
           rowKey={(r) => `${r.patient_id}_${r.session_id}`}
-          pagination={{ pageSize: 10 }}
+          pagination={false}
           locale={{ emptyText: 'Нет сессий, требующих внимания' }}
         />
       )}
@@ -161,6 +193,7 @@ const IncompletePatients = ({ runId, visible, onClose, canRequeue = true }) => {
       <IncompletePatientDetail
         runId={runId}
         session={selectedSession}
+        sessions={sessions}
         visible={!!selectedSession}
         onClose={() => setSelectedSession(null)}
         onActionComplete={fetchSessions}

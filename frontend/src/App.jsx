@@ -22,6 +22,7 @@ const { Title, Text } = Typography;
 function App() {
   const [activeRun, setActiveRun] = useState(null);
   const [completedRuns, setCompletedRuns] = useState([]);
+  const [activeTabKey, setActiveTabKey] = useState('pipeline');
 
   const [historyQualityReportRunId, setHistoryQualityReportRunId] = useState(null);
   const [historyVisualizationRunId, setHistoryVisualizationRunId] = useState(null);
@@ -119,6 +120,14 @@ function App() {
   };
 
   /**
+   * Переключить на вкладку истории запусков (используется баннером-ссылкой
+   * в ProgressMonitor, ведущей к исходному запуску после requeue)
+   */
+  const handleSwitchToHistoryTab = () => {
+    setActiveTabKey('history');
+  };
+
+  /**
    * Обработчик завершения pipeline
    */
   const handlePipelineComplete = (data) => {
@@ -171,7 +180,8 @@ function App() {
         ) : (
           <>
             <Tabs
-              defaultActiveKey="pipeline"
+              activeKey={activeTabKey}
+              onChange={setActiveTabKey}
               size="large"
               items={[
                 {
@@ -193,6 +203,8 @@ function App() {
                           runId={activeRun.runId}
                           lesionType={activeRun.lesionType}
                           onComplete={handlePipelineComplete}
+                          onRequeued={handlePipelineStarted}
+                          onSwitchToHistory={handleSwitchToHistoryTab}
                         />
                       )}
                       {completedRuns.length > 0 && (
@@ -272,6 +284,7 @@ function App() {
                   historyIncompletePatientsStatus === 'completed' ||
                   historyIncompletePatientsStatus === 'failed'
                 }
+                onRequeued={handlePipelineStarted}
               />
             )}
           </>

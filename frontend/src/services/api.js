@@ -278,6 +278,18 @@ export const discardSession = async (runId, patientId, sessionId) => {
 };
 
 /**
+ * Объединить сессию-донора с основной (целевой) сессией пациента —
+ * переносит серии донора в excluded_series основной как кандидатов
+ */
+export const mergeSessions = async (runId, patientId, primarySessionId, donorSessionId) => {
+  const response = await apiClient.post(
+    `/incomplete-patients/${runId}/${patientId}/merge`,
+    { primary_session_id: primarySessionId, donor_session_id: donorSessionId }
+  );
+  return response.data;
+};
+
+/**
  * Перезапустить pipeline на тех же путях (skip_existing обработает только новое)
  */
 export const requeuePipelineRun = async (runId) => {
@@ -388,6 +400,7 @@ export default {
   getIncompletePatients,
   relabelSeries,
   discardSession,
+  mergeSessions,
   requeuePipelineRun,
   getSlicerPackageUrl,
   uploadMask,

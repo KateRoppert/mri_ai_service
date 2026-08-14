@@ -128,3 +128,18 @@ def test_creates_new_run_with_same_paths_and_does_not_run_pipeline_synchronously
     monitor_args = mock_monitor.call_args[0]
     assert monitor_args[0] == "new-run"
     assert monitor_args[2] is None  # kappa_session_id — no new Kappa context on requeue
+
+
+def test_requeue_passes_parent_run_id_to_create_pipeline_run():
+    original = _fake_original_run(run_id="orig-run")
+    new_run = _fake_new_run()
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.create_pipeline_run", return_value=new_run) as mock_create, \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()):
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 200
+    _, kwargs = mock_create.call_args
+    assert kwargs["parent_run_id"] == "orig-run"

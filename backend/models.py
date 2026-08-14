@@ -135,7 +135,7 @@ class ExcludedSeriesInfo(BaseModel):
     series_description: str = Field(..., description="ProtocolName | SeriesDescription")
     slice_count: int = Field(..., description="Число DICOM-файлов в серии")
     detected_modality: Optional[str] = Field(None, description="Модальность по мнению алгоритма (null — вообще не распознана)")
-    reason: str = Field(..., description="unrecognized | lost_deduplication | replaced_by_manual_relabel")
+    reason: str = Field(..., description="unrecognized | lost_deduplication | replaced_by_manual_relabel | from_other_session")
 
 
 class IncompletePatientSession(BaseModel):
@@ -150,6 +150,7 @@ class IncompletePatientSession(BaseModel):
     excluded_series: List[ExcludedSeriesInfo] = Field(
         default_factory=list, description="Серии вне финального набора — кандидаты на ручную переразметку"
     )
+    merged_into_session_id: Optional[str] = Field(None, description="Если статус 'merged' — ID сессии, в которую объединили")
 
 
 class IncompletePatientsResponse(BaseModel):
@@ -173,6 +174,20 @@ class RelabelSeriesResponse(BaseModel):
 class DiscardSessionResponse(BaseModel):
     """Результат исключения сессии из очереди review"""
     status: str = Field(..., description="Статус сессии после исключения: discarded")
+
+
+class MergeSessionsRequest(BaseModel):
+    """Запрос на объединение сессии-донора с основной сессией"""
+    primary_session_id: str = Field(..., description="ID основной (целевой) сессии — BIDS ses-XXX")
+    donor_session_id: str = Field(..., description="ID сессии-донора, чьи серии переносятся — BIDS ses-XXX")
+
+
+class MergeSessionsResponse(BaseModel):
+    """Результат объединения сессий"""
+    status: str = Field(..., description="Статус после объединения: merged")
+    primary_session_id: str = Field(..., description="ID основной (целевой) сессии")
+    donor_session_id: str = Field(..., description="ID сессии-донора")
+    pulled_series: int = Field(..., description="Сколько новых серий добавлено в excluded_series основной сессии")
 
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
@@ -242,6 +257,7 @@ class PipelineStatusResponse(BaseModel):
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     error: Optional[str] = Field(None, description="Сообщение об ошибке")
     lesion_type: Optional[str] = Field(None, description="Тип поражения (glioblastoma / multiple_sclerosis)")
+    parent_run_id: Optional[str] = Field(None, description="ID исходного запуска, если это requeue")
 
 
 # ============================================

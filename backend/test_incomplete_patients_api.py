@@ -297,11 +297,14 @@ class TestRelabelSeries:
         assert incomplete_dir.exists()
         assert not (bids_dir / "sub-003").exists()
 
-    def test_relabel_that_completes_session_still_appears_in_review_queue(self, tmp_path):
+    def test_relabel_that_completes_session_appears_once_then_stops(self, tmp_path):
         """Filling the last missing modality makes excluded_series empty and
-        status complete — under the OLD filter this would silently drop out
-        of the review queue with no confirmation the action worked. The new
-        manually_reviewed marker keeps it visible."""
+        status complete. The FIRST fetch after the action must still include
+        it (one-time confirmation the action worked, instead of silently
+        vanishing) — but manually_reviewed is a one-shot flag: the act of
+        being included for that reason clears it, so a SECOND fetch (e.g.
+        doctor reopens the queue later) no longer shows a session with
+        nothing left to review."""
         raw_series = self._make_dicom_series(tmp_path / "raw" / "candidate_t1c")
 
         _write_mapping(tmp_path, {
@@ -331,10 +334,13 @@ class TestRelabelSeries:
             modality="t1c",
         )
 
-        result = pm.get_incomplete_patients(str(tmp_path))
-        assert len(result) == 1
-        assert result[0]["status"] == "complete"
-        assert result[0]["excluded_series"] == []
+        first = pm.get_incomplete_patients(str(tmp_path))
+        assert len(first) == 1
+        assert first[0]["status"] == "complete"
+        assert first[0]["excluded_series"] == []
+
+        second = pm.get_incomplete_patients(str(tmp_path))
+        assert second == []
 
     def test_untouched_complete_session_has_manually_reviewed_false_by_default(self, tmp_path):
         """Regression guard: manually_reviewed must default False for session
@@ -438,6 +444,30 @@ class TestDiscardSession:
         assert len(result) == 1
         assert result[0]["status"] == "discarded"
 
+    def test_discarded_session_keeps_appearing_on_every_fetch(self, tmp_path):
+        """Unlike the one-shot 'became complete' confirmation, a discarded
+        session is a deliberate, permanent audit-trail record — it must NOT
+        disappear after being read once."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {}, "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.discard_session(str(tmp_path), "sub-001", "ses-001")
+
+        first = pm.get_incomplete_patients(str(tmp_path))
+        second = pm.get_incomplete_patients(str(tmp_path))
+        assert len(first) == 1
+        assert len(second) == 1
+        assert first[0]["status"] == second[0]["status"] == "discarded"
+
 
 class TestDiscardSessionInputValidation:
     """Regression tests mirroring TestRelabelSeriesInputValidation — discard_session
@@ -456,6 +486,179 @@ class TestDiscardSessionInputValidation:
         pm = PipelineManager()
         with pytest.raises(ValueError, match="Invalid session_id"):
             pm.discard_session(str(tmp_path), "sub-001", "..")
+
+
+class TestMergeSessions:
+    def test_merge_pulls_assigned_and_excluded_series_from_donor(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {"t1": {}, "t2": {}},
+                        "excluded_series": [],
+                    },
+                    "ses-002": {
+                        "original_date": "20230201", "status": "incomplete",
+                        "series": {
+                            "t1c": {"original_path": "/raw/donor_t1c", "series_description": "t1c series", "slice_count": 30},
+                        },
+                        "excluded_series": [
+                            {
+                                "original_path": "/raw/donor_extra", "series_description": "extra t2fl",
+                                "slice_count": 20, "detected_modality": "t2fl", "reason": "unrecognized",
+                            },
+                        ],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        result = pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        assert result == {
+            "status": "merged",
+            "primary_session_id": "ses-001",
+            "donor_session_id": "ses-002",
+            "pulled_series": 2,
+        }
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        primary = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        excluded_paths = {u["original_path"]: u for u in primary["excluded_series"]}
+        assert "/raw/donor_t1c" in excluded_paths
+        assert excluded_paths["/raw/donor_t1c"]["detected_modality"] == "t1c"
+        assert excluded_paths["/raw/donor_t1c"]["reason"] == "from_other_session"
+        assert "/raw/donor_extra" in excluded_paths
+        assert excluded_paths["/raw/donor_extra"]["detected_modality"] == "t2fl"
+        assert excluded_paths["/raw/donor_extra"]["reason"] == "from_other_session"
+
+    def test_merge_conflicting_modality_offers_both_versions(self, tmp_path):
+        """Primary already has a t1; donor also has a t1 — both must be
+        offered as alternatives, not silently preferred either way."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {"t1": {"original_path": "/raw/primary_t1", "series_description": "primary t1", "slice_count": 10}},
+                        "excluded_series": [],
+                    },
+                    "ses-002": {
+                        "original_date": "20230201", "status": "incomplete",
+                        "series": {"t1": {"original_path": "/raw/donor_t1", "series_description": "donor t1", "slice_count": 12}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        primary = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        # primary's own t1 assignment is untouched
+        assert primary["series"]["t1"]["original_path"] == "/raw/primary_t1"
+        # donor's t1 is offered as an alternative, not silently dropped
+        assert len(primary["excluded_series"]) == 1
+        assert primary["excluded_series"][0]["original_path"] == "/raw/donor_t1"
+        assert primary["excluded_series"][0]["detected_modality"] == "t1"
+
+    def test_merge_marks_donor_session_merged_with_pointer(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        donor = mapping["patients"]["sub-001"]["sessions"]["ses-002"]
+        assert donor["status"] == "merged"
+        assert donor["merged_into_session_id"] == "ses-001"
+
+    def test_merge_is_idempotent_no_duplicate_candidates(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {
+                        "original_date": "20230201", "status": "incomplete",
+                        "series": {"t1c": {"original_path": "/raw/donor_t1c", "series_description": "t1c", "slice_count": 30}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+        result_second_call = pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        assert result_second_call["pulled_series"] == 0
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        primary = mapping["patients"]["sub-001"]["sessions"]["ses-001"]
+        assert len(primary["excluded_series"]) == 1
+
+
+class TestMergeSessionsInputValidation:
+    def test_rejects_path_traversal_patient_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid patient_id"):
+            pm.merge_sessions(str(tmp_path), "..", "ses-001", "ses-002")
+
+    def test_rejects_path_traversal_primary_session_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid primary_session_id"):
+            pm.merge_sessions(str(tmp_path), "sub-001", "..", "ses-002")
+
+    def test_rejects_path_traversal_donor_session_id(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="Invalid donor_session_id"):
+            pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "..")
+
+    def test_rejects_same_session_as_primary_and_donor(self, tmp_path):
+        _write_mapping(tmp_path, {})
+        pm = PipelineManager()
+        with pytest.raises(ValueError, match="must be different"):
+            pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-001")
+
+
+class TestGetIncompletePatientsMerged:
+    def test_merged_session_appears_permanently_in_review_queue(self, tmp_path):
+        """Like discarded, merged is a permanent audit-trail entry — must
+        NOT disappear after being read once (unlike the one-shot
+        manually_reviewed 'became complete' confirmation)."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002")
+
+        first = pm.get_incomplete_patients(str(tmp_path))
+        second = pm.get_incomplete_patients(str(tmp_path))
+
+        by_key_first = {(r["patient_id"], r["session_id"]): r for r in first}
+        by_key_second = {(r["patient_id"], r["session_id"]): r for r in second}
+        assert by_key_first[("sub-001", "ses-002")]["status"] == "merged"
+        assert by_key_first[("sub-001", "ses-002")]["merged_into_session_id"] == "ses-001"
+        assert by_key_second[("sub-001", "ses-002")]["status"] == "merged"
 
 
 class TestRelabelSeriesReplace:
