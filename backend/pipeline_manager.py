@@ -555,14 +555,16 @@ class PipelineManager:
         Read dataset_mapping.json and return the doctor-review queue for a
         run: every incomplete session, every complete session that still has
         excluded_series (e.g. a dedup loser that lost to the winner but is
-        still a plausible alternative), every discarded session, and any
-        session the doctor has ever manually touched (relabeled or
-        discarded) — even if that action fully resolved it. This makes the
-        report a durable audit trail: once you've acted on a session, it
-        keeps showing up (with its current status), so a resolved-complete
-        or discarded row confirms the action worked instead of silently
-        vanishing. A session nobody has ever needed to look at (always
-        complete, no alternatives, never touched) is excluded.
+        still a plausible alternative), every discarded session (a
+        permanent audit-trail record — discarding is a deliberate decision
+        the doctor shouldn't have to remember making), and any complete,
+        fully-resolved session that was just manually touched (relabeled) —
+        but only ONCE. manually_reviewed is a one-shot confirmation flag: the
+        moment it's the sole reason a resolved session gets included, it's
+        cleared, so the doctor sees "стала полной" exactly once (right after
+        acting) and it stops cluttering the queue on the next check. A
+        session nobody has ever needed to look at (always complete, no
+        alternatives, never touched) is excluded from the start.
         """
         mapping_file = self._dataset_mapping_path(output_path)
         if not mapping_file.exists():
@@ -577,18 +579,30 @@ class PipelineManager:
             required = {'t1', 't1c', 't2', 't2fl'}
 
         results: List[Dict[str, Any]] = []
+        mapping_changed = False
         for patient_id, patient_data in mapping_data.get('patients', {}).items():
             for session_id, session_data in patient_data.get('sessions', {}).items():
                 status = session_data.get('status')
                 has_alternatives = bool(session_data.get('excluded_series'))
+                manually_reviewed = session_data.get('manually_reviewed', False)
                 needs_review = (
                     status == 'incomplete'
                     or (status == 'complete' and has_alternatives)
                     or status == 'discarded'
-                    or session_data.get('manually_reviewed', False)
+                    or manually_reviewed
                 )
                 if not needs_review:
                     continue
+
+                # manually_reviewed is the ONLY reason this session is
+                # included when it's fully resolved (complete, nothing left
+                # to reconsider) — a one-shot confirmation, not a permanent
+                # audit-trail entry like "discarded". Clear it now so the
+                # NEXT fetch (doctor reopens the queue later) excludes it.
+                if manually_reviewed and status == 'complete' and not has_alternatives:
+                    session_data['manually_reviewed'] = False
+                    mapping_changed = True
+
                 available = sorted(session_data.get('series', {}).keys())
                 results.append({
                     "patient_id": patient_id,
@@ -600,6 +614,11 @@ class PipelineManager:
                     "missing": sorted(required - set(available)),
                     "excluded_series": session_data.get('excluded_series', []),
                 })
+
+        if mapping_changed:
+            with open(mapping_file, 'w', encoding='utf-8') as f:
+                json.dump(mapping_data, f, indent=2, ensure_ascii=False)
+
         return results
 
     def discard_session(self, output_path: str, patient_id: str, session_id: str) -> None:

@@ -297,11 +297,14 @@ class TestRelabelSeries:
         assert incomplete_dir.exists()
         assert not (bids_dir / "sub-003").exists()
 
-    def test_relabel_that_completes_session_still_appears_in_review_queue(self, tmp_path):
+    def test_relabel_that_completes_session_appears_once_then_stops(self, tmp_path):
         """Filling the last missing modality makes excluded_series empty and
-        status complete — under the OLD filter this would silently drop out
-        of the review queue with no confirmation the action worked. The new
-        manually_reviewed marker keeps it visible."""
+        status complete. The FIRST fetch after the action must still include
+        it (one-time confirmation the action worked, instead of silently
+        vanishing) — but manually_reviewed is a one-shot flag: the act of
+        being included for that reason clears it, so a SECOND fetch (e.g.
+        doctor reopens the queue later) no longer shows a session with
+        nothing left to review."""
         raw_series = self._make_dicom_series(tmp_path / "raw" / "candidate_t1c")
 
         _write_mapping(tmp_path, {
@@ -331,10 +334,13 @@ class TestRelabelSeries:
             modality="t1c",
         )
 
-        result = pm.get_incomplete_patients(str(tmp_path))
-        assert len(result) == 1
-        assert result[0]["status"] == "complete"
-        assert result[0]["excluded_series"] == []
+        first = pm.get_incomplete_patients(str(tmp_path))
+        assert len(first) == 1
+        assert first[0]["status"] == "complete"
+        assert first[0]["excluded_series"] == []
+
+        second = pm.get_incomplete_patients(str(tmp_path))
+        assert second == []
 
     def test_untouched_complete_session_has_manually_reviewed_false_by_default(self, tmp_path):
         """Regression guard: manually_reviewed must default False for session
@@ -437,6 +443,30 @@ class TestDiscardSession:
         result = pm.get_incomplete_patients(str(tmp_path))
         assert len(result) == 1
         assert result[0]["status"] == "discarded"
+
+    def test_discarded_session_keeps_appearing_on_every_fetch(self, tmp_path):
+        """Unlike the one-shot 'became complete' confirmation, a discarded
+        session is a deliberate, permanent audit-trail record — it must NOT
+        disappear after being read once."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101", "status": "incomplete",
+                        "series": {}, "excluded_series": [],
+                    },
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.discard_session(str(tmp_path), "sub-001", "ses-001")
+
+        first = pm.get_incomplete_patients(str(tmp_path))
+        second = pm.get_incomplete_patients(str(tmp_path))
+        assert len(first) == 1
+        assert len(second) == 1
+        assert first[0]["status"] == second[0]["status"] == "discarded"
 
 
 class TestDiscardSessionInputValidation:
