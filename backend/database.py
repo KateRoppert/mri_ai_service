@@ -58,6 +58,10 @@ class PipelineRun(Base):
     # Тип поражения (glioblastoma / multiple_sclerosis)
     lesion_type = Column(String, nullable=True, default='glioblastoma')
 
+    # Если этот запуск — requeue (повторная обработка после ручной правки),
+    # здесь лежит run_id исходного запуска. NULL для обычных запусков.
+    parent_run_id = Column(String, nullable=True)
+
 
 class StageExecution(Base):
     """Модель выполнения отдельного этапа"""
@@ -94,6 +98,7 @@ def create_pipeline_run(
     input_path: str,
     output_path: str,
     lesion_type: str = 'glioblastoma',
+    parent_run_id: Optional[str] = None,
 ) -> PipelineRun:
     """Создать новый запуск pipeline"""
     run_id = str(uuid.uuid4())
@@ -105,6 +110,7 @@ def create_pipeline_run(
         status="pending",
         created_at=datetime.now(timezone.utc),
         lesion_type=lesion_type,
+        parent_run_id=parent_run_id,
     )
     
     db.add(run)
@@ -248,6 +254,7 @@ def init_db():
     """Инициализировать базу данных и применить миграции колонок."""
     Base.metadata.create_all(bind=engine)
     _migrate_add_lesion_type()
+    _migrate_add_parent_run_id()
 
 
 def _migrate_add_lesion_type():
@@ -259,6 +266,19 @@ def _migrate_add_lesion_type():
         if 'lesion_type' not in cols:
             conn.execute(__import__('sqlalchemy').text(
                 "ALTER TABLE pipeline_runs ADD COLUMN lesion_type TEXT DEFAULT 'glioblastoma'"
+            ))
+            conn.commit()
+
+
+def _migrate_add_parent_run_id():
+    """Add parent_run_id column to pipeline_runs if it doesn't exist yet."""
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            __import__('sqlalchemy').text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'parent_run_id' not in cols:
+            conn.execute(__import__('sqlalchemy').text(
+                "ALTER TABLE pipeline_runs ADD COLUMN parent_run_id VARCHAR"
             ))
             conn.commit()
 
