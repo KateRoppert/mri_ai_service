@@ -257,6 +257,14 @@ export const getIncompletePatients = async (runId) => {
 };
 
 /**
+ * Агрегированный отчёт о пациентах, потерянных на любом этапе пайплайна
+ */
+export const getPipelineLosses = async (runId) => {
+  const response = await apiClient.get(`/pipeline-runs/${runId}/losses`);
+  return response.data;
+};
+
+/**
  * Вручную назначить (или заменить) модальность для серии из excluded_series
  */
 export const relabelSeries = async (runId, patientId, sessionId, originalPath, modality) => {
@@ -398,6 +406,7 @@ export default {
   openInSlicer,
   getEntityRunInfo,
   getIncompletePatients,
+  getPipelineLosses,
   relabelSeries,
   discardSession,
   mergeSessions,

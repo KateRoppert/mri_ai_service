@@ -13,6 +13,7 @@ import ClinicalReport from './components/ClinicalReport';
 import NIfTIViewer from './components/NIfTIViewer';
 import ValidationPanel from './components/ValidationPanel';
 import IncompletePatients from './components/IncompletePatients';
+import PipelineLosses from './components/PipelineLosses';
 import './App.css';
 import { getEntitiesForRun } from './services/api';
 
@@ -35,6 +36,8 @@ function App() {
   const [historyIncompletePatientsRunId, setHistoryIncompletePatientsRunId] = useState(null);
   const [historyIncompletePatientsStatus, setHistoryIncompletePatientsStatus] = useState(null);
   const [showHistoryIncompletePatients, setShowHistoryIncompletePatients] = useState(false);
+  const [historyPipelineLossesRunId, setHistoryPipelineLossesRunId] = useState(null);
+  const [showHistoryPipelineLosses, setShowHistoryPipelineLosses] = useState(false);
   const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
 
@@ -104,6 +107,14 @@ function App() {
     setHistoryIncompletePatientsRunId(runId);
     setHistoryIncompletePatientsStatus(status);
     setShowHistoryIncompletePatients(true);
+  };
+
+  /**
+   * Показать отчёт о потерянных пациентах по всем этапам
+   */
+  const handleShowHistoryPipelineLosses = (runId) => {
+    setHistoryPipelineLossesRunId(runId);
+    setShowHistoryPipelineLosses(true);
   };
 
   /**
@@ -232,6 +243,7 @@ function App() {
                       onShowVisualization={handleShowHistoryVisualization}
                       onShowClinicalReport={handleShowHistoryClinicalReport}
                       onShowIncompletePatients={handleShowHistoryIncompletePatients}
+                      onShowPipelineLosses={handleShowHistoryPipelineLosses}
                     />
                   ),
                 },
@@ -285,6 +297,13 @@ function App() {
                   historyIncompletePatientsStatus === 'failed'
                 }
                 onRequeued={handlePipelineStarted}
+              />
+            )}
+            {showHistoryPipelineLosses && (
+              <PipelineLosses
+                runId={historyPipelineLossesRunId}
+                visible={showHistoryPipelineLosses}
+                onClose={() => setShowHistoryPipelineLosses(false)}
               />
             )}
           </>

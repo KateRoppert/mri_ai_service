@@ -14,7 +14,7 @@ import {
 } from '@ant-design/icons';
 import { getPipelineHistory } from '../services/api';
 
-const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients }) => {
+const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses }) => {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [total, setTotal] = useState(0);
@@ -251,6 +251,15 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
               onClick={() => onShowIncompletePatients(record.run_id, record.status)}
             >
               Неполные пациенты
+            </Button>
+          )}
+          {record.current_stage >= 1 && record.status !== 'pending' && (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => onShowPipelineLosses(record.run_id)}
+            >
+              Потерянные пациенты
             </Button>
           )}
         </Space>
