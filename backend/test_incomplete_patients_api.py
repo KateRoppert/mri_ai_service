@@ -661,6 +661,61 @@ class TestGetIncompletePatientsMerged:
         assert by_key_second[("sub-001", "ses-002")]["status"] == "merged"
 
 
+class TestMergeSessionsRunIdScoping:
+    def test_merge_stores_merged_at_run_id(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002", run_id="run-A")
+
+        mapping = json.loads((tmp_path / "bids_organized" / "dataset_mapping.json").read_text())
+        donor = mapping["patients"]["sub-001"]["sessions"]["ses-002"]
+        assert donor["merged_at_run_id"] == "run-A"
+
+    def test_merged_session_visible_when_queried_from_the_same_run_id(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002", run_id="run-A")
+
+        result = pm.get_incomplete_patients(str(tmp_path), current_run_id="run-A")
+        keys = {(r["patient_id"], r["session_id"]) for r in result}
+        assert ("sub-001", "ses-002") in keys
+
+    def test_merged_session_hidden_when_queried_from_a_different_run_id(self, tmp_path):
+        """After a real requeue (new run_id, stage 1 re-ran), the merged
+        donor entry from the OLD run_id must stop cluttering the queue."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {"original_date": "20230101", "status": "incomplete", "series": {}, "excluded_series": []},
+                    "ses-002": {"original_date": "20230201", "status": "incomplete", "series": {}, "excluded_series": []},
+                },
+            },
+        })
+        pm = PipelineManager()
+        pm.merge_sessions(str(tmp_path), "sub-001", "ses-001", "ses-002", run_id="run-A")
+
+        result = pm.get_incomplete_patients(str(tmp_path), current_run_id="run-B")
+        keys = {(r["patient_id"], r["session_id"]) for r in result}
+        assert ("sub-001", "ses-002") not in keys
+
+
 class TestRelabelSeriesReplace:
     def _make_dicom_series(self, series_dir: Path, n_files=2):
         series_dir.mkdir(parents=True, exist_ok=True)

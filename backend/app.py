@@ -944,7 +944,9 @@ async def get_incomplete_patients(
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
 
-    sessions = pipeline_manager.get_incomplete_patients(run.output_path, lesion_type=run.lesion_type or 'glioblastoma')
+    sessions = pipeline_manager.get_incomplete_patients(
+        run.output_path, lesion_type=run.lesion_type or 'glioblastoma', current_run_id=run_id,
+    )
 
     return IncompletePatientsResponse(
         total=len(sessions),
@@ -1026,6 +1028,7 @@ async def merge_sessions(
             patient_id=patient_id,
             primary_session_id=request.primary_session_id,
             donor_session_id=request.donor_session_id,
+            run_id=run_id,
         )
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))

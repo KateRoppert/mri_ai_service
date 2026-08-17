@@ -583,7 +583,10 @@ class PipelineManager:
             tags_config = yaml.safe_load(f)
         return MetadataExtractor(tags_config, logger)
 
-    def get_incomplete_patients(self, output_path: str, lesion_type: str = 'glioblastoma') -> List[Dict[str, Any]]:
+    def get_incomplete_patients(
+        self, output_path: str, lesion_type: str = 'glioblastoma',
+        current_run_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Read dataset_mapping.json and return the doctor-review queue for a
         run: every incomplete session, every complete session that still has
@@ -618,11 +621,22 @@ class PipelineManager:
                 status = session_data.get('status')
                 has_alternatives = bool(session_data.get('excluded_series'))
                 manually_reviewed = session_data.get('manually_reviewed', False)
+                # A merged donor is visible only from the SAME run_id it was
+                # merged under (or when current_run_id isn't given at all,
+                # preserving old callers' behavior) — see KI-055 in
+                # KNOWN_ISSUES.md. Once a real requeue produces a NEW
+                # run_id and stage 1 has re-run, the merge has already
+                # served its "confirm this happened" purpose and shouldn't
+                # keep cluttering the queue.
+                is_visible_merge = status == 'merged' and (
+                    current_run_id is None
+                    or session_data.get('merged_at_run_id') == current_run_id
+                )
                 needs_review = (
                     status == 'incomplete'
                     or (status == 'complete' and has_alternatives)
                     or status == 'discarded'
-                    or status == 'merged'
+                    or is_visible_merge
                     or manually_reviewed
                 )
                 if not needs_review:
@@ -738,6 +752,7 @@ class PipelineManager:
     def merge_sessions(
         self, output_path: str, patient_id: str,
         primary_session_id: str, donor_session_id: str,
+        run_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Pull a donor session's series (both currently-assigned and its own
@@ -812,6 +827,7 @@ class PipelineManager:
 
         donor_session_data['status'] = 'merged'
         donor_session_data['merged_into_session_id'] = primary_session_id
+        donor_session_data['merged_at_run_id'] = run_id
 
         with open(mapping_file, 'w', encoding='utf-8') as f:
             json.dump(mapping_data, f, indent=2, ensure_ascii=False)
