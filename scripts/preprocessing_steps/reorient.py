@@ -36,6 +36,11 @@ def reorient_to_standard(input_path: Path, output_path: Path,
         
         # Get original orientation
         original_orientation = nib.aff2axcodes(img.affine)
+        if any(axis is None for axis in original_orientation):
+            raise ValueError(
+                f"Cannot determine orientation from affine matrix (degenerate or "
+                f"non-orthogonal affine) for {input_path.name}: aff2axcodes returned {original_orientation!r}"
+            )
         original_orientation_str = ''.join(original_orientation)
         
         logger.debug(f"Original orientation: {original_orientation_str}")
@@ -148,6 +153,11 @@ def check_orientation(image_path: Path) -> dict:
     
     # Get orientation
     orientation = nib.aff2axcodes(img.affine)
+    if any(axis is None for axis in orientation):
+        raise ValueError(
+            f"Cannot determine orientation from affine matrix (degenerate or "
+            f"non-orthogonal affine) for {image_path.name}: aff2axcodes returned {orientation!r}"
+        )
     orientation_str = ''.join(orientation)
     
     # Get affine matrix
