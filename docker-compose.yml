@@ -11,6 +11,9 @@ services:
     environment:
       - SEGMENTATION_URL=http://service-gbm-seg:5000
       - FSLDIR=${FSLDIR:-/usr/local/fsl}
+      # Same absolute path inside the container (/home bind-mount) and on the host
+      # where slicer_agent.py runs. Do not use /app/backend/data here.
+      - SLICER_CACHE_DIR=/home/ubuntu/mri_ai_service/backend/data/slicer_cache
     volumes:
       - /home:/home:rw
       - ./demo_workspace:/workspace:rw

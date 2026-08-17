@@ -383,8 +383,8 @@ def _add_upload_button(params, seg_node):
     segmentation_dir = params.get("segmentation_dir", "")
     patient_id = params.get("patient_id", "")
     
-    if not entity_id or not run_id:
-        print("  Warning: no entity_id/run_id, upload button disabled")
+    if not entity_id:
+        print("  Warning: no entity_id, upload button disabled")
         return
     
     def _do_save_and_upload():
@@ -567,20 +567,28 @@ qt.QTimer.singleShot(2000, _load_patient_data)
             env["DISPLAY"] = ":0"
         env["SLICER_PARAMS_FILE"] = str(params_file)  # Стандартный X11 display
 
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env=env,
+        log_path = Path(tempfile.gettempdir()) / (
+            f"slicer_agent_{request.patient_id or 'unknown'}_{os.getpid()}.log"
         )
-        logger.info("Slicer launched, PID: %d", process.pid)
+        log_fh = open(log_path, "w", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=env,
+            )
+        finally:
+            log_fh.close()
+        logger.info("Slicer launched, PID: %d, log=%s", process.pid, log_path)
 
         return {
             "success": True,
             "message": f"3D Slicer запущен (PID: {process.pid})",
             "pid": process.pid,
             "patient_id": request.patient_id,
+            "log_path": str(log_path),
         }
     except Exception as e:
         logger.error("Failed to launch Slicer: %s", e)

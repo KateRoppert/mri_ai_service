@@ -24,6 +24,7 @@ import {
   syncMasks,
   checkSlicerAgent,
   openInSlicer,
+  openInSlicerFromKappa,
 } from '../services/api';
 
 const { Text } = Typography;
@@ -98,7 +99,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
   // === Редактирование ===
 
   const handleEditClick = async () => {
-    if (!runId) {
+    if (!runId && !(entityId && datasetId)) {
       message.warning('Не удалось определить ID запуска');
       return;
     }
@@ -115,22 +116,24 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       return;
     }
 
-    // Открываем Slicer с выбранной маской
     await handleOpenInSlicer();
   };
 
   const handleOpenInSlicer = async () => {
-    if (!runId) {
-      message.warning('Не удалось определить ID запуска');
-      return;
-    }
     setSlicerOpening(true);
     setSlicerResult(null);
     try {
-      const result = await openInSlicer(runId, activeVersion, entityId);
+      let result;
+      if (runId) {
+        result = await openInSlicer(runId, activeVersion, entityId);
+      } else if (entityId && datasetId) {
+        result = await openInSlicerFromKappa(entityId, datasetId, activeVersion);
+      } else {
+        message.warning('Не удалось определить ID запуска');
+        return;
+      }
       setSlicerResult(result);
       message.success('3D Slicer открыт с данными пациента');
-      // Запускаем polling: проверяем, не появилась ли новая версия маски
       startSlicerPoll();
     } catch (err) {
       console.error('Ошибка запуска Slicer:', err);
@@ -307,7 +310,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         <Button
           icon={<EditOutlined />}
           onClick={handleEditClick}
-          disabled={!runId}
+          disabled={!runId && !(entityId && datasetId)}
           loading={slicerOpening}
         >
           Редактировать

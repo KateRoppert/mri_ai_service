@@ -1535,7 +1535,7 @@ async def upload_edited_mask(
     entity_id: str = Form(...),
     dataset_id: int = Form(...),
     session_id: str = Form(...),
-    run_id: str = Form(...),
+    run_id: str = Form(""),
     file: UploadFile = File(...),
 ):
     """
@@ -1565,48 +1565,64 @@ async def upload_edited_mask(
             detail="Файл должен быть в формате NIfTI (.nii.gz или .nii)",
         )
 
-    # 2. Определяем путь для сохранения — директория ИИ-маски пациента
-    ai_mask_dir = get_ai_mask_dir(entity_id)
-    if not ai_mask_dir:
-        # Fallback: берём из текущего run (для первого запуска)
-        from database import SessionLocal as DBSessionLocal, get_pipeline_run
-        from patient_registry import find_by_run_id
-        db = DBSessionLocal()
-        try:
-            run = get_pipeline_run(db, run_id)
-            if not run:
-                raise HTTPException(status_code=404, detail="Запуск не найден")
-            output_path = Path(run.output_path)
-        finally:
-            db.close()
+    # 2. Определяем путь для сохранения
+    from slicer_workspace import entity_cache_dir
 
-        records = find_by_run_id(run_id)
-        if not records:
-            raise HTTPException(status_code=404, detail="Нет связанных сущностей")
-        record = records[0]
-        bids_id = record.get("bids_id", "unknown")
-        sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
-        segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
+    cache_dir = entity_cache_dir(settings.slicer_cache_dir, entity_id)
+    if cache_dir.is_dir():
+        segmentation_dir = cache_dir
     else:
-        segmentation_dir = Path(ai_mask_dir)
+        ai_mask_dir = get_ai_mask_dir(entity_id)
+        if not ai_mask_dir:
+            # Fallback: берём из текущего run (для первого запуска)
+            from database import SessionLocal as DBSessionLocal, get_pipeline_run
+            from patient_registry import find_by_run_id
+            db = DBSessionLocal()
+            try:
+                run = get_pipeline_run(db, run_id)
+                if not run:
+                    raise HTTPException(status_code=404, detail="Запуск не найден")
+                output_path = Path(run.output_path)
+            finally:
+                db.close()
+
+            records = find_by_run_id(run_id)
+            if not records:
+                raise HTTPException(status_code=404, detail="Нет связанных сущностей")
+            record = records[0]
+            bids_id = record.get("bids_id", "unknown")
+            sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+            segmentation_dir = output_path / "segmentation" / sub / ses / "anat"
+        else:
+            segmentation_dir = Path(ai_mask_dir)
 
     segmentation_dir.mkdir(parents=True, exist_ok=True)
 
-    # Определяем номер версии — единый источник из БД
+    # Определяем номер версии — БД, но не ниже чем уже лежащие *_segmask_vN в папке
     next_version = get_next_version(entity_id)
+    import re as _re
+    disk_next = 1
+    for existing in segmentation_dir.glob("*_segmask_v*.nii.gz"):
+        m = _re.search(r"_segmask_v(\d+)\.nii\.gz$", existing.name)
+        if m:
+            disk_next = max(disk_next, int(m.group(1)) + 1)
+    next_version = max(next_version, disk_next)
 
-    # Имя файла: берём базу из ИИ-маски или формируем
+    # Имя файла: берём базу из ИИ-маски или versioned cache files
     original_masks = list(segmentation_dir.glob("*_segmask.nii.gz"))
     if original_masks:
         base_name = original_masks[0].name.replace(".nii.gz", "")
     else:
-        # Определяем bids_id для имени
-        from patient_registry import find_by_run_id
-        records = find_by_run_id(run_id) if not ai_mask_dir else []
-        if records:
-            bids_id = records[0].get("bids_id", "unknown")
-            sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
-        base_name = f"{sub}_{ses}_segmask" if 'sub' in dir() else "segmask"
+        versioned = list(segmentation_dir.glob("*_segmask_v*.nii.gz"))
+        if versioned:
+            base_name = _re.sub(r"_v\d+\.nii\.gz$", "", versioned[0].name)
+        else:
+            from patient_registry import find_by_run_id
+            records = find_by_run_id(run_id) if run_id else []
+            if records:
+                bids_id = records[0].get("bids_id", "unknown")
+                sub, ses = bids_id.split("_", 1) if "_" in bids_id else (bids_id, "ses-001")
+            base_name = f"{sub}_{ses}_segmask" if 'sub' in dir() else "segmask"
 
     versioned_name = f"{base_name}_v{next_version}.nii.gz"
     save_path = segmentation_dir / versioned_name
@@ -1851,6 +1867,71 @@ async def slicer_agent_status():
         return {"status": "error", "slicer_found": False}
     except Exception:
         return {"status": "unavailable", "slicer_found": False}
+
+
+@app.post("/api/slicer/open-from-kappa/{entity_id}")
+async def open_in_slicer_from_kappa(
+    entity_id: str,
+    dataset_id: int,
+    session_id: Optional[str] = None,
+    mask_version: Optional[int] = None,
+):
+    """Open Slicer from Kappa files (validation tab / expert host). No local run required."""
+    from kappa_auth import get_session
+    from slicer_workspace import MaskMissingError, materialize_from_kappa
+    import httpx
+
+    session = get_session(session_id) if session_id else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+
+    try:
+        workspace = await materialize_from_kappa(
+            session,
+            dataset_id=dataset_id,
+            entity_id=entity_id,
+            cache_root=settings.slicer_cache_dir,
+            requested_version=mask_version,
+        )
+    except MaskMissingError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    payload = {
+        "image_paths": workspace.image_paths,
+        "mask_path": workspace.mask_path,
+        "ai_masks": [],
+        "expert_masks": [],
+        "patient_id": workspace.patient_id,
+        "session_id": workspace.session_id,
+        "entity_id": entity_id,
+        "dataset_id": dataset_id,
+        "run_id": "",
+        "segmentation_dir": workspace.cache_dir,
+        "kappa_session_id": session_id or "",
+        "lesion_type": workspace.lesion_type,
+    }
+    logger.info(
+        "Slicer open-from-kappa: entity=%s mask=%s version=%s volumes=%d cache=%s",
+        entity_id, Path(workspace.mask_path).name, mask_version,
+        len(workspace.image_paths), workspace.cache_dir,
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(f"{SLICER_AGENT_URL}/open", json=payload)
+        if response.is_success:
+            return response.json()
+        detail = response.json().get("detail", "Ошибка агента")
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=503,
+            detail="Slicer Agent недоступен. Убедитесь, что slicer_agent.py запущен.",
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Slicer Agent не ответил вовремя")
 
 
 @app.post("/api/slicer/open/{run_id}")

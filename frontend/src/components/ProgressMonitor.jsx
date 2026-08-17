@@ -293,7 +293,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
         onClose={handleCloseVisualization}
         validationRef={validationRef}
         lesionType={lesionType}
-        onValidationRefChange={setValidationRef}
+        onValidationRefChange={(ref) => setValidationRef((prev) => ({ ...prev, ...ref }))}
       />
       <ClinicalReport
         runId={runId}
