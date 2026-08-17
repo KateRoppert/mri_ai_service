@@ -13,6 +13,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 import json
 import logging
+import signal
 import subprocess
 import uvicorn
 import os
@@ -157,6 +158,24 @@ pipeline_manager = PipelineManager()
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
 
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """
+    Kill the whole process group of a subprocess, not just the direct
+    child. orchestrator.py runs each pipeline stage as its own child
+    subprocess; process.kill() only signals the immediate orchestrator.py
+    process, leaving a currently-running stage subprocess orphaned and
+    still executing — invisible to the DB/UI — for however long it takes
+    to finish on its own (see KI-052 in KNOWN_ISSUES.md). Requires the
+    process to have been started with start_new_session=True so it has
+    its own group to kill (see PipelineManager.start_pipeline).
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        # Already exited on its own — nothing to kill.
+        pass
+
+
 def run_pipeline_background(
     run_id: str,
     input_path: str,
@@ -196,9 +215,12 @@ def run_pipeline_background(
         logger.error(f"Не удалось запустить pipeline для run_id: {run_id}")
         return
     
+    timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
+    logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
+
     # Ждём завершения процесса
     try:
-        stdout, stderr = process.communicate(timeout=settings.pipeline_timeout_seconds)
+        stdout, stderr = process.communicate(timeout=timeout)
         return_code = process.returncode
         
         if return_code == 0:
@@ -251,8 +273,8 @@ def run_pipeline_background(
     except subprocess.TimeoutExpired:
         # Таймаут
         logger.error(f"Таймаут выполнения pipeline для run_id: {run_id}")
-        process.kill()
-        
+        _kill_process_tree(process)
+
         update_pipeline_run(
             db,
             run_id,

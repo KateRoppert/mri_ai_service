@@ -156,6 +156,26 @@ class PipelineManager:
             logger.error(f"Ошибка создания выходной директории {output_path}: {e}")
             return False
     
+    def estimate_pipeline_timeout(self, input_path: str) -> int:
+        """
+        Estimate a generous timeout for the whole multi-stage pipeline,
+        scaled by how many patients are in the input directory — see
+        KI-052 in KNOWN_ISSUES.md. Counts non-hidden top-level
+        subdirectories, mirroring DatasetScanner.scan_dataset's own simple
+        patient-counting convention in scripts/01_reorganize_folders.py
+        (not imported here — that scanner also handles nested single-patient
+        layouts, which the backend doesn't need just to size a timeout).
+        """
+        path = Path(input_path)
+        if not path.is_dir():
+            return settings.pipeline_timeout_base_seconds
+
+        patient_count = sum(
+            1 for entry in path.iterdir()
+            if entry.is_dir() and not entry.name.startswith('.')
+        )
+        return settings.pipeline_timeout_base_seconds + settings.pipeline_timeout_per_patient_seconds * patient_count
+
     def start_pipeline(
         self,
         run_id: str,
@@ -206,7 +226,8 @@ class PipelineManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                cwd=str(self.pipeline_root)
+                cwd=str(self.pipeline_root),
+                start_new_session=True,  # own process group — see KI-052 / _kill_process_tree in app.py
             )
             
             logger.info(f"Pipeline запущен, PID: {process.pid}")
