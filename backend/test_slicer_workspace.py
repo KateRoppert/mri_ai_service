@@ -54,6 +54,38 @@ def test_select_mask_raises_when_only_native_or_labels():
         select_mask_filename(names, prediction_files=[])
 
 
+def test_select_mask_requested_version_picks_that_file_not_highest():
+    names = [
+        "sub-001_ses-001_t1_segmask.nii.gz",
+        "sub-001_ses-001_t1_segmask_v2.nii.gz",
+        "sub-001_ses-001_t1_segmask_v3.nii.gz",
+        "sub-001_ses-001_t1_segmask_native_t1.nii.gz",
+    ]
+    assert select_mask_filename(names, requested_version=2) == (
+        "sub-001_ses-001_t1_segmask_v2.nii.gz"
+    )
+
+
+def test_select_mask_requested_version_1_is_unversioned_ai_mask():
+    names = [
+        "sub-001_ses-001_t1_segmask.nii.gz",
+        "sub-001_ses-001_t1_segmask_v2.nii.gz",
+        "sub-001_ses-001_t1_segmask_v3.nii.gz",
+    ]
+    assert select_mask_filename(names, requested_version=1) == (
+        "sub-001_ses-001_t1_segmask.nii.gz"
+    )
+
+
+def test_select_mask_requested_version_missing_raises():
+    names = [
+        "sub-001_ses-001_t1_segmask.nii.gz",
+        "sub-001_ses-001_t1_segmask_v2.nii.gz",
+    ]
+    with pytest.raises(MaskMissingError, match="версии 5"):
+        select_mask_filename(names, requested_version=5)
+
+
 def test_parse_bids_id_splits_patient_and_session():
     assert parse_bids_id("sub-001_ses-002") == ("sub-001", "ses-002")
 
@@ -114,6 +146,32 @@ def test_materialize_downloads_volumes_and_highest_versioned_mask(tmp_path):
     assert "json-1" not in downloads
     assert "mask-v2" in downloads
     assert "mask-ai" not in downloads
+
+
+def test_materialize_requested_version_downloads_that_mask_not_highest(tmp_path):
+    session = {"kappa_token": "t", "user_id": 1, "user_type_id": 2}
+    downloads = []
+
+    async def fake_download(token, user_id, user_type_id, dataset_id, file_id):
+        downloads.append(file_id)
+        return f"data-{file_id}".encode()
+
+    async def _run():
+        with patch("slicer_workspace.get_entity_details", new=AsyncMock(return_value=_entity_details())), \
+             patch("slicer_workspace.download_entity_file", new=fake_download):
+            ws = await materialize_from_kappa(
+                session,
+                dataset_id=158,
+                entity_id="ent-1",
+                cache_root=tmp_path,
+                requested_version=1,
+            )
+        return ws
+
+    ws = asyncio.run(_run())
+    assert Path(ws.mask_path).name == "sub-001_ses-002_t1_segmask.nii.gz"
+    assert "mask-ai" in downloads
+    assert "mask-v2" not in downloads
 
 
 def test_materialize_skips_download_when_cache_size_matches(tmp_path):

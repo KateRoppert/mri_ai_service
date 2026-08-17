@@ -127,7 +127,7 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
       if (runId) {
         result = await openInSlicer(runId, activeVersion, entityId);
       } else if (entityId && datasetId) {
-        result = await openInSlicerFromKappa(entityId, datasetId);
+        result = await openInSlicerFromKappa(entityId, datasetId, activeVersion);
       } else {
         message.warning('Не удалось определить ID запуска');
         return;

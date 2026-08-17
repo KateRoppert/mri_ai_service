@@ -47,13 +47,35 @@ def _is_atlas_segmask(name: str) -> bool:
 def select_mask_filename(
     file_names: Sequence[str],
     prediction_files: Optional[Iterable[str]] = None,
+    requested_version: Optional[int] = None,
 ) -> str:
     atlas = [n for n in file_names if _is_atlas_segmask(n)]
     versioned: List[Tuple[int, str]] = []
+    unversioned: List[str] = []
     for name in atlas:
         match = _VERSIONED_SEGMASK.search(name)
         if match:
             versioned.append((int(match.group(1)), name))
+        else:
+            unversioned.append(name)
+
+    if requested_version is not None:
+        if requested_version == 1:
+            predictions = list(prediction_files or [])
+            for name in predictions:
+                if name in unversioned:
+                    return name
+            if unversioned:
+                return unversioned[0]
+            for ver, name in versioned:
+                if ver == 1:
+                    return name
+            raise MaskMissingError("в сущности нет маски версии 1")
+        for ver, name in versioned:
+            if ver == requested_version:
+                return name
+        raise MaskMissingError(f"в сущности нет маски версии {requested_version}")
+
     if versioned:
         versioned.sort(key=lambda item: item[0])
         return versioned[-1][1]
@@ -84,6 +106,7 @@ async def materialize_from_kappa(
     dataset_id: int,
     entity_id: str,
     cache_root: Path,
+    requested_version: Optional[int] = None,
 ) -> SlicerWorkspace:
     details = await get_entity_details(
         token=session["kappa_token"],
@@ -106,7 +129,11 @@ async def materialize_from_kappa(
     by_name = {f.get("fileName"): f for f in files if f.get("fileName")}
     data_files = list(info.get("data_files") or [])
     prediction_files = list(info.get("prediction_files") or [])
-    mask_name = select_mask_filename(list(by_name.keys()), prediction_files=prediction_files)
+    mask_name = select_mask_filename(
+        list(by_name.keys()),
+        prediction_files=prediction_files,
+        requested_version=requested_version,
+    )
 
     wanted = list(data_files) + [mask_name]
     cache_dir = entity_cache_dir(cache_root, entity_id)

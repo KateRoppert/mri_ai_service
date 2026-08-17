@@ -20,7 +20,6 @@ From the validation tab, «Редактировать» downloads the entity’s
 
 - Content-aware Kappa update on repeat pipeline runs (KI-035). Separate spec.
 - Changing clinical-tab `POST /api/slicer/open/{run_id}` (still local disk).
-- Rebuilding the mask-version picker from Kappa file lists (expert machine has empty `mask_versions`). This pass opens the **current** Kappa mask only.
 - Native-space files, `*_segmask_labels.nii.gz`, JSON reports — not sent to Slicer.
 - Multi-center `kappa_datasets.yaml` key `(lesion_type × center)`.
 - Cache GC / TTL. Cache may grow; operator can delete `slicer_cache/`.
@@ -74,7 +73,7 @@ Always use Kappa as the file list; ignore local `mask_versions` for this path.
 New endpoint, not an overload of `open/{run_id}`:
 
 ```
-POST /api/slicer/open-from-kappa/{entity_id}?session_id=&dataset_id=
+POST /api/slicer/open-from-kappa/{entity_id}?session_id=&dataset_id=&mask_version=
 ```
 
 - 401 if Kappa session missing.
@@ -90,7 +89,7 @@ Clinical `POST /api/slicer/open/{run_id}` is not modified.
 
 ### Frontend
 
-If `entityId` and `datasetId` are set (validation tab always has them), call `openInSlicerFromKappa(entityId, datasetId)` — do not require `runId`, do not send `selected_mask_version` from local DB.
+If `entityId` and `datasetId` are set (validation tab always has them), call `openInSlicerFromKappa(entityId, datasetId, activeVersion)` — do not require `runId`. `mask_version` is the version selected in «История версий» (same integer as NiiVue): `1` → unversioned `*_segmask.nii.gz` (AI), `N≥2` → `*_segmask_vN.nii.gz`. Missing file → 404, no fallback to the latest mask. Without `mask_version`, materialize still picks the highest `vN` (or the prediction file).
 
 Clinical viewer still passes `runId` and keeps using `openInSlicer(runId, …)`.
 
@@ -103,7 +102,7 @@ Clinical viewer still passes `runId` and keeps using `openInSlicer(runId, …)`.
 
 Then existing `replace_entity_file` + `register_expert_mask`.
 
-Slicer Agent: relax upload-button guard to `entity_id` only (`run_id` not required when `segmentation_dir` + `entity_id` + `dataset_id` are set). Backend must not 404 on missing run when cache dir exists.
+Slicer Agent: relax upload-button guard to `entity_id` only (`run_id` not required when `segmentation_dir` + `entity_id` + `dataset_id` are set). Backend must not 404 on missing run when cache dir exists. Slicer process stdout/stderr go to `{tmp}/slicer_agent_{patient}_{agent_pid}.log` (not DEVNULL); path is in the agent log and in the `/open` JSON as `log_path`.
 
 ### Errors
 
@@ -116,7 +115,7 @@ Slicer Agent: relax upload-button guard to `entity_id` only (`run_id` not requir
 
 Pytest, mocks, no live Kappa.
 
-- `materialize_from_kappa`: writes volumes + highest `vN` mask; skips `_native_` / `_labels`; 404 when no mask.
+- `materialize_from_kappa`: writes volumes + requested (or highest `vN`) mask; skips `_native_` / `_labels`; 404 when no mask.
 - Cache hit: matching size → no second download.
 - `open-from-kappa` builds agent payload with cache paths; `mask_path` non-empty.
 - `upload-mask` with empty `run_id` and populated cache dir saves under cache and still calls `replace_entity_file` (mocked).

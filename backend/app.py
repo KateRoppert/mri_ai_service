@@ -1835,6 +1835,7 @@ async def open_in_slicer_from_kappa(
     entity_id: str,
     dataset_id: int,
     session_id: Optional[str] = None,
+    mask_version: Optional[int] = None,
 ):
     """Open Slicer from Kappa files (validation tab / expert host). No local run required."""
     from kappa_auth import get_session
@@ -1851,6 +1852,7 @@ async def open_in_slicer_from_kappa(
             dataset_id=dataset_id,
             entity_id=entity_id,
             cache_root=settings.slicer_cache_dir,
+            requested_version=mask_version,
         )
     except MaskMissingError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1872,8 +1874,9 @@ async def open_in_slicer_from_kappa(
         "lesion_type": workspace.lesion_type,
     }
     logger.info(
-        "Slicer open-from-kappa: entity=%s mask=%s volumes=%d cache=%s",
-        entity_id, Path(workspace.mask_path).name, len(workspace.image_paths), workspace.cache_dir,
+        "Slicer open-from-kappa: entity=%s mask=%s version=%s volumes=%d cache=%s",
+        entity_id, Path(workspace.mask_path).name, mask_version,
+        len(workspace.image_paths), workspace.cache_dir,
     )
 
     try:
