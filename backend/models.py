@@ -189,6 +189,20 @@ class MergeSessionsResponse(BaseModel):
     donor_session_id: str = Field(..., description="ID сессии-донора")
     pulled_series: int = Field(..., description="Сколько новых серий добавлено в excluded_series основной сессии")
 
+
+class PipelineLoss(BaseModel):
+    """Один потерянный пациент/сессия на одном из этапов пайплайна"""
+    stage: str = Field(..., description="Этап пайплайна, на котором пациент был потерян")
+    patient_id: str = Field(..., description="ID пациента, как его сообщает данный этап (формат может отличаться между этапами)")
+    session_id: str = Field(..., description="ID сессии")
+    reason: str = Field(..., description="Причина потери, как её описывает данный этап")
+
+
+class PipelineLossesResponse(BaseModel):
+    """Агрегированный отчёт о пациентах, потерянных на любом этапе пайплайна"""
+    total: int = Field(..., description="Количество потерянных пациентов/сессий по всем этапам")
+    losses: List[PipelineLoss] = Field(..., description="Список потерь")
+
 # ============================================
 # МОДЕЛИ ДЛЯ ЗАПУСКА PIPELINE
 # ============================================

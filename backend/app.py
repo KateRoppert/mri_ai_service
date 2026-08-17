@@ -65,6 +65,7 @@ from models import (
     DiscardSessionResponse,
     MergeSessionsRequest,
     MergeSessionsResponse,
+    PipelineLossesResponse,
 )
 from database import (
     get_db,
@@ -1034,6 +1035,19 @@ async def merge_sessions(
         f"основная {request.primary_session_id} (run_id={run_id})"
     )
     return MergeSessionsResponse(**result)
+
+@app.get("/api/pipeline-runs/{run_id}/losses", response_model=PipelineLossesResponse)
+async def get_pipeline_losses(
+    run_id: str,
+    db: Session = Depends(get_db)
+):
+    """Агрегированный отчёт о пациентах, потерянных на любом этапе пайплайна (KI-054)"""
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    losses = pipeline_manager.get_pipeline_losses(run.output_path)
+    return PipelineLossesResponse(total=len(losses), losses=losses)
 
 @app.get("/api/lesion-stats/{run_id}", response_model=LesionStatsListResponse)
 async def get_lesion_stats(

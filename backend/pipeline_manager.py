@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 _BIDS_PATIENT_ID_PATTERN = re.compile(r'^sub-\d+$')
 _BIDS_SESSION_ID_PATTERN = re.compile(r'^ses-\d+$')
 
+# Per-stage "who got lost and why" reports — already written by stages
+# 01/03/04/05/06 into their own output directories, but never read by
+# anything (KI-054 in KNOWN_ISSUES.md). Stages 07/08 don't write this
+# report yet — not covered here.
+_LOSS_REPORT_FILES = [
+    ("01_reorganize", "bids_organized/incomplete_data/01_reorganize_folders_incomplete_data.json"),
+    ("03_convert", "nifti/incomplete_data/03_convert_to_nifti_incomplete_data.json"),
+    ("04_quality", "quality_reports/incomplete_data/04_assess_quality_incomplete_data.json"),
+    ("05_preprocessing", "preprocessed/incomplete_data/preprocessing_incomplete_data.json"),
+    ("06_segmentation", "segmentation/incomplete_data/segmentation_incomplete_data.json"),
+]
+
 
 class PipelineManager:
     """Менеджер для запуска и управления pipeline"""
@@ -643,6 +655,60 @@ class PipelineManager:
                 json.dump(mapping_data, f, indent=2, ensure_ascii=False)
 
         return results
+
+    def get_pipeline_losses(self, output_path: str) -> List[Dict[str, Any]]:
+        """
+        Aggregate the per-stage {stage}_incomplete_data.json reports that
+        stages 01/03/04/05/06 already write into their own output
+        directories, into one flat "who got lost, at which stage, and why"
+        list for the doctor (KI-054 in KNOWN_ISSUES.md). Stages 07/08
+        don't write this report yet — a known gap, not covered here.
+
+        Each stage's report uses a different shape (patient_id sometimes
+        BIDS-style "sub-XXX", sometimes the bare original id; the "why" is
+        sometimes an explicit reason string, sometimes only missing/
+        available modality lists) — this reports each entry exactly as
+        that stage describes it, without cross-referencing identities
+        across stages.
+        """
+        losses: List[Dict[str, Any]] = []
+        base = Path(output_path)
+
+        for stage_label, relative_path in _LOSS_REPORT_FILES:
+            report_file = base / relative_path
+            if not report_file.exists():
+                continue
+            try:
+                with open(report_file, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            for patient_entry in report.get('incomplete_data', []):
+                patient_id = patient_entry.get('patient_id', '')
+                for session_entry in patient_entry.get('incomplete_sessions', []):
+                    losses.append({
+                        "stage": stage_label,
+                        "patient_id": patient_id,
+                        "session_id": session_entry.get('session_id', ''),
+                        "reason": self._describe_loss_reason(session_entry),
+                    })
+
+        return losses
+
+    @staticmethod
+    def _describe_loss_reason(session_entry: Dict[str, Any]) -> str:
+        """Build a human-readable reason string from whichever fields a
+        given stage's incomplete_data.json entry happens to carry."""
+        reason = session_entry.get('reason')
+        missing = session_entry.get('missing_in_output') or session_entry.get('missing')
+        if reason and missing:
+            return f"{reason} (нет: {', '.join(missing)})"
+        if reason:
+            return reason
+        if missing:
+            return f"не хватает модальностей: {', '.join(missing)}"
+        return "причина не указана в отчёте этапа"
 
     def discard_session(self, output_path: str, patient_id: str, session_id: str) -> None:
         """Mark a session as intentionally skipped by the doctor. Still
