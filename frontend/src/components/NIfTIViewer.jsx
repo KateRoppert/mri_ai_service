@@ -99,7 +99,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   useEffect(() => {
     if (runId) {
       setResolvedRunId(runId);
-    } else if (visible && validationRef?.entity_id && !runId) {
+    } else if (visible && validationRef?.entity_id && !runId && !customFiles) {
       getEntityRunInfo(validationRef.entity_id)
         .then((info) => {
           setResolvedRunId(info.run_id || null);
@@ -109,7 +109,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
           setResolvedRunId(null);
         });
     }
-  }, [runId, visible, validationRef]);
+  }, [runId, visible, validationRef, customFiles]);
 
 
   /**

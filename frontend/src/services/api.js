@@ -224,7 +224,7 @@ export const checkSlicerAgent = async () => {
 };
 
 /**
- * Открыть данные пациента в 3D Slicer
+ * Открыть данные пациента в 3D Slicer с локального run (вкладка запуска)
  */
 export const openInSlicer = async (runId, selectedMaskVersion = null, entityId = null) => {
   const sessionId = localStorage.getItem('kappa_session_id');
@@ -236,6 +236,17 @@ export const openInSlicer = async (runId, selectedMaskVersion = null, entityId =
     url += `&entity_id=${encodeURIComponent(entityId)}`;
   }
   const response = await apiClient.post(url);
+  return response.data;
+};
+
+/**
+ * Открыть Slicer из файлов Kappa (вкладка валидации / отдельное развёртывание эксперта)
+ */
+export const openInSlicerFromKappa = async (entityId, datasetId) => {
+  const sessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.post(
+    `/slicer/open-from-kappa/${encodeURIComponent(entityId)}?session_id=${sessionId}&dataset_id=${datasetId}`
+  );
   return response.data;
 };
 
@@ -396,6 +407,7 @@ export default {
   getEntitiesForRun,
   checkSlicerAgent,
   openInSlicer,
+  openInSlicerFromKappa,
   getEntityRunInfo,
   getIncompletePatients,
   relabelSeries,

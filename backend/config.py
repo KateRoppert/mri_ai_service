@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # без риска подменить bind-mount отсутствующего файла директорией.
     database_url: str = f"sqlite:////app/backend/data/brain_lesion.db"
     
+    # Host-absolute cache for Slicer (must be the same path in Docker and on the host).
+    # Override with SLICER_CACHE_DIR in docker-compose.
+    slicer_cache_dir: Path = Path(__file__).resolve().parent / "data" / "slicer_cache"
+    
     # Pipeline
     pipeline_root: Path = Path(__file__).parent.parent.resolve()
     pipeline_config_template: str = "pipeline_config.yaml"

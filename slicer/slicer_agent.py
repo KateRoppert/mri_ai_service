@@ -383,8 +383,8 @@ def _add_upload_button(params, seg_node):
     segmentation_dir = params.get("segmentation_dir", "")
     patient_id = params.get("patient_id", "")
     
-    if not entity_id or not run_id:
-        print("  Warning: no entity_id/run_id, upload button disabled")
+    if not entity_id:
+        print("  Warning: no entity_id, upload button disabled")
         return
     
     def _do_save_and_upload():
