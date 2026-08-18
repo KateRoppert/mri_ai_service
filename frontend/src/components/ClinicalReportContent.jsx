@@ -401,10 +401,10 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
   ];
 
   const classColors = {
-    1: '#ff4d4f',
-    2: '#52c41a',
+    1: '#52c41a',
+    2: '#faad14',
     3: '#faad14',
-    4: '#1890ff',
+    4: '#ff4d4f',
   };
 
   const lobarColumns = [

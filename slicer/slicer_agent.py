@@ -297,10 +297,10 @@ def _load_patient_data():
             else:
                 # Глио: 4 класса
                 segment_config = {{
-                    1: ("NCR", (1.0, 0.0, 0.0)),      # красный
-                    2: ("ED",  (0.0, 0.8, 0.0)),       # зелёный
+                    1: ("NCR", (0.0, 0.8, 0.0)),      # зелёный
+                    2: ("ED",  (1.0, 1.0, 0.0)),       # жёлтый
                     3: ("NET", (1.0, 1.0, 0.0)),        # жёлтый
-                    4: ("ET",  (0.0, 0.0, 1.0)),        # синий
+                    4: ("ET",  (1.0, 0.0, 0.0)),        # красный
                 }}
             segmentation = seg_node.GetSegmentation()
             num_segments = segmentation.GetNumberOfSegments()
