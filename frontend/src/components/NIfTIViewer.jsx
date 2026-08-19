@@ -12,7 +12,7 @@ import {
   EnvironmentOutlined 
 } from '@ant-design/icons';
 import { Niivue } from '@niivue/niivue';
-import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl, getEntityRunInfo, getMaskFileUrl } from '../services/api';
+import { getNIfTIFiles, getNIfTIFileUrl, getLobarAtlasUrl, getEntityRunInfo, getMaskFileUrl, getActiveSegmentationModel } from '../services/api';
 import ValidationActions from './ValidationActions';
 import ClinicalReportContent from './ClinicalReportContent';
 
@@ -88,9 +88,22 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
   const [activeMaskLabel, setActiveMaskLabel] = useState(null); // для отображения выбранной версии
   // Tooltip: per-lesion volume shown when cursor hovers a labeled voxel (MS only)
   const [hoverVolume, setHoverVolume] = useState(null); // { cm3: number } | null
+  // Class semantics of the segmentation model currently loaded in the service.
+  // Labels are canonical, but what a label *contains* is model-specific — the
+  // region model merges necrosis with non-enhancing tumour into label 1.
+  const [modelClasses, setModelClasses] = useState(null);
 
   // Keep the ref in sync so niivue's onLocationChange reads the latest file.
   useEffect(() => { selectedFileRef.current = selectedFile; }, [selectedFile]);
+
+  // Ask the service what its active model's classes mean, so the legend
+  // describes the model that actually produced the mask on screen.
+  useEffect(() => {
+    if (!visible || lesionType === 'multiple_sclerosis') return;
+    getActiveSegmentationModel(lesionType)
+      .then((info) => setModelClasses(info?.active_model || null))
+      .catch(() => setModelClasses(null)); // legend falls back to defaults
+  }, [visible, lesionType]);
 
   /**
    * Резолвим runId: если передан напрямую — используем,
@@ -740,11 +753,20 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
                 Как управлять?
               </Button>
             </Popover>
-            {/* Легенда цветов сегментации — зависит от типа поражения */}
+            {/* Легенда цветов сегментации — зависит от типа поражения, а для
+                глио ещё и от активной модели: region-модель не разделяет некроз
+                и неусиливающуюся часть, они попадают в один (зелёный) класс,
+                поэтому жёлтый у неё — только отёк. */}
             <Space size="large" style={{ fontSize: 13 }}>
               {(lesionType === 'multiple_sclerosis'
                 ? [
                     { color: 'rgb(82, 196, 26)', label: 'Очаги РС' },
+                  ]
+                : modelClasses?.merged_ncr_net
+                ? [
+                    { color: 'rgb(0, 255, 0)', label: 'Некроз + неусиливающаяся опухоль (NCR/NET)' },
+                    { color: 'rgb(255, 255, 0)', label: 'Отёк (ED)' },
+                    { color: 'rgb(255, 0, 0)', label: 'Усиливающаяся опухоль (ET)' },
                   ]
                 : [
                     { color: 'rgb(0, 255, 0)', label: 'Некротическое ядро (NCR)' },

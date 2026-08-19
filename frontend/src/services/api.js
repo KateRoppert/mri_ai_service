@@ -146,6 +146,18 @@ export const getLesionTypes = async () => {
 };
 
 /**
+ * Активная модель сегментации и семантика её классов.
+ * Нужна для подписей легенды: разные модели по-разному делят классы
+ * (например, region-модель не отделяет некроз от неусиливающейся части).
+ */
+export const getActiveSegmentationModel = async (lesionType = 'glioblastoma') => {
+  const response = await apiClient.get(
+    `/segmentation/active-model?lesion_type=${encodeURIComponent(lesionType)}`
+  );
+  return response.data;
+};
+
+/**
  * Получить список сущностей датасета валидации
  */
 export const getValidationEntities = async (datasetId) => {
@@ -410,6 +422,7 @@ export default {
   getNIfTIFiles,
   getNIfTIFileUrl,
   getLesionTypes,
+  getActiveSegmentationModel,
   getValidationEntities,
   getValidationFileUrl,
   validationAction,

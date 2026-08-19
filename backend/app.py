@@ -1393,6 +1393,46 @@ async def get_lesion_types_endpoint():
     """Список доступных типов поражений"""
     return get_lesion_types()
 
+
+@app.get("/api/segmentation/active-model")
+async def get_active_segmentation_model(lesion_type: str = "glioblastoma"):
+    """
+    Какая модель сейчас активна в сегментационном сервисе и что означают
+    её классы. Нужен визуализатору: подписи легенды зависят от модели
+    (например, region-модель не разделяет некроз и неусиливающуюся часть,
+    и обе попадают в один класс).
+
+    Не влияет на пайплайн — только на отображение. Если сервис недоступен,
+    возвращаем пустое описание, и фронт использует подписи по умолчанию.
+    """
+    import httpx
+    import yaml as _yaml
+
+    registry_path = Path(__file__).parent.parent / "configs" / "services.yaml"
+    try:
+        with open(registry_path, encoding="utf-8") as f:
+            registry = (_yaml.safe_load(f) or {}).get("services", {})
+        service = registry.get(lesion_type) or {}
+        url = service.get("url")
+        if not url:
+            return {"available": False, "reason": f"no service for {lesion_type}"}
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{url}/health")
+        if not response.is_success:
+            return {"available": False, "reason": f"service returned {response.status_code}"}
+
+        health = response.json()
+        return {
+            "available": True,
+            "service_id": health.get("service_id"),
+            "status": health.get("status"),
+            "active_model": health.get("active_model") or {},
+        }
+    except Exception as e:
+        logger.warning("Не удалось получить активную модель для %s: %s", lesion_type, e)
+        return {"available": False, "reason": str(e)}
+
 # ============================================
 # VALIDATION ENDPOINTS
 # ============================================

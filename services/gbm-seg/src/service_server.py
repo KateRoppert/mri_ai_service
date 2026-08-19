@@ -2,13 +2,14 @@
 """
 GBM segmentation service.
 
-Concrete service for glioblastoma segmentation using nnUNet v1
-(Task115_AllData5foldsMeta). Inherits the HTTP/queue/GPU infrastructure
-from common.service_base.ServiceBase and implements only:
+Concrete service for glioblastoma segmentation, running whichever model
+preset is active in server_config.yaml (nnUNet v1 or nnUNet v2 — see
+model_selection.py). Inherits the HTTP/queue/GPU infrastructure from
+common.service_base.ServiceBase and implements only:
 
-    load_model()         — verifies weights are mounted and accessible
-    run_inference()      — runs nnUNet v1 inference on requested files
-    
+    load_model()         — verifies the active preset's weights are mounted
+    run_inference()      — runs inference on requested files
+
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import yaml
 from quart import jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 import aiofiles
@@ -56,6 +56,16 @@ from common.torch_compat import enable_legacy_checkpoint_loading
 enable_legacy_checkpoint_loading()
 
 
+from model_selection import (
+    build_v2_model_folder as _build_v2_model_folder,
+    get_label_map as _get_label_map,
+    load_server_config as _load_server_config_file,
+    resolve_active_model as _resolve_active_model,
+    resolve_channel_order as _resolve_channel_order,
+    v1_base_path as _v1_base_path,
+)
+
+
 def _load_server_config() -> dict[str, Any]:
     """Load server_config.yaml from the script directory or SERVER_CONFIG env var."""
     config_path = os.getenv("SERVER_CONFIG")
@@ -63,15 +73,11 @@ def _load_server_config() -> dict[str, Any]:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(script_dir, "server_config.yaml")
 
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            return data.get("server", {})
-        except Exception as e:
-            print(f"WARNING: failed to load {config_path}: {e}")
+    config = _load_server_config_file(config_path)
+    if config:
+        return config
 
-    # Fallback defaults
+    # Fallback defaults (legacy flat v1 config, no presets)
     return {
         "nnunet_path": "/app/nnUNet",
         "nnunet_models": "/app/nnUNetv1_data",
@@ -85,6 +91,7 @@ def _load_server_config() -> dict[str, Any]:
 
 
 _server_config = _load_server_config()
+_active_model_name, _active_model = _resolve_active_model(_server_config)
 
 # nnUNet v1 import path + RESULTS_FOLDER env var must be set before importing
 # the inference module
@@ -92,10 +99,17 @@ _nnunet_path = _server_config.get("nnunet_path", "/app/nnUNet")
 if _nnunet_path not in sys.path:
     sys.path.insert(0, _nnunet_path)
 
-_nnunet_v1_base = _server_config.get("nnunet_models", "/app/nnUNetv1_data")
+_nnunet_v1_base = _v1_base_path(_server_config)
 os.environ["nnUNet_raw_data_base"] = os.path.join(_nnunet_v1_base, "nnUNet_raw")
 os.environ["nnUNet_preprocessed"] = os.path.join(_nnunet_v1_base, "nnUNet_preprocessed")
 os.environ["RESULTS_FOLDER"] = _nnunet_v1_base
+
+# nnUNet v2 custom trainer classes (e.g. nnUNetTrainerSegResNet) aren't part
+# of the base nnunetv2 package — they live here so nnUNet v2's
+# recursive_find_trainer_class_by_name() can discover them via nnUNet_extTrainer.
+os.environ["nnUNet_extTrainer"] = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "external_trainers"
+)
 
 # TMP directory used by run_inference for nnUNet-convention staging
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,13 +121,14 @@ os.makedirs(_TMP_DIR, exist_ok=True)
 # nnUNet v1 inference wrapper
 # ============================================================================
 
-def _prepare_files_for_unet(files: dict[str, str], prefix: str) -> tuple[str, str]:
+def _prepare_files_for_unet(files: dict[str, str], prefix: str,
+                            channel_order: list[str]) -> tuple[str, str]:
     """
-    Rename four modality files into nnUNet v1 convention:
-        prefix_0000.nii.gz  (T1)
-        prefix_0001.nii.gz  (T1c)
-        prefix_0002.nii.gz  (T2)
-        prefix_0003.nii.gz  (T2-FLAIR)
+    Stage the modality files under nnUNet's naming convention, placing each
+    modality on the channel index the active model expects:
+        prefix_0000.nii.gz  <- channel_order[0]
+        prefix_0001.nii.gz  <- channel_order[1]
+        ...
     Returns (input_folder, output_folder) inside TMP_DIR.
     """
     rnd_suffix = hashlib.sha1(os.urandom(512)).hexdigest()[:10]
@@ -124,12 +139,39 @@ def _prepare_files_for_unet(files: dict[str, str], prefix: str) -> tuple[str, st
     os.mkdir(in_path)
     os.mkdir(out_path)
 
-    shutil.move(files["t1"],   os.path.join(in_path, f"{prefix}0000.nii.gz"))
-    shutil.move(files["t1c"],  os.path.join(in_path, f"{prefix}0001.nii.gz"))
-    shutil.move(files["t2"],   os.path.join(in_path, f"{prefix}0002.nii.gz"))
-    shutil.move(files["t2fl"], os.path.join(in_path, f"{prefix}0003.nii.gz"))
+    for idx, modality in enumerate(channel_order):
+        shutil.move(files[modality], os.path.join(in_path, f"{prefix}{idx:04d}.nii.gz"))
 
     return in_path, out_path
+
+
+def _apply_label_map(mask_path: Path, label_map: dict[int, int]) -> dict[str, int]:
+    """
+    Rewrite a mask's raw model labels into the pipeline's canonical scheme
+    in place. No-op when label_map is empty (model already canonical).
+
+    Returns the canonical label histogram, for logging.
+    """
+    import SimpleITK as sitk
+    import numpy as np
+
+    img = sitk.ReadImage(str(mask_path))
+    arr = sitk.GetArrayFromImage(img)
+
+    if label_map:
+        # Build into a fresh array so overlapping source/target labels
+        # (e.g. 3->4 while 1->1) cannot clobber each other mid-remap.
+        remapped = np.zeros_like(arr)
+        for raw, canonical in label_map.items():
+            remapped[arr == raw] = canonical
+        arr = remapped
+
+        out = sitk.GetImageFromArray(arr)
+        out.CopyInformation(img)
+        sitk.WriteImage(out, str(mask_path))
+
+    values, counts = np.unique(arr[arr > 0], return_counts=True)
+    return {int(v): int(c) for v, c in zip(values, counts)}
 
 
 def _run_nnunet_sync(gpu_id: int,
@@ -148,6 +190,35 @@ def _run_nnunet_sync(gpu_id: int,
     return nnUNet_inference.predict_for_api(
         in_path, out_path, use_tta, folds, task_name
     )
+
+
+def _run_nnunetv2_sync(gpu_id: int,
+                       in_path: str,
+                       out_path: str,
+                       use_tta: bool,
+                       folds: tuple[int, ...],
+                       model_folder: str,
+                       checkpoint: str) -> str:
+    """
+    Synchronous nnUNet v2 call — mirrors _run_nnunet_sync. Must run inside a
+    thread executor for the same reason (sets CUDA device for the calling
+    thread before invoking prediction).
+    """
+    torch.cuda.set_device(gpu_id)
+    import nnUNetv2_inference
+    result = nnUNetv2_inference.predict_for_api(
+        in_path, out_path, use_tta, folds, model_folder, checkpoint
+    )
+    # nnUNetPredictor's own CUDA context/allocator state can still be
+    # settling when predict_from_files returns — the multiprocess
+    # preprocessing/export workers it spawns tear down asynchronously.
+    # Force a synchronous release before the GPU token goes back in the
+    # pool, so the next queued job doesn't start on top of memory nnUNet
+    # hasn't actually freed yet (observed: back-to-back jobs with zero gap
+    # crash the whole process with no Python-level error).
+    torch.cuda.synchronize(gpu_id)
+    torch.cuda.empty_cache()
+    return result
 
 
 # ============================================================================
@@ -169,14 +240,63 @@ class GbmSegService(ServiceBase):
     def __init__(self) -> None:
         gpu_ids = _server_config.get("gpu_ids", [0])
         super().__init__(gpu_ids=gpu_ids)
-        self._task_name = _server_config.get("task_name", "Task115_AllData5foldsMeta")
+        self._model_preset_name = _active_model_name
+        self._model = _active_model
+        self._framework = self._model.get("framework", "nnunetv1")
+        self._default_folds = tuple(self._model.get("folds", [0, 1, 2, 3, 4]))
+        # Raw model labels -> the pipeline's canonical 1=NCR/2=ED/3=NET/4=ET.
+        # Empty for a model that is already canonical (the v1 preset).
+        self._label_map = _get_label_map(self._model)
+        # Filled in load_model(): which modality goes on which input channel.
+        self._channel_order: list[str] = []
+        if self._framework == "nnunetv2":
+            self._model_folder = _build_v2_model_folder(self._model)
+            self._checkpoint = self._model.get("checkpoint", "checkpoint_final.pth")
+        else:
+            self._task_name = self._model.get("task_name", "Task115_AllData5foldsMeta")
 
     # -----------------------------------------------------------------------
     # Abstract methods from ServiceBase
     # -----------------------------------------------------------------------
 
     async def load_model(self) -> None:
-        """Verify model weights are accessible. nnUNet v1 loads lazily per call."""
+        """Verify model weights are accessible for the active preset."""
+        if self._framework == "nnunetv2":
+            if not os.path.isdir(self._model_folder):
+                raise FileNotFoundError(
+                    f"nnUNet v2 weights not found at {self._model_folder}. "
+                    "Is the nnUNetv2_data volume mounted correctly?"
+                )
+            folds = [f for f in os.listdir(self._model_folder) if f.startswith("fold_")]
+            if not folds:
+                raise FileNotFoundError(f"No fold_* directories under {self._model_folder}")
+            missing = [
+                f for f in sorted(folds)
+                if not os.path.isfile(os.path.join(self._model_folder, f, self._checkpoint))
+            ]
+            if missing:
+                raise FileNotFoundError(
+                    f"Checkpoint {self._checkpoint} missing in folds: {missing}"
+                )
+            self.log.info("model preset=%s: found %d fold(s) at %s (checkpoint=%s)",
+                          self._model_preset_name, len(folds), self._model_folder,
+                          self._checkpoint)
+
+            # Channel order comes from the model's own dataset.json — the
+            # model is the authority on which modality it expects where.
+            import json
+            dataset_json_path = os.path.join(self._model_folder, "dataset.json")
+            dataset_json = None
+            if os.path.isfile(dataset_json_path):
+                with open(dataset_json_path, encoding="utf-8") as f:
+                    dataset_json = json.load(f)
+            self._channel_order = _resolve_channel_order(self._model, dataset_json)
+            self.log.info("model preset=%s: input channel order %s | label_map %s",
+                          self._model_preset_name, self._channel_order,
+                          self._label_map or "identity (already canonical)")
+            return
+
+        # nnUNet v1: loads lazily per call, just verify weights are on disk.
         task_path = os.path.join(
             os.environ["RESULTS_FOLDER"],
             "nnUNet", "3d_fullres",
@@ -193,12 +313,44 @@ class GbmSegService(ServiceBase):
         if not folds:
             raise FileNotFoundError(f"No fold_* directories under {task_path}")
 
-        self.log.info("found %d fold(s) for task %s: %s",
-                      len(folds), self._task_name, sorted(folds))
+        # v1 has no dataset.json — order comes from the preset (or the
+        # historical default), preserving this model's original behaviour.
+        self._channel_order = _resolve_channel_order(self._model, None)
+        self.log.info("model preset=%s: found %d fold(s) for task %s: %s | "
+                      "input channel order %s | label_map %s",
+                      self._model_preset_name, len(folds), self._task_name, sorted(folds),
+                      self._channel_order,
+                      self._label_map or "identity (already canonical)")
+
+    def describe_active_model(self) -> dict[str, Any]:
+        """
+        Report what the active preset's canonical labels actually contain.
+
+        Labels are always canonical (1=NCR, 2=ED, 3=NET, 4=ET) by the time
+        anything downstream sees them, but their *content* differs per model:
+        the v2 region model cannot separate necrosis from non-enhancing
+        tumour, so both land in label 1 and label 3 stays empty. The viewer
+        legend reads this so it never mislabels whichever model is loaded.
+        """
+        merges_ncr_net = self._label_map.get(1) == 1 and 3 not in self._label_map.values()
+        return {
+            "preset": self._model_preset_name,
+            "framework": self._framework,
+            "merged_ncr_net": merges_ncr_net,
+            "class_labels_ru": {
+                "1": "Некроз + неусиливающаяся опухоль (NCR/NET)" if merges_ncr_net
+                     else "Некротическое ядро (NCR)",
+                "2": "Отёк (ED)" if merges_ncr_net
+                     else "Отёк (ED)",
+                "3": "" if merges_ncr_net else "Неусиливающаяся опухоль (NET)",
+                "4": "Усиливающаяся опухоль (ET)",
+            },
+        }
 
     async def run_inference(self, payload: dict[str, Any], gpu_id: int) -> dict[str, Any]:
         """
-        Run nnUNet v1 segmentation. Expects new /predict contract payload:
+        Run segmentation with the active model preset (nnUNet v1 or v2).
+        Expects new /predict contract payload:
             case_id, input_dir, output_dir, lesion_type, options.
 
         Reads four modality files from input_dir, runs inference,
@@ -211,7 +363,7 @@ class GbmSegService(ServiceBase):
 
         # Default options
         use_tta = bool(options.get("use_tta", False))
-        folds = tuple(options.get("folds", [0, 1, 2, 3, 4]))
+        folds = tuple(options.get("folds", self._default_folds))
 
         # Validate input modalities exist
         if not input_dir.is_dir():
@@ -225,12 +377,16 @@ class GbmSegService(ServiceBase):
         prefix = f"{case_id}_"
         # Copy (not move) source files so the original input_dir is preserved
         staged = {k: str(self._stage_file(v, _TMP_DIR)) for k, v in modality_paths.items()}
-        in_path, out_path = _prepare_files_for_unet(staged, prefix)
+        in_path, out_path = _prepare_files_for_unet(staged, prefix, self._channel_order)
 
         # Run nnUNet in a thread executor
         loop = asyncio.get_running_loop()
-        func = partial(_run_nnunet_sync, gpu_id, in_path, out_path,
-                       use_tta, folds, self._task_name)
+        if self._framework == "nnunetv2":
+            func = partial(_run_nnunetv2_sync, gpu_id, in_path, out_path,
+                           use_tta, folds, self._model_folder, self._checkpoint)
+        else:
+            func = partial(_run_nnunet_sync, gpu_id, in_path, out_path,
+                           use_tta, folds, self._task_name)
         err = await loop.run_in_executor(None, func)
         if err:
             raise RuntimeError(f"nnUNet inference failed: {err}")
@@ -242,26 +398,39 @@ class GbmSegService(ServiceBase):
         mask_path = output_dir / "mask.nii.gz"
         shutil.move(result_files[0], mask_path)
 
+        # Translate the model's raw labels into the canonical scheme the rest
+        # of the pipeline reads (no-op for an already-canonical model).
+        histogram = _apply_label_map(mask_path, self._label_map)
+        self.log.info("case=%s preset=%s canonical labels: %s",
+                      case_id, self._model_preset_name, histogram or "empty mask")
+
         # Clean up staging directories
         shutil.rmtree(in_path, ignore_errors=True)
         shutil.rmtree(out_path, ignore_errors=True)
 
         return {
             "mask_path": str(mask_path),
+            # Canonical scheme, matching scripts/compute_volumes.py LABEL_MAP.
+            # Labels are already translated above, so this holds for every
+            # preset regardless of what the model itself emitted.
             "output_classes": {
                 "0": "background",
-                "1": "ed",   # edema
-                "2": "net",  # non-enhancing tumor
-                "3": "et",   # enhancing tumor
-                "4": "ncr",  # necrotic core
+                "1": "ncr",  # necrotic core (v2 preset: necrosis + non-enhancing)
+                "2": "ed",   # peritumoral edema
+                "3": "net",  # non-enhancing tumor (empty under the v2 preset)
+                "4": "et",   # enhancing tumor
             },
             "lesion_type": "glioblastoma",
             "model": {
-                "framework": "nnunetv1",
-                "task": self._task_name,
+                "framework": self._framework,
+                "preset": self._model_preset_name,
+                "task": self._task_name if self._framework != "nnunetv2" else self._model_folder,
                 "folds_used": list(folds),
                 "tta": use_tta,
+                "channel_order": list(self._channel_order),
+                "label_map": {str(k): v for k, v in self._label_map.items()},
             },
+            "label_histogram": {str(k): v for k, v in histogram.items()},
         }
 
     # -----------------------------------------------------------------------
