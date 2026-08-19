@@ -23,6 +23,7 @@ import os
 import queue
 import threading
 import traceback
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -175,7 +176,18 @@ class ServiceBase(ABC):
             except Exception:
                 self.log.exception("[%s] model load failed", self.service_id)
                 self._model_ready = False
+            self._install_signal_probe()
             self._worker_task = asyncio.create_task(self._worker_loop())
+
+        @app.after_serving
+        async def _on_shutdown() -> None:
+            """
+            Normal on `docker stop`. Unexpected during a job — it used to mean
+            a forked child's SIGTERM had leaked through asyncio's inherited
+            wakeup pipe; see the spawn note in serve().
+            """
+            self.log.warning("[%s] pid=%d shutting down (queue=%d)",
+                             self.service_id, os.getpid(), self._job_queue.qsize())
 
         @app.route("/health", methods=["GET"])
         async def health() -> Any:
@@ -185,6 +197,11 @@ class ServiceBase(ABC):
                     "status": "ready" if self._model_ready else "loading",
                     "queue_size": self._job_queue.qsize(),
                     "gpus_in_pool": self._gpu_pool.qsize(),
+                    # What the active model actually emits. Consumers (the
+                    # viewer legend, reports) label classes from this instead
+                    # of assuming a fixed scheme, so swapping models cannot
+                    # leave the UI describing the previous one.
+                    "active_model": self.describe_active_model(),
                 }
             )
 
@@ -227,6 +244,53 @@ class ServiceBase(ABC):
                 return jsonify(job.to_status_dict()), 409
             return jsonify(job.to_result_dict())
 
+    def describe_active_model(self) -> dict[str, Any]:
+        """
+        Describe the model currently loaded, for consumers that must label
+        output classes correctly (viewer legend, reports). Subclasses that
+        can switch between models with different class semantics override
+        this. Default: nothing model-specific to report.
+        """
+        return {}
+
+    # -----------------------------------------------------------------------
+    # Diagnostics
+    # -----------------------------------------------------------------------
+
+    def _install_signal_probe(self) -> None:
+        """
+        Wrap whatever signal handlers are already installed (Quart/Hypercorn
+        set theirs up before serving) so an incoming signal gets logged
+        before the original handler runs. Purely diagnostic: the original
+        behaviour is preserved by delegating to the saved handler.
+
+        Answers: is this process being told to stop from outside, and by
+        which signal — versus tearing itself down for an internal reason.
+        """
+        import signal
+
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+            try:
+                original = signal.getsignal(signum)
+            except (ValueError, OSError):
+                continue
+
+            def _probe(sig: int, frame: Any, _original: Any = original) -> Any:
+                self.log.error("[%s] pid=%d RECEIVED SIGNAL %s (handler=%r)",
+                               self.service_id, os.getpid(),
+                               signal.Signals(sig).name, _original)
+                if callable(_original):
+                    return _original(sig, frame)
+                return None
+
+            try:
+                signal.signal(signum, _probe)
+            except (ValueError, OSError):
+                # Not settable from this thread/platform — skip, diagnostic only.
+                continue
+
+        self.log.info("[%s] pid=%d signal probe installed", self.service_id, os.getpid())
+
     # -----------------------------------------------------------------------
     # Background worker
     # -----------------------------------------------------------------------
@@ -236,7 +300,11 @@ class ServiceBase(ABC):
         Single-consumer loop. Pulls job_ids from the queue, executes them
         one at a time per GPU slot, manages GPUMonitor and GPU pool.
         """
-        self.log.info("[%s] worker started", self.service_id)
+        # Recorded once: every later log line compares against this so a
+        # forked copy of this process announces itself instead of masquerading
+        # as the real worker.
+        worker_pid = os.getpid()
+        self.log.info("[%s] worker started (pid=%d)", self.service_id, worker_pid)
         while True:
             job_id = await self._job_queue.get()
             job = self._jobs.get(job_id)
@@ -246,8 +314,12 @@ class ServiceBase(ABC):
 
             # Acquire a GPU (blocking call in a thread, to keep event loop alive)
             loop = asyncio.get_running_loop()
+            iter_marker = uuid.uuid4().hex[:8]
             gpu_id = await loop.run_in_executor(None, self._gpu_pool.get)
             job.mark_running(gpu_id)
+            self.log.info("[%s] iter=%s pid=%d tid=%s acquired gpu %d for job %s",
+                          self.service_id, iter_marker, os.getpid(),
+                          threading.get_ident(), gpu_id, job_id)
 
             monitor = GPUMonitor(gpu_id)
             monitor.start()
@@ -262,18 +334,32 @@ class ServiceBase(ABC):
                 result.setdefault("metrics", {}).update(metrics)
 
                 job.mark_succeeded(result)
-                self.log.info("[%s] job %s succeeded in %.1fs",
-                              self.service_id, job_id, inference_time)
+                self.log.info("[%s] iter=%s job %s succeeded in %.1fs",
+                              self.service_id, iter_marker, job_id, inference_time)
+            except asyncio.CancelledError:
+                # Not caught by `except Exception` (CancelledError is a
+                # BaseException since 3.8). A cancellation here means this
+                # event loop is being torn down mid-inference — which is
+                # exactly what a forked copy of this process would do on
+                # exit, and would explain a "released" line appearing while
+                # the real inference is still running.
+                monitor.stop()
+                self.log.error("[%s] iter=%s pid=%d CANCELLED mid-inference for job %s",
+                               self.service_id, iter_marker, os.getpid(), job_id)
+                raise
             except Exception as e:
                 monitor.stop()
                 tb = traceback.format_exc()
-                self.log.error("[%s] job %s failed: %s\n%s",
-                               self.service_id, job_id, e, tb)
+                self.log.error("[%s] iter=%s pid=%d job %s failed: %s\n%s",
+                               self.service_id, iter_marker, os.getpid(), job_id, e, tb)
                 job.mark_failed(f"{type(e).__name__}: {e}")
             finally:
                 self._gpu_pool.put(gpu_id)
-                self.log.info("[%s] released gpu %d back to pool",
-                              self.service_id, gpu_id)
+                self.log.info("[%s] iter=%s pid=%d tid=%s released gpu %d back to pool"
+                              " (worker_pid=%d%s)",
+                              self.service_id, iter_marker, os.getpid(),
+                              threading.get_ident(), gpu_id, worker_pid,
+                              "" if os.getpid() == worker_pid else " ← FORKED COPY!")
 
     # -----------------------------------------------------------------------
     # Entry point
@@ -293,6 +379,32 @@ class ServiceBase(ABC):
         port = int(os.environ.get("SERVICE_PORT", port))
         debug = os.environ.get("SERVICE_DEBUG", str(debug)).lower() == "true"
 
+        # Force "spawn" for every child process this service (or any library
+        # it calls) creates. The default on Linux is "fork", and a forked
+        # child inherits asyncio's signal-wakeup pipe. When multiprocessing
+        # later terminates such a child (Pool teardown sends SIGTERM), the
+        # child writes the signal number into that inherited pipe — which is
+        # the very pipe THIS process's event loop reads. The parent then
+        # believes it received SIGTERM and shuts the app down cleanly
+        # mid-inference: after_serving fires, worker tasks are cancelled,
+        # exit code 0, no traceback anywhere. "spawn" execs a fresh
+        # interpreter instead, so nothing inherits that pipe.
+        import multiprocessing
+        try:
+            multiprocessing.set_start_method("spawn", force=True)
+            self.log.info("[%s] multiprocessing start method: %s",
+                          self.service_id, multiprocessing.get_start_method())
+        except RuntimeError as e:
+            self.log.warning("[%s] could not set spawn start method: %s",
+                             self.service_id, e)
+
         self.log.info("[%s] serving on %s:%d (debug=%s)",
                       self.service_id, host, port, debug)
-        self.app.run(host=host, port=port, debug=debug)
+        # Quart.run() defaults use_reloader=True *independent of debug* — it
+        # spawns a second full process (its own model load, its own GPU pool
+        # with 1 token for the same physical GPU) that silently races the
+        # real worker for GPU 0. Two nnUNet processes hitting one GPU
+        # simultaneously crashes the whole container with no Python-level
+        # error. GPU services are never edited live in the running
+        # container, so the reloader serves no purpose here.
+        self.app.run(host=host, port=port, debug=debug, use_reloader=False)

@@ -67,6 +67,21 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    # Memory safety cap (see the `web` service comment above — same failure
+    # mode: an unbounded container can exhaust host RAM+swap and freeze the
+    # whole desktop). Host has 30g total; this is a backstop against a
+    # runaway/untested model, not a usage guarantee — tune from observed
+    # peak RSS once the current model has run for a while.
+    mem_limit: 16g
+    memswap_limit: 16g
+    # nnUNet v2's multiprocess preprocessing (num_processes_preprocessing=3)
+    # shares tensors between worker processes via /dev/shm. Docker's default
+    # is 64m — nowhere near enough for full-resolution 3D volumes, and
+    # exhausting it crashes the worker process (and takes the container down
+    # with it: "RuntimeError: unable to allocate shared memory... No space
+    # left on device"). shm counts against mem_limit above (cgroup-accounted
+    # tmpfs), hence the higher cap.
+    shm_size: 4g
     profiles: ["full", "gpu"]
   # MS lesion segmentation service (nnUNet v2 + CATMIL trainer from luumsk/SmallLesionMRI)
   service-ms-seg:
@@ -95,4 +110,9 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    # Memory safety cap and shm sizing — see service-gbm-seg comment above
+    # (same nnUNet v2 multiprocess preprocessing, same /dev/shm need).
+    mem_limit: 16g
+    memswap_limit: 16g
+    shm_size: 4g
     profiles: ["full", "gpu"]
