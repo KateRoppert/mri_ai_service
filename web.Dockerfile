@@ -30,6 +30,24 @@ RUN cd frontend && npm run build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
 
+# 6b. HD-BET — альтернативный скалстриппер для этапа 05
+# (см. configs/preprocessing_config.yaml -> skull_stripping.method).
+# Тянет за собой torch и nnunetv2 (~3-4 ГБ). Работает на GPU, если он
+# проброшен в контейнер, иначе на CPU — медленно, но работает.
+# Веса (~123 МБ) скачиваются при первом запуске. HD-BET 2.x игнорирует
+# переменные окружения и жёстко пишет их в ~/hd-bet_params — этот каталог
+# смонтирован томом в docker-compose, иначе они качались бы заново после
+# каждого пересоздания контейнера.
+RUN pip install --no-cache-dir hd-bet==2.0.1
+
+# pyarrow приходит транзитивно, но его бинарник требует GLIBCXX_3.4.32,
+# а в базовом образе максимум 3.4.30 — любой импорт sklearn (через
+# nnunetv2 внутри HD-BET) падает с ImportError на libstdc++. sklearn
+# импортирует pyarrow опционально, но ловит только ModuleNotFoundError,
+# поэтому ImportError пробивается наружу. Ничто в проекте от pyarrow не
+# зависит (pip show -> Required-by пусто), поэтому убираем.
+RUN pip uninstall -y pyarrow
+
 # 7. Копируем ВАШ НОВЫЙ код бэкенда и оркестратора
 COPY backend/ ./backend/
 COPY configs/ ./configs/
