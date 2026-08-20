@@ -1,0 +1,47 @@
+# HD-BET — deep-learning skull stripper (MIC-DKFZ).
+#
+# Metadata only: behaviour lives in
+# scripts/preprocessing_steps/skull_stripping/hdbet.py. The MAS coordinator
+# (Этап 7) will route on the fields below once skull strippers become
+# separate agents; until then they document the tool.
+
+name: hdbet
+version: "2.0.1"
+tool_type: skull_stripping
+
+compute:
+  requires_gpu: true
+  gpu_memory_gb: 4
+  ram_gb: 8
+  cpu_fallback: true          # runs on CPU, minutes per volume instead of seconds
+
+lesion_type_preference:
+  glioblastoma: high          # trained on tumour-bearing multi-modal MRI
+  multiple_sclerosis: high
+
+modality_support:
+  primary: [t1, t1c]
+  apply_to: [t1, t1c, t2, t2fl]
+
+quality_notes: >
+  Trained on multi-modal MRI including tumour cases, which is why it is
+  preferred over BET for this pipeline's data. Ranking against BET on our
+  own datasets is what the Этап 5.5 benchmark exists to establish — until
+  then this is a literature-based preference, not a measured one.
+
+install:
+  method: pip
+  package: hd-bet
+  model_download: auto        # weights fetched on first run; see HDBET_WEIGHTS_DIR
+
+# Placeholder defaults. `threshold` from the spec's tuning table is not
+# exposed by the HD-BET 2.x CLI, so tuning will happen on what it does
+# expose (device, TTA) plus any options a newer release adds.
+default_params:
+  device: "cuda"              # torch device string: "cuda", "cuda:0", "cpu"
+  disable_tta: false          # TTA improves masks, costs several times the runtime
+
+mas_metadata:
+  agent_type: skull_stripper
+  cascade_priority: 1         # tried first
+  fallback_to: bet

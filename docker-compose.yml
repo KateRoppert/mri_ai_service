@@ -20,6 +20,10 @@ services:
       - ./scripts:/app/scripts:ro
       - ./configs:/app/configs:rw
       - ./backend/data:/app/backend/data:rw
+      # HD-BET downloads its weights (~123 MB) on first use and hardcodes
+      # the location to ~/hd-bet_params — it ignores env vars. Without this
+      # mount they would be re-downloaded after every container recreate.
+      - ./backend/data/hdbet_weights:/root/hd-bet_params:rw
       # Mount the pipeline config so edits apply on `up` without an image
       # rebuild. web.Dockerfile bakes a copy in at build time; without this
       # mount the container keeps using the stale baked-in workers/settings.
@@ -28,6 +32,19 @@ services:
       - service-gbm-seg
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Stage 05 can now run a GPU skull stripper (HD-BET) — see
+    # configs/preprocessing_config.yaml -> skull_stripping.method. Without a
+    # GPU here HD-BET still works, just minutes per volume instead of
+    # seconds. Sharing the single card with the segmentation services is
+    # safe because stages run in sequence (05 finishes before 06 starts);
+    # only two pipelines running concurrently could contend for it.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     # Memory safety cap: the pipeline (stages 01-08) runs in this container.
     # Without a limit, a heavy stage (e.g. Stage 04 quality at high worker
     # counts on large longitudinal datasets) exhausts all host RAM+swap and the

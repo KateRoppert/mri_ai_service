@@ -1,0 +1,44 @@
+# FSL BET — the pipeline's original skull stripper.
+#
+# Metadata only: behaviour lives in
+# scripts/preprocessing_steps/skull_stripping/bet.py. The MAS coordinator
+# (Этап 7) will route on the fields below once skull strippers become
+# separate agents; until then they document the tool.
+
+name: bet
+version: "1.0"
+tool_type: skull_stripping
+
+compute:
+  requires_gpu: false
+  gpu_memory_gb: 0
+  ram_gb: 2
+  cpu_fallback: true          # CPU is its only mode
+
+lesion_type_preference:
+  glioblastoma: medium
+  multiple_sclerosis: medium
+
+modality_support:
+  primary: [t1, t1c]
+  apply_to: [t1, t1c, t2, t2fl]
+
+quality_notes: >
+  Classical algorithm (2002). Fast and dependency-free, but tuned
+  empirically for this pipeline (-f 0.35 -g -0.1 -R) and not validated
+  against tumour-bearing anatomy. Kept as the always-available fallback.
+
+install:
+  method: system
+  package: fsl                # present in the web image already
+
+# Parameters below are the values Stage 05 has used in production.
+# Benchmark tuning (Этап 5.5) will replace them with measured optima.
+default_params:
+  fractional_intensity: 0.35
+  vertical_gradient: -0.1
+
+mas_metadata:
+  agent_type: skull_stripper
+  cascade_priority: 2         # tried after hdbet
+  fallback_to: null           # last resort — nothing below this
