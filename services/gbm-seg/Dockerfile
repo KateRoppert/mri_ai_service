@@ -1,7 +1,11 @@
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
-# Отключаем интерактивные диалоги во время установки
+# Отключаем интерактивные диалоги во время установки.
+# TZ обязателен: без него tzdata во время apt-get спрашивает регион и
+# сборка виснет намертво (воспроизводилось на barguzin). UTC выбран, чтобы
+# не менять то, в чём контейнеры уже пишут логи.
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 
 # Отключаем кэш .pyc и буферизацию stdout/stderr для предсказуемых логов
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -10,7 +14,7 @@ ENV PYTHONUNBUFFERED=1
 # Устанавливаем Python 3.11 через репозиторий deadsnakes
 RUN apt-get update && apt-get install -y \
     software-properties-common && \
-    add-apt-repository ppa:deadsnakes/ppa && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
     apt-get update && \
     apt-get install -y \
     python3.11 \

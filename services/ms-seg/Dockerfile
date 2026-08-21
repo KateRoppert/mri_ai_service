@@ -1,7 +1,10 @@
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
-# Non-interactive apt
+# Non-interactive apt. TZ is required as well: without it tzdata prompts for
+# a region during apt-get and the build hangs (seen on barguzin). UTC keeps
+# container logs in the timezone they already use.
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 
 # Don't write .pyc files (avoids stale bytecode in mounted dirs)
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -18,7 +21,7 @@ ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
 # -----------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     software-properties-common && \
-    add-apt-repository ppa:deadsnakes/ppa && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
     apt-get update && \
     apt-get install -y \
     python3.11 \
