@@ -1,0 +1,40 @@
+# Overlay for barguzin — the shared GPU workstation used for remote runs.
+#
+# NOT applied automatically. Compose only auto-loads a file literally named
+# docker-compose.override.yml, and auto-loading this everywhere would make
+# every laptop start the stack on boot and hold the GPU. Use it explicitly:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.barguzin.yml \
+#                  --profile full up -d
+#
+# or via scripts/barguzin.sh, which wraps exactly that.
+#
+# Remote access is over an SSH tunnel from the user's own machine:
+#
+#   ssh -L 8000:localhost:8000 -p 8819 e.roppert@bigdata.nsu.ru
+#
+# then http://localhost:8000 in their browser.
+
+services:
+  web:
+    # Publish on the loopback interface only. The base compose file binds
+    # 0.0.0.0, which on a shared workstation exposes the UI — and the
+    # clinical data behind it — to anyone who can reach the machine on the
+    # network. An SSH tunnel connects to localhost on the server side, so
+    # loopback is all it needs. `!override` replaces the base list instead
+    # of appending to it (which would leave both bindings in place).
+    ports: !override
+      - "127.0.0.1:8000:8000"
+    # Come back up after a reboot or a docker restart, so the workstation
+    # stays usable remotely without someone logging in to start it.
+    restart: unless-stopped
+
+  service-gbm-seg:
+    ports: !override
+      - "127.0.0.1:5000:5000"
+    restart: unless-stopped
+
+  service-ms-seg:
+    ports: !override
+      - "127.0.0.1:5001:5001"
+    restart: unless-stopped
