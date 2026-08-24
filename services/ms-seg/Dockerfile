@@ -71,6 +71,16 @@ RUN pip install --no-cache-dir --force-reinstall \
     "numpy>=2.3,<3" \
     "scipy>=1.13"
 
+# Pin torch to a CUDA 12.8 build, matching the base image above. The fork's
+# setup.py pulls torch transitively, and pip takes the newest — currently a
+# CUDA 13.0 build, which refuses to start on drivers older than 13.x
+# ("The NVIDIA driver on your system is too old"), as hit on barguzin.
+# A cu128 build also runs on newer drivers, so one pin covers every
+# machine. Installed after the fork so it wins over whatever that dragged in.
+RUN pip install --no-cache-dir \
+    torch==2.11.0 torchvision \
+    --index-url https://download.pytorch.org/whl/cu128
+
 # -----------------------------------------------------------------------
 # Service code
 # -----------------------------------------------------------------------

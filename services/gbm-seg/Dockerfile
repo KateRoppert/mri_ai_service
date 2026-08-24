@@ -44,6 +44,17 @@ COPY gbm-seg/nnUNet/ ./nnUNet/
 ENV SKLEARN_ALLOW_DEPRECATED_SKLEARN_PACKAGE_INSTALL=True
 RUN cd nnUNet && pip install --timeout 120 .
 
+# Pin torch to a CUDA 12.8 build, matching the base image above.
+# Unpinned (`torch>=2.6.0`), pip installs whatever is newest, which is now
+# built against CUDA 13.0 — that refuses to start on any driver older than
+# 13.x ("The NVIDIA driver on your system is too old (found version
+# 12080)"), as hit on barguzin. A cu128 build runs on newer drivers too,
+# so one pin works everywhere. Installed last so neither nnUNet's setup.py
+# nor requirements.txt can pull a default-index torch back over it.
+RUN pip install --no-cache-dir \
+    torch==2.11.0 torchvision \
+    --index-url https://download.pytorch.org/whl/cu128
+
 RUN mkdir -p /app/data/input /app/data/tmp /app/data/output
 ENV PYTHONPATH=/app:$PYTHONPATH
 EXPOSE 5000

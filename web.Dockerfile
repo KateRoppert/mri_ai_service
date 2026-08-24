@@ -48,6 +48,15 @@ RUN pip install --no-cache-dir hd-bet==2.0.1
 # зависит (pip show -> Required-by пусто), поэтому убираем.
 RUN pip uninstall -y pyarrow
 
+# Pin torch to a CUDA 12.8 build. hd-bet pulls torch transitively and pip
+# takes the newest, which is now built against CUDA 13.0 — that refuses to
+# start on drivers older than 13.x ("The NVIDIA driver on your system is
+# too old"), as hit on barguzin. A cu128 build runs on newer drivers too,
+# so one pin covers every machine. Installed after hd-bet so it wins.
+RUN pip install --no-cache-dir \
+    torch==2.11.0 torchvision \
+    --index-url https://download.pytorch.org/whl/cu128
+
 # 7. Копируем ВАШ НОВЫЙ код бэкенда и оркестратора
 COPY backend/ ./backend/
 COPY configs/ ./configs/

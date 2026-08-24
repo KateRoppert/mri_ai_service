@@ -57,8 +57,10 @@ simpleitk==2.5.3
 six==1.17.0
 threadpoolctl==3.6.0
 tifffile==2025.10.16
-torch>=2.6.0
-torchvision>=0.21.0
+# torch/torchvision are NOT listed here on purpose — they are installed in
+# the Dockerfile from the CUDA 12.8 index. Listing them here would let pip
+# resolve them from the default index (a CUDA 13.0 build) and break on any
+# host whose driver predates 13.x.
 tqdm==4.67.1
 traceback2==1.4.0
 typing_extensions==4.15.0
