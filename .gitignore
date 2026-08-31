@@ -90,3 +90,7 @@ backend/data/slicer_cache/
 backend/data/hdbet_weights/
 pipeline_config_calibration.yaml
 .calibration_scratch/
+
+# Skull-stripping: track test CODE despite the blanket `tests/` ignore above.
+!scripts/preprocessing_steps/skull_stripping/tests/
+!scripts/preprocessing_steps/skull_stripping/tests/**
