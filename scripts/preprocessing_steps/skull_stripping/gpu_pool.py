@@ -120,3 +120,36 @@ def resolve_devices(params: Optional[Dict[str, Any]] = None) -> List[str]:
 
     logger.info("Skull stripping device pool: %s", devices)
     return devices
+
+
+def build_pool(devices: List[str], manager=None):
+    """
+    A get/put queue seeded with `devices`. With a multiprocessing Manager the
+    queue is shareable across ProcessPoolExecutor workers (parallel mode);
+    without one it is an in-process queue.Queue (sequential mode).
+    """
+    if manager is not None:
+        pool = manager.Queue()
+    else:
+        import queue
+        pool = queue.Queue()
+    for device in devices:
+        pool.put(device)
+    return pool
+
+
+@contextmanager
+def acquire_device(pool):
+    """
+    Block until a device slot is free, yield its device string, and always
+    return it to the pool — even if the body raises. `pool=None` disables
+    gating and yields "cpu" (used by direct callers without a pool).
+    """
+    if pool is None:
+        yield "cpu"
+        return
+    device = pool.get()
+    try:
+        yield device
+    finally:
+        pool.put(device)
