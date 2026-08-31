@@ -37,6 +37,7 @@ from .dispatcher import (
     get_tool_params,
 )
 from .hdbet import HdBetStripper
+from .gpu_pool import acquire_device, resolve_devices
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,8 @@ def process_subject_skull_stripping(
     output_dir: Path,
     transform_dir: Path,
     modalities: list,
-    params: dict
+    params: dict,
+    gpu_pool=None,
 ) -> dict:
     """
     Process all modalities for a subject (skull stripping step).
@@ -128,12 +130,32 @@ def process_subject_skull_stripping(
     mask_pattern = f"{subject_id}_{session_id}_brain_mask.nii.gz"
     mask_path = transform_dir / subject_id / session_id / "anat" / mask_pattern
 
-    strip_result = stripper.strip(
-        input_path=ref_file,
-        output_path=ref_output,
-        mask_path=mask_path,
-        params=tool_params,
-    )
+    def _run_strip(tool_params_local):
+        return stripper.strip(
+            input_path=ref_file,
+            output_path=ref_output,
+            mask_path=mask_path,
+            params=tool_params_local,
+        )
+
+    if getattr(stripper, "uses_gpu", False):
+        # A GPU tool: pin it to a device. With a pool (Stage 05) acquire a
+        # slot so only pool-size jobs share the GPUs at once; without one
+        # (direct callers / sequential resolve) pick a device inline.
+        extra = {}
+        if "disable_tta" in params:
+            extra["disable_tta"] = params["disable_tta"]
+        if gpu_pool is not None:
+            with acquire_device(gpu_pool) as device:
+                logger.info("Skull stripping on device %s", device)
+                strip_result = _run_strip({**tool_params, "device": device, **extra})
+        else:
+            device = resolve_devices(params)[0]
+            logger.info("Skull stripping on device %s", device)
+            strip_result = _run_strip({**tool_params, "device": device, **extra})
+    else:
+        strip_result = _run_strip(tool_params)
+
     # Record which tool produced this, so a run's provenance survives a
     # later config change.
     strip_result.setdefault("method", stripper.name)

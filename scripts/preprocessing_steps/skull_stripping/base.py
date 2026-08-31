@@ -39,6 +39,9 @@ class SkullStripperBase(ABC):
     #: short identifier, must match the manifest directory name
     name: str = "unnamed"
 
+    #: True for tools that run on the GPU and must go through the device pool.
+    uses_gpu: bool = False
+
     @abstractmethod
     def strip(self,
               input_path: Path,
