@@ -43,7 +43,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              # All host GPUs are exposed; the app selects/excludes cards
+              # (skull_stripping.device / exclude_gpus) so it stays portable
+              # across 1- and N-GPU machines. Segmentation services keep count:1.
+              count: all
               capabilities: [gpu]
     # Memory safety cap: the pipeline (stages 01-08) runs in this container.
     # Without a limit, a heavy stage (e.g. Stage 04 quality at high worker
