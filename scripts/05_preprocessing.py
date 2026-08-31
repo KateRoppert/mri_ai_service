@@ -38,6 +38,7 @@ from preprocessing_steps.skull_stripping import (
     check_fsl_installed,
     process_subject_skull_stripping
 )
+from preprocessing_steps.skull_stripping.gpu_pool import build_pool, resolve_devices
 from preprocessing_steps.resampling import process_subject_resampling
 
 logger = logging.getLogger(__name__)
@@ -303,7 +304,8 @@ def process_single_subject(
     atlas_path: Path,
     config: dict,
     modalities: List[str],
-    lesion_type: str = 'glioblastoma'
+    lesion_type: str = 'glioblastoma',
+    gpu_pool=None,
 ) -> dict:
     """
     Process a single subject through all preprocessing steps.
@@ -514,7 +516,8 @@ def process_single_subject(
                 output_dir=output_dir,
                 transform_dir=transform_dir,
                 modalities=modalities,
-                params=step_params
+                params=step_params,
+                gpu_pool=gpu_pool,
             )
             
             results['steps']['skull_stripping'] = {
@@ -574,7 +577,8 @@ def process_subject_wrapper(args_tuple):
     import traceback
     
     (anat_dir, subject_id, session_id, output_dir, transform_dir,
-     base_temp_dir, atlas_path, config, modalities, lesion_type, threads_per_worker) = args_tuple
+     base_temp_dir, atlas_path, config, modalities, lesion_type,
+     gpu_pool, threads_per_worker) = args_tuple
     
     # Set thread limits for this worker (only in parallel mode)
     if threads_per_worker is not None:
@@ -599,9 +603,10 @@ def process_subject_wrapper(args_tuple):
             atlas_path=atlas_path,
             config=config,
             modalities=modalities,
-            lesion_type=lesion_type
+            lesion_type=lesion_type,
+            gpu_pool=gpu_pool,
         )
-        
+
         # Cleanup worker temp directory for this subject
         subject_temp = worker_temp_dir / "reoriented" / subject_id
         if subject_temp.exists():
@@ -835,9 +840,27 @@ def main():
         # Prepare base arguments (threads slot is None for parallel — filled after subject scan)
         threads_for_parallel = None if args.mode == 'parallel' else None
 
+        # GPU-slot pool for the skull-stripping step. Size = number of usable
+        # devices, so one card -> serialized (freeze-safe), N cards -> N
+        # concurrent. Manager().Queue crosses ProcessPoolExecutor workers;
+        # sequential mode uses an in-process queue.
+        steps_by_name = {s['name']: s for s in config.get('steps', [])}
+        skull_cfg = steps_by_name.get('skull_stripping', {})
+        gpu_manager = None
+        gpu_pool = None
+        if skull_cfg.get('enabled', True):
+            devices = resolve_devices(skull_cfg.get('params', {}))
+            if args.mode == 'parallel':
+                from multiprocessing import Manager
+                gpu_manager = Manager()
+                gpu_pool = build_pool(devices, manager=gpu_manager)
+            else:
+                gpu_pool = build_pool(devices)
+
         processing_args = [
             (anat_dir, subject_id, session_id, preprocessed_dir, transform_dir,
-            temp_dir, atlas_path, config, modalities, args.lesion_type, threads_for_parallel)
+             temp_dir, atlas_path, config, modalities, args.lesion_type,
+             gpu_pool, threads_for_parallel)
             for anat_dir, subject_id, session_id in subjects
         ]
 
