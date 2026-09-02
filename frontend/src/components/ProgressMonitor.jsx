@@ -1,7 +1,7 @@
 /**
  * Компонент для мониторинга выполнения pipeline
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card, Progress, Space, Tag, Button, Divider, Alert, Modal, message } from 'antd';
 import { 
   SyncOutlined, 
@@ -32,11 +32,17 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   const [showIncompletePatients, setShowIncompletePatients] = useState(false);
   const [validationRef, setValidationRef] = useState(null);
   const [parentRunId, setParentRunId] = useState(null);
+  // WS callbacks close over a stale render; refs keep terminal-state guards correct.
+  const statusRef = useRef('running');
+  const terminalNotifiedRef = useRef(false);
 
   /**
    * Подключение к WebSocket при монтировании компонента
    */
   useEffect(() => {
+    statusRef.current = 'running';
+    terminalNotifiedRef.current = false;
+
     // Сначала получаем текущий статус через REST API
     fetchInitialStatus();
 
@@ -47,8 +53,12 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
         runId,
         handleWebSocketMessage,
         (error) => {
-            // Не показываем ошибку если pipeline завершён
-            if (status !== 'completed' && status !== 'failed') {
+            // Не показываем ошибку если pipeline уже в терминальном статусе
+            if (
+              statusRef.current !== 'completed' &&
+              statusRef.current !== 'failed' &&
+              statusRef.current !== 'stopped'
+            ) {
             handleWebSocketError(error);
             }
         }
@@ -80,7 +90,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
    * Обработчик сообщений от WebSocket
    */
   const handleWebSocketMessage = (data) => {
-    if (data.type === 'progress_update') {
+    if (data.type === 'progress_update' || data.type === 'status') {
       updateStatus(data);
     }
   };
@@ -133,18 +143,48 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
    * Обновить состояние на основе данных от backend
    */
   const updateStatus = (data) => {
-    setStatus(data.status);
-    setOverallProgress(data.overall_progress || 0);
-    setCurrentStage(data.current_stage || 0);
-    
+    const incoming = data.status;
+
+    // Stale progress ticks must not revive a deliberate stop.
+    if (
+      statusRef.current === 'stopped' &&
+      (incoming === 'running' || incoming === 'pending')
+    ) {
+      return;
+    }
+
+    if (incoming != null) {
+      statusRef.current = incoming;
+      setStatus(incoming);
+    }
+
+    // WS type:status may omit progress fields — keep last known values.
+    if (data.overall_progress != null) {
+      setOverallProgress(data.overall_progress);
+    }
+    if (data.current_stage != null) {
+      setCurrentStage(data.current_stage);
+    } else if (data.stopped_at_stage != null) {
+      setCurrentStage(data.stopped_at_stage);
+    }
+
     if (data.stages) {
       setStages(data.stages);
     }
 
-    // Если pipeline завершён - уведомляем родительский компонент
-    if (data.status === 'completed' || data.status === 'failed') {
-      if (onComplete) {
-        onComplete(data);
+    // Terminal statuses unlock «Новая обработка» via App.onComplete.
+    if (
+      incoming === 'completed' ||
+      incoming === 'failed' ||
+      incoming === 'stopped'
+    ) {
+      if (onComplete && !terminalNotifiedRef.current) {
+        terminalNotifiedRef.current = true;
+        onComplete({
+          ...data,
+          run_id: data.run_id || runId,
+          status: incoming,
+        });
       }
     }
   };
@@ -188,7 +228,11 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
           message.success(
             `Обработка остановлена на этапе ${result.stopped_at_stage ?? '—'}`
           );
-          setStatus('stopped');
+          updateStatus({
+            ...result,
+            run_id: result.run_id || runId,
+            status: 'stopped',
+          });
         } catch (error) {
           message.error(
             error.response?.data?.detail || 'Не удалось остановить обработку'
