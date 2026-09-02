@@ -176,6 +176,36 @@ def update_pipeline_run(
     return run
 
 
+def update_pipeline_run_if_active(
+    db: Session,
+    run_id: str,
+    **kwargs
+) -> Optional[PipelineRun]:
+    """
+    Apply updates only while the run is still pending or running.
+
+    Atomic at the SQL level so a late completed/failed write cannot
+    overwrite a stop that already committed on another Session.
+    Returns None when the row was already terminal (or missing).
+    """
+    allowed = {k: v for k, v in kwargs.items() if hasattr(PipelineRun, k)}
+    if not allowed:
+        return get_pipeline_run(db, run_id)
+
+    rows = (
+        db.query(PipelineRun)
+        .filter(
+            PipelineRun.run_id == run_id,
+            PipelineRun.status.in_(["pending", "running"]),
+        )
+        .update(allowed, synchronize_session="fetch")
+    )
+    db.commit()
+    if rows == 0:
+        return None
+    return get_pipeline_run(db, run_id)
+
+
 def reconcile_orphaned_runs(db: Session) -> int:
     """Mark runs stuck in a non-terminal state as failed at startup.
 

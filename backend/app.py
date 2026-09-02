@@ -74,6 +74,7 @@ from database import (
     get_pipeline_run,
     get_active_run_by_output_path,
     update_pipeline_run,
+    update_pipeline_run_if_active,
     get_stage_executions,
     update_stage_execution,
     get_pipeline_history,
@@ -224,13 +225,6 @@ def run_pipeline_background(
         stdout, stderr = process.communicate(timeout=timeout)
         return_code = process.returncode
 
-        # Stop commits status=stopped on another Session; do not overwrite it
-        # with completed/failed from the kill's exit code.
-        db.expire_all()
-        existing = get_pipeline_run(db, run_id)
-        if existing and existing.status == PipelineStatus.STOPPED.value:
-            return
-
         if return_code == 0:
             # Успешное завершение
             logger.info(f"Pipeline успешно завершён для run_id: {run_id}")
@@ -248,8 +242,8 @@ def run_pipeline_background(
                 
                 logger.info(f"Качество: {quality_score} ({quality_category}), всего отчётов: {len(quality_reports)}")
             
-            # Обновляем статус
-            update_pipeline_run(
+            # only_if_active: a stop may have already committed on another Session
+            update_pipeline_run_if_active(
                 db,
                 run_id,
                 status="completed",
@@ -270,7 +264,7 @@ def run_pipeline_background(
             
             error_msg = stderr[-500:] if stderr else "Неизвестная ошибка"
             
-            update_pipeline_run(
+            update_pipeline_run_if_active(
                 db,
                 run_id,
                 status="failed",
@@ -283,31 +277,25 @@ def run_pipeline_background(
         logger.error(f"Таймаут выполнения pipeline для run_id: {run_id}")
         _kill_process_tree(process)
 
-        db.expire_all()
-        existing = get_pipeline_run(db, run_id)
-        if not (existing and existing.status == PipelineStatus.STOPPED.value):
-            update_pipeline_run(
-                db,
-                run_id,
-                status="failed",
-                error_message="Превышено время ожидания выполнения",
-                completed_at=datetime.utcnow()
-            )
+        update_pipeline_run_if_active(
+            db,
+            run_id,
+            status="failed",
+            error_message="Превышено время ожидания выполнения",
+            completed_at=datetime.utcnow()
+        )
     
     except Exception as e:
         # Другие ошибки
         logger.error(f"Ошибка выполнения pipeline для run_id: {run_id}: {e}")
 
-        db.expire_all()
-        existing = get_pipeline_run(db, run_id)
-        if not (existing and existing.status == PipelineStatus.STOPPED.value):
-            update_pipeline_run(
-                db,
-                run_id,
-                status="failed",
-                error_message=str(e),
-                completed_at=datetime.utcnow()
-            )
+        update_pipeline_run_if_active(
+            db,
+            run_id,
+            status="failed",
+            error_message=str(e),
+            completed_at=datetime.utcnow()
+        )
     
     finally:
         # Мониторинг остановится автоматически когда pipeline завершится
@@ -319,10 +307,14 @@ def run_pipeline_background(
 
         # Stopped runs keep the runtime config as a snapshot for resume.
         # Re-read past this Session's cache — stop commits on another Session.
+        # Keep if status is stopped OR config_path was recorded (belt after races).
         db.expire_all()
         run = get_pipeline_run(db, run_id)
         keep_as_snapshot = bool(
-            run and run.status == PipelineStatus.STOPPED.value
+            run and (
+                run.status == PipelineStatus.STOPPED.value
+                or run.config_path
+            )
         )
         pipeline_manager.cleanup_runtime_config(
             run_id,
@@ -437,6 +429,17 @@ async def stop_pipeline_run(
             detail=f"Запуск уже завершён (статус: {run.status})",
         )
 
+    # Commit stopped + snapshot path BEFORE kill so communicate() returning
+    # on the background task cannot race a failed write into the gap.
+    update_pipeline_run(
+        db,
+        run_id,
+        status=PipelineStatus.STOPPED.value,
+        stopped_at_stage=run.current_stage,
+        config_path=str(pipeline_manager.runtime_config_path(run_id)),
+        completed_at=datetime.utcnow(),
+    )
+
     process = pipeline_manager.get_process(run_id)
     if process is not None:
         _kill_process_tree(process)
@@ -450,15 +453,6 @@ async def stop_pipeline_run(
             "Run %s marked active but no process found — recording as stopped",
             run_id,
         )
-
-    update_pipeline_run(
-        db,
-        run_id,
-        status=PipelineStatus.STOPPED.value,
-        stopped_at_stage=run.current_stage,
-        config_path=str(pipeline_manager.runtime_config_path(run_id)),
-        completed_at=datetime.utcnow(),
-    )
 
     # Push the new state to every open tab watching this run.
     await ws_manager.broadcast(run_id, {
