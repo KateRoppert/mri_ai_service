@@ -2,7 +2,7 @@
  * Компонент для отображения истории запусков pipeline
  */
 import { useState, useEffect, useRef } from 'react';
-import { Table, Tag, Space, Button, Select, Card, message } from 'antd';
+import { Table, Tag, Space, Button, Select, Card, message, Modal } from 'antd';
 import { 
   EyeOutlined, 
   FileTextOutlined,
@@ -11,8 +11,9 @@ import {
   CloseCircleOutlined,
   SyncOutlined,
   MedicineBoxOutlined,
+  PauseCircleOutlined,
 } from '@ant-design/icons';
-import { getPipelineHistory } from '../services/api';
+import { getPipelineHistory, resumePipelineRun } from '../services/api';
 
 const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses }) => {
   const [loading, setLoading] = useState(false);
@@ -96,6 +97,12 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
           icon: <CloseCircleOutlined />,
           text: 'Ошибка',
         };
+      case 'stopped':
+        return {
+          color: 'orange',
+          icon: <PauseCircleOutlined />,
+          text: 'Остановлен',
+        };
       case 'pending':
       default:
         return {
@@ -103,6 +110,60 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
           icon: <SyncOutlined />,
           text: 'Ожидание',
         };
+    }
+  };
+
+  /**
+   * Возобновить остановленный запуск. При 409 с differences — диалог
+   * выбора: продолжить на сохранённых настройках или отменить.
+   */
+  const handleResume = async (runId) => {
+    try {
+      await resumePipelineRun(runId);
+      message.success('Обработка возобновлена');
+      fetchHistory();
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (error.response?.status === 409 && detail?.differences) {
+        Modal.confirm({
+          title: 'Настройки изменились с момента остановки',
+          content: (
+            <div>
+              <p>После остановки изменилось следующее:</p>
+              <ul>
+                {detail.differences.map((d) => (
+                  <li key={d.setting}>
+                    {d.setting}: <b>{d.was}</b> → <b>{d.now}</b>
+                  </li>
+                ))}
+              </ul>
+              <p>
+                Если продолжить на новых настройках, часть пациентов будет
+                обработана иначе, чем остальные.
+              </p>
+            </div>
+          ),
+          okText: 'На прежних настройках',
+          cancelText: 'Отмена',
+          onOk: async () => {
+            await resumePipelineRun(runId, true);
+            message.success('Обработка возобновлена на сохранённых настройках');
+            fetchHistory();
+          },
+        });
+      } else if (
+        error.response?.status === 409 &&
+        typeof detail === 'object' &&
+        detail?.reason === 'snapshot_unavailable'
+      ) {
+        message.error(detail.message || 'Снимок настроек недоступен');
+      } else {
+        const msg =
+          typeof detail === 'string'
+            ? detail
+            : detail?.message || 'Не удалось возобновить обработку';
+        message.error(msg);
+      }
     }
   };
 
@@ -214,6 +275,11 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
       width: 200,
       render: (_, record) => (
         <Space direction="vertical" size={2}>
+          {record.status === 'stopped' && (
+            <Button size="small" onClick={() => handleResume(record.run_id)}>
+              Возобновить
+            </Button>
+          )}
           {record.status === 'completed' && record.current_stage >= 3 && (
             <Button
               type="link"

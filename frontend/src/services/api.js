@@ -331,6 +331,18 @@ export const requeuePipelineRun = async (runId) => {
 };
 
 /**
+ * Возобновить остановленный запуск. Если настройки изменились с момента
+ * остановки, бэкенд отвечает 409 со списком различий — их показывают
+ * пользователю, и он выбирает, продолжать ли на сохранённых настройках.
+ */
+export const resumePipelineRun = async (runId, useSnapshot = false) => {
+  const response = await apiClient.post(`/pipeline-runs/${runId}/requeue`, {
+    use_snapshot: useSnapshot,
+  });
+  return response.data;
+};
+
+/**
  * Остановить выполняющийся запуск. Возвращает сводку: сколько пациентов
  * успели обработаться и на каком этапе прервались.
  */
@@ -447,6 +459,7 @@ export default {
   discardSession,
   mergeSessions,
   requeuePipelineRun,
+  resumePipelineRun,
   stopPipelineRun,
   getSlicerPackageUrl,
   uploadMask,
