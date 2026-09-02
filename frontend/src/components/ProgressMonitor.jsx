@@ -2,12 +2,13 @@
  * Компонент для мониторинга выполнения pipeline
  */
 import { useEffect, useState } from 'react';
-import { Card, Progress, Space, Tag, Button, Divider, Alert } from 'antd';
+import { Card, Progress, Space, Tag, Button, Divider, Alert, Modal, message } from 'antd';
 import { 
   SyncOutlined, 
   CheckCircleOutlined, 
   CloseCircleOutlined,
-  ReloadOutlined 
+  ReloadOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import StageProgress from './StageProgress';
 import QualityReport from './QualityReport';
@@ -15,7 +16,7 @@ import NIfTIViewer from './NIfTIViewer';
 import ClinicalReport from './ClinicalReport';
 import IncompletePatients from './IncompletePatients';
 import wsService from '../services/websocket';
-import { getPipelineStatus, getEntitiesForRun } from '../services/api';
+import { getPipelineStatus, getEntitiesForRun, stopPipelineRun } from '../services/api';
 
 const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
@@ -24,6 +25,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   const [currentStage, setCurrentStage] = useState(0);
   const [status, setStatus] = useState('running');
   const [error, setError] = useState(null);
+  const [stopping, setStopping] = useState(false);
   const [showQualityReport, setShowQualityReport] = useState(false);
   const [showVisualization, setShowVisualization] = useState(false);
   const [showClinicalReport, setShowClinicalReport] = useState(false);
@@ -162,6 +164,43 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   };
 
   /**
+   * Остановить выполняющийся запуск (с подтверждением)
+   */
+  const handleStop = () => {
+    Modal.confirm({
+      title: 'Остановить обработку?',
+      // The action is irreversible and may land an hour into a run, so the
+      // dialog states what survives and what is lost rather than asking a
+      // bare yes/no.
+      content: (
+        <div>
+          <p>Уже обработанные пациенты сохранятся, их результаты останутся доступны.</p>
+          <p>Текущий этап будет прерван — эти пациенты обработаются заново при возобновлении.</p>
+        </div>
+      ),
+      okText: 'Остановить',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: async () => {
+        setStopping(true);
+        try {
+          const result = await stopPipelineRun(runId);
+          message.success(
+            `Обработка остановлена на этапе ${result.stopped_at_stage ?? '—'}`
+          );
+          setStatus('stopped');
+        } catch (error) {
+          message.error(
+            error.response?.data?.detail || 'Не удалось остановить обработку'
+          );
+        } finally {
+          setStopping(false);
+        }
+      },
+    });
+  };
+
+  /**
    * Определяем общий статус
    */
   const getOverallStatus = () => {
@@ -178,7 +217,19 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
           icon: <CloseCircleOutlined />,
           text: 'Ошибка выполнения',
         };
+      case 'stopped':
+        return {
+          color: 'default',
+          icon: <StopOutlined />,
+          text: 'Обработка остановлена',
+        };
       case 'running':
+      case 'pending':
+        return {
+          color: 'processing',
+          icon: <SyncOutlined spin />,
+          text: 'Выполняется обработка',
+        };
       default:
         return {
           color: 'processing',
@@ -220,14 +271,21 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
 
       {/* Общий прогресс */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ marginBottom: 8 }}>
+        <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <strong>Общий прогресс:</strong>
+          {(status === 'running' || status === 'pending') && (
+            <Button danger onClick={handleStop} loading={stopping}>
+              Остановить
+            </Button>
+          )}
         </div>
         <Progress
           percent={Math.round(overallProgress)}
           status={
             status === 'completed' ? 'success' :
-            status === 'failed' ? 'exception' : 'active'
+            status === 'failed' ? 'exception' :
+            status === 'stopped' ? 'normal' :
+            'active'
           }
           size={['default', 12]}
         />

@@ -331,6 +331,15 @@ export const requeuePipelineRun = async (runId) => {
 };
 
 /**
+ * Остановить выполняющийся запуск. Возвращает сводку: сколько пациентов
+ * успели обработаться и на каком этапе прервались.
+ */
+export const stopPipelineRun = async (runId) => {
+  const response = await apiClient.post(`/pipeline-runs/${runId}/stop`);
+  return response.data;
+};
+
+/**
  * Скачать zip-пакет для 3D Slicer
  */
 export const getSlicerPackageUrl = (runId) => {
@@ -438,6 +447,7 @@ export default {
   discardSession,
   mergeSessions,
   requeuePipelineRun,
+  stopPipelineRun,
   getSlicerPackageUrl,
   uploadMask,
   getMaskVersions,
