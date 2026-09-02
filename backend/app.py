@@ -390,6 +390,66 @@ async def start_pipeline(
     )
 
 
+@app.post("/api/pipeline-runs/{run_id}/stop")
+async def stop_pipeline_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Остановить выполняющийся запуск, сохранив уже полученные результаты.
+
+    Kills the whole process group immediately — draining the current stage
+    was rejected at design time because the wait is unbounded from the
+    operator's point of view. Files being written at that moment are left
+    truncated; the stages' completeness check (utils/nifti_integrity.py)
+    makes sure they are recomputed rather than skipped on the next run.
+    """
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    if run.status not in (PipelineStatus.PENDING, PipelineStatus.RUNNING):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Запуск уже завершён (статус: {run.status})",
+        )
+
+    process = pipeline_manager.get_process(run_id)
+    if process is not None:
+        _kill_process_tree(process)
+        pipeline_manager.unregister_process(run_id)
+        logger.info("Stopped run %s at stage %s", run_id, run.current_stage)
+    else:
+        # No process for a run the DB calls active: the backend was restarted,
+        # which killed the pipeline with it. Correct the record rather than
+        # reporting an error for something already true.
+        logger.warning(
+            "Run %s marked active but no process found — recording as stopped",
+            run_id,
+        )
+
+    update_pipeline_run(
+        db,
+        run_id,
+        status=PipelineStatus.STOPPED.value,
+        stopped_at_stage=run.current_stage,
+        completed_at=datetime.utcnow(),
+    )
+
+    # Push the new state to every open tab watching this run.
+    await ws_manager.broadcast(run_id, {
+        "type": "status",
+        "status": PipelineStatus.STOPPED.value,
+        "stopped_at_stage": run.current_stage,
+    })
+
+    return {
+        "run_id": run_id,
+        "status": PipelineStatus.STOPPED.value,
+        "stopped_at_stage": run.current_stage,
+    }
+
+
 @app.post("/api/pipeline-runs/{run_id}/requeue", response_model=PipelineStartResponse)
 async def requeue_pipeline_run(
     run_id: str,
