@@ -299,7 +299,11 @@ def run_pipeline_background(
     finally:
         # Мониторинг остановится автоматически когда pipeline завершится
         # (проверка статуса в _monitor_loop)
-        
+
+        # Normal completion, failure and timeout all land here — the process
+        # is no longer running, so a stop request must stop finding it.
+        pipeline_manager.unregister_process(run_id)
+
         # Очистка runtime конфига (с учётом настройки отладки)
         pipeline_manager.cleanup_runtime_config(run_id, keep_for_debug=settings.keep_runtime_configs)
 

@@ -32,6 +32,15 @@ from scripts.metadata_extractor import MetadataExtractor
 
 logger = logging.getLogger(__name__)
 
+# run_id -> Popen of the orchestrator driving that run.
+#
+# Module-level, not per-instance: app.py builds its own PipelineManager per
+# request path, and the stop endpoint has to see what the start path
+# registered. In-memory is sufficient because the pipeline is a child of the
+# backend process inside the same container — a backend restart kills the
+# run too, so no run ever outlives this dict.
+_RUNNING_PROCESSES: Dict[str, subprocess.Popen] = {}
+
 # BIDS ID format enforced by IDMapper/bids_allocator (scripts/01_reorganize_folders.py) —
 # relabel_series() uses patient_id/session_id (API path parameters, not sanitized by
 # FastAPI beyond excluding '/') to build filesystem paths and a shutil.move target, so
@@ -60,7 +69,21 @@ class PipelineManager:
         self.pipeline_root = settings.pipeline_root
         self.config_template = self.pipeline_root / settings.pipeline_config_template
         self.orchestrator_script = self.pipeline_root / "orchestrator.py"
-        
+
+    def register_process(self, run_id: str, process: subprocess.Popen) -> None:
+        """Record a started run so a stop request can find it."""
+        _RUNNING_PROCESSES[run_id] = process
+        logger.info("Registered process for run %s (pid=%s)", run_id, process.pid)
+
+    def get_process(self, run_id: str) -> Optional[subprocess.Popen]:
+        """The running process for `run_id`, or None if it is not running."""
+        return _RUNNING_PROCESSES.get(run_id)
+
+    def unregister_process(self, run_id: str) -> None:
+        """Forget a run. Safe to call for a run that was never registered."""
+        if _RUNNING_PROCESSES.pop(run_id, None) is not None:
+            logger.info("Unregistered process for run %s", run_id)
+
     def create_runtime_config(
         self,
         run_id: str,
@@ -243,6 +266,7 @@ class PipelineManager:
             )
             
             logger.info(f"Pipeline запущен, PID: {process.pid}")
+            self.register_process(run_id, process)
             
             return process
             
