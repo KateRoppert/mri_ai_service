@@ -19,6 +19,7 @@ from pipeline_validator import InputOutputValidator
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
+from utils.nifti_integrity import is_complete_nifti
 
 import numpy as np
 import yaml
@@ -352,6 +353,13 @@ class QualityAssessor:
             self.stats['skipped'] += 1
             return True
 
+        # A truncated input volume (e.g. left mid-write by a stopped run)
+        # must not be silently assessed as if it were whole.
+        if not is_complete_nifti(nifti_path):
+            self.logger.warning(f"Skipping {patient_id}/{modality}: input volume is incomplete")
+            self.stats['failed'] += 1
+            return False
+
         try:
             # Load NIfTI image (float32 to bound peak memory — see _load_image_data)
             img, data = _load_image_data(nifti_path)
@@ -475,6 +483,11 @@ class QualityAssessor:
             report_file = report_dir / f"sub-{patient_id}_ses-{session_id}_{modality}_quality.json"
             if skip_existing and report_file.exists():
                 return True, "SKIPPED"
+
+            # A truncated input volume (e.g. left mid-write by a stopped run)
+            # must not be silently assessed as if it were whole.
+            if not is_complete_nifti(nifti_path):
+                return False, "INCOMPLETE"
 
             # Create metrics calculators
             metrics_calc = {
