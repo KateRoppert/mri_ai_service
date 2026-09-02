@@ -146,9 +146,27 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
           okText: 'На прежних настройках',
           cancelText: 'Отмена',
           onOk: async () => {
-            await resumePipelineRun(runId, true);
-            message.success('Обработка возобновлена на сохранённых настройках');
-            fetchHistory();
+            try {
+              await resumePipelineRun(runId, true);
+              message.success('Обработка возобновлена на сохранённых настройках');
+              fetchHistory();
+            } catch (okError) {
+              const okDetail = okError.response?.data?.detail;
+              if (
+                okError.response?.status === 409 &&
+                typeof okDetail === 'object' &&
+                okDetail?.reason === 'snapshot_unavailable'
+              ) {
+                message.error(okDetail.message || 'Снимок настроек недоступен');
+              } else {
+                const msg =
+                  typeof okDetail === 'string'
+                    ? okDetail
+                    : okDetail?.message || 'Не удалось возобновить обработку';
+                message.error(msg);
+              }
+              throw okError;
+            }
           },
         });
       } else if (
