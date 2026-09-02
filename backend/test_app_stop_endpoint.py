@@ -135,3 +135,100 @@ def test_failed_update_does_not_overwrite_stopped(tmp_path):
     assert run.status == "stopped"
     assert run.config_path == "/runtime_configs/config_run-1.yaml"
     db.close()
+
+
+def _session_with_run(tmp_path, run_id="run-1", status="pending"):
+    import sqlalchemy
+    from sqlalchemy.orm import sessionmaker
+    from database import PipelineRun
+
+    db_file = tmp_path / f"{run_id}.db"
+    engine = sqlalchemy.create_engine(f"sqlite:///{db_file}")
+    PipelineRun.__table__.create(engine, checkfirst=True)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add(PipelineRun(
+        run_id=run_id,
+        input_path="/in",
+        output_path="/out",
+        status=status,
+    ))
+    db.commit()
+    return db
+
+
+def test_already_stopped_does_not_start_pipeline(tmp_path):
+    """Stop committed before the running write — do not Popen an orchestrator."""
+    from app import run_pipeline_background
+    from database import get_pipeline_run
+
+    db = _session_with_run(tmp_path, status="stopped")
+    try:
+        with patch("app.pipeline_manager.start_pipeline") as start, \
+             patch("app.pipeline_manager.cleanup_runtime_config"):
+            run_pipeline_background("run-1", "/in", "/out", db)
+
+        start.assert_not_called()
+        assert get_pipeline_run(db, "run-1").status == "stopped"
+    finally:
+        db.close()
+
+
+def test_stop_during_start_kills_process_without_waiting(tmp_path):
+    """Stop between the running write and register_process must kill, not wait."""
+    from app import run_pipeline_background, pipeline_manager
+    from database import get_pipeline_run
+
+    db = _session_with_run(tmp_path, status="pending")
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.communicate.side_effect = AssertionError(
+        "must not wait on a process started after stop"
+    )
+
+    def fake_start(run_id, *args, **kwargs):
+        # Concurrent Stop: status is already terminal, nothing to kill yet
+        # because register_process has not run. Then we Popen and register —
+        # the background task must notice and kill.
+        run = get_pipeline_run(db, run_id)
+        run.status = "stopped"
+        db.commit()
+        pipeline_manager.register_process(run_id, proc)
+        return proc
+
+    try:
+        with patch("app.pipeline_manager.start_pipeline", side_effect=fake_start), \
+             patch("app._kill_process_tree") as kill, \
+             patch("app.pipeline_manager.cleanup_runtime_config"):
+            run_pipeline_background("run-1", "/in", "/out", db)
+
+        kill.assert_called_once_with(proc)
+        proc.communicate.assert_not_called()
+        assert pipeline_manager.get_process("run-1") is None
+        assert get_pipeline_run(db, "run-1").status == "stopped"
+    finally:
+        pipeline_manager.unregister_process("run-1")
+        db.close()
+
+
+def test_failed_start_does_not_overwrite_stopped(tmp_path):
+    """start_pipeline returning None must not clobber a stop that already committed."""
+    from app import run_pipeline_background
+    from database import get_pipeline_run
+
+    db = _session_with_run(tmp_path, status="pending")
+
+    def fake_start(run_id, *args, **kwargs):
+        run = get_pipeline_run(db, run_id)
+        run.status = "stopped"
+        db.commit()
+        return None
+
+    try:
+        with patch("app.pipeline_manager.start_pipeline", side_effect=fake_start), \
+             patch("app.pipeline_manager.cleanup_runtime_config"):
+            run_pipeline_background("run-1", "/in", "/out", db)
+
+        assert get_pipeline_run(db, "run-1").status == "stopped"
+    finally:
+        db.close()

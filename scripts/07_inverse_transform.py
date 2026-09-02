@@ -26,8 +26,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from preprocessing_steps.registration import inverse_transform_subject_masks
 from utils.config_loader import load_lesion_type_config
+from utils.nifti_integrity import is_complete_nifti
 
 logger = logging.getLogger(__name__)
+
+
+def has_complete_native_mask(out_subdir: Path, mask_stem: str) -> bool:
+    """True if skip-existing may treat this session as already inverted."""
+    existing = list(out_subdir.glob(f"{mask_stem}_segmask_native_*.nii.gz"))
+    return any(is_complete_nifti(path) for path in existing)
 
 
 def _plan_workers_for_inputs(input_files, requested, cpu_cap=None, budget_bytes=None):
@@ -309,8 +316,10 @@ def main():
             # Skip-existing check: look in the lesion_type subfolder
             out_subdir = args.output_dir / subj / sess / "anat" / args.lesion_type
             existing = list(out_subdir.glob(f"{mask_stem}_segmask_native_*.nii.gz"))
-            if existing:
-                logger.info(f"  Skipping {subj}/{sess}: {len(existing)} native masks exist")
+            if has_complete_native_mask(out_subdir, mask_stem):
+                logger.info(
+                    f"  Skipping {subj}/{sess}: {len(existing)} native mask(s) complete"
+                )
             else:
                 filtered.append((mask_path, subj, sess))
         masks = filtered

@@ -40,12 +40,30 @@ def _new_run():
 def test_stopped_run_can_be_resumed():
     with patch("app.get_pipeline_run", return_value=_stopped_run()), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.load_config_snapshot", return_value={}), \
+         patch("app.load_config_snapshot", return_value={"steps": []}), \
          patch("app.diff_configs", return_value=[]), \
          patch("app.create_pipeline_run", return_value=_new_run()):
         response = client.post("/api/pipeline-runs/run-1/requeue")
 
     assert response.status_code == 200
+
+
+def test_default_resume_rejects_missing_preprocessing_snapshot():
+    """Default Resume must not live-start when the stop-time snapshot is gone."""
+    with patch("app.get_pipeline_run", return_value=_stopped_run()), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.load_config_snapshot", return_value={}), \
+         patch("app.create_pipeline_run", return_value=_new_run()) as mock_create, \
+         patch("app.run_pipeline_background") as mock_bg, \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()):
+        response = client.post("/api/pipeline-runs/run-1/requeue")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"] == "snapshot_unavailable"
+    assert "сохранённ" in detail["message"].lower() or "настройк" in detail["message"].lower()
+    mock_create.assert_not_called()
+    mock_bg.assert_not_called()
 
 
 def test_changed_settings_block_resume_and_are_reported():

@@ -225,8 +225,13 @@ def run_pipeline_background(
     """
     logger.info(f"Фоновый запуск pipeline для run_id: {run_id}")
     
-    # Обновляем статус на "running"
-    update_pipeline_run(db, run_id, status="running", started_at=datetime.now(timezone.utc))
+    # only_if_active: a stop may have already committed on another Session
+    updated = update_pipeline_run_if_active(
+        db, run_id, status="running", started_at=datetime.now(timezone.utc)
+    )
+    if updated is None:
+        logger.info("Run %s is no longer active — not starting pipeline", run_id)
+        return
     
     # Запускаем pipeline
     process = pipeline_manager.start_pipeline(
@@ -237,8 +242,8 @@ def run_pipeline_background(
     )
     
     if not process:
-        # Ошибка запуска
-        update_pipeline_run(
+        # Ошибка запуска — do not clobber a stop that committed during start
+        update_pipeline_run_if_active(
             db,
             run_id,
             status="failed",
@@ -248,11 +253,22 @@ def run_pipeline_background(
         logger.error(f"Не удалось запустить pipeline для run_id: {run_id}")
         return
     
-    timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
-    logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
-
     # Ждём завершения процесса
     try:
+        # Stop may have committed while validate_input_path / Popen ran.
+        db.expire_all()
+        run = get_pipeline_run(db, run_id)
+        if run and run.status == PipelineStatus.STOPPED.value:
+            logger.info(
+                "Run %s was stopped before the process was waited on — killing",
+                run_id,
+            )
+            _kill_process_tree(process)
+            return
+
+        timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
+        logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
+
         stdout, stderr = process.communicate(timeout=timeout)
         return_code = process.returncode
 
@@ -554,19 +570,29 @@ async def requeue_pipeline_run(
         snapshot = load_config_snapshot(
             str(preprocessing_snapshot_path(original_run.run_id))
         )
-        if snapshot:
-            with open(PREPROCESSING_CONFIG, encoding="utf-8") as f:
-                current = yaml.safe_load(f) or {}
-            differences = diff_configs(snapshot, current)
-            if differences:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "reason": "settings_changed",
-                        "message": "Настройки изменились с момента остановки",
-                        "differences": differences,
-                    },
-                )
+        if not snapshot:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "snapshot_unavailable",
+                    "message": (
+                        "Снимок настроек предобработки недоступен — "
+                        "возобновление на прежних настройках невозможно"
+                    ),
+                },
+            )
+        with open(PREPROCESSING_CONFIG, encoding="utf-8") as f:
+            current = yaml.safe_load(f) or {}
+        differences = diff_configs(snapshot, current)
+        if differences:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "settings_changed",
+                    "message": "Настройки изменились с момента остановки",
+                    "differences": differences,
+                },
+            )
 
     # Resume on saved settings: require both retained files before creating
     # a new run. Falling back to live templates would silently mix stop-time

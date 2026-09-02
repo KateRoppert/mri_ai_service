@@ -346,7 +346,23 @@ class PipelineManager:
         
         try:
             snap = Path(snapshot_runtime_config) if snapshot_runtime_config else None
-            if snap is not None and snap.is_file():
+            if snap is not None:
+                # Fail closed: a missing retained file must not rebuild from
+                # today's live pipeline_config.yaml.
+                if not snap.is_file():
+                    logger.error(
+                        "Retained runtime config is missing, not falling back "
+                        "to the live template: %s", snap,
+                    )
+                    return None
+                if preprocessing_snapshot is not None:
+                    pre = Path(preprocessing_snapshot)
+                    if not pre.is_file():
+                        logger.error(
+                            "Preprocessing snapshot is missing, not starting: %s",
+                            pre,
+                        )
+                        return None
                 config_path = self.create_runtime_config_from_snapshot(
                     run_id,
                     input_path,
