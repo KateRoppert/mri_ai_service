@@ -568,17 +568,9 @@ async def requeue_pipeline_run(
                     },
                 )
 
-    run = create_pipeline_run(
-        db,
-        input_path=original_run.input_path,
-        output_path=original_run.output_path,
-        lesion_type=original_run.lesion_type or "glioblastoma",
-        parent_run_id=run_id,
-    )
-
-    # Resume on saved settings: pass the retained runtime YAML (and the
-    # preprocessing copy taken at stop) so the orchestrator does not rebuild
-    # from today's live templates.
+    # Resume on saved settings: require both retained files before creating
+    # a new run. Falling back to live templates would silently mix stop-time
+    # stage enablement with today's preprocessing steps.
     snapshot_runtime_config = None
     preprocessing_snapshot = None
     if (
@@ -590,17 +582,39 @@ async def requeue_pipeline_run(
             if original_run.config_path
             else pipeline_manager.runtime_config_path(original_run.run_id)
         )
-        if retained.is_file():
-            snapshot_runtime_config = retained
-            pre = preprocessing_snapshot_path(original_run.run_id)
-            if pre.is_file():
-                preprocessing_snapshot = pre
-        else:
-            logger.warning(
-                "use_snapshot requested for run %s but retained config missing at %s — "
-                "falling back to live template",
-                original_run.run_id, retained,
+        pre = preprocessing_snapshot_path(original_run.run_id)
+        if not retained.is_file():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "snapshot_unavailable",
+                    "message": (
+                        "Сохранённые настройки запуска недоступны — "
+                        "возобновление на прежних настройках невозможно"
+                    ),
+                },
             )
+        if not pre.is_file():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "snapshot_unavailable",
+                    "message": (
+                        "Снимок настроек предобработки недоступен — "
+                        "возобновление на прежних настройках невозможно"
+                    ),
+                },
+            )
+        snapshot_runtime_config = retained
+        preprocessing_snapshot = pre
+
+    run = create_pipeline_run(
+        db,
+        input_path=original_run.input_path,
+        output_path=original_run.output_path,
+        lesion_type=original_run.lesion_type or "glioblastoma",
+        parent_run_id=run_id,
+    )
 
     background_tasks.add_task(
         run_pipeline_background,

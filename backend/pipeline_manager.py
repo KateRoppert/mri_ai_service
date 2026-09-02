@@ -199,19 +199,35 @@ class PipelineManager:
                         stage_name, script_path, absolute_script_path,
                     )
 
-        if preprocessing_snapshot is not None:
-            pre_path = Path(preprocessing_snapshot)
-            if pre_path.is_file():
-                snap_abs = str(pre_path.resolve())
-                for stage_config in (config.get("stages") or {}).values():
-                    if not isinstance(stage_config, dict):
-                        continue
-                    args = stage_config.get("args")
-                    if not isinstance(args, dict):
-                        continue
-                    for key in ("config", "preprocessing-config"):
-                        if self._points_at_live_preprocessing(args.get(key)):
-                            args[key] = snap_abs
+        pre_path = Path(preprocessing_snapshot) if preprocessing_snapshot else None
+        pre_usable = pre_path is not None and pre_path.is_file()
+        if pre_usable:
+            snap_abs = str(pre_path.resolve())
+            for stage_config in (config.get("stages") or {}).values():
+                if not isinstance(stage_config, dict):
+                    continue
+                args = stage_config.get("args")
+                if not isinstance(args, dict):
+                    continue
+                for key in ("config", "preprocessing-config"):
+                    if self._points_at_live_preprocessing(args.get(key)):
+                        args[key] = snap_abs
+
+        # Fail closed: never leave stages pointed at the live preprocessing
+        # file while resuming from a stop-time pipeline snapshot.
+        for stage_name, stage_config in (config.get("stages") or {}).items():
+            if not isinstance(stage_config, dict):
+                continue
+            args = stage_config.get("args")
+            if not isinstance(args, dict):
+                continue
+            for key in ("config", "preprocessing-config"):
+                if self._points_at_live_preprocessing(args.get(key)):
+                    raise ValueError(
+                        f"Cannot resume from snapshot: stage {stage_name} still "
+                        f"names live preprocessing via {key!r}, but no usable "
+                        f"preprocessing snapshot was provided"
+                    )
 
         runtime_configs_dir = self.pipeline_root / "runtime_configs"
         runtime_configs_dir.mkdir(exist_ok=True)

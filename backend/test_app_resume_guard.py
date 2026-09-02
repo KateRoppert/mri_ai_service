@@ -61,14 +61,24 @@ def test_changed_settings_block_resume_and_are_reported():
     assert response.json()["detail"]["differences"] == differences
 
 
-def test_use_snapshot_resumes_despite_differences():
+def test_use_snapshot_resumes_despite_differences(tmp_path):
     differences = [{"setting": "Удаление черепа", "was": "bet", "now": "hdbet"}]
+    retained = tmp_path / "config_run-1.yaml"
+    retained.write_text("general: {}\nstages: {}\n", encoding="utf-8")
+    preproc = tmp_path / "preprocessing_run-1.yaml"
+    preproc.write_text("steps: []\n", encoding="utf-8")
 
-    with patch("app.get_pipeline_run", return_value=_stopped_run()), \
+    original = _stopped_run()
+    original.config_path = str(retained)
+
+    with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
          patch("app.load_config_snapshot", return_value={"steps": []}), \
          patch("app.diff_configs", return_value=differences), \
-         patch("app.create_pipeline_run", return_value=_new_run()):
+         patch("app.preprocessing_snapshot_path", return_value=preproc), \
+         patch("app.create_pipeline_run", return_value=_new_run()), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()):
         response = client.post(
             "/api/pipeline-runs/run-1/requeue", json={"use_snapshot": True}
         )
@@ -84,6 +94,52 @@ def test_running_run_still_rejected():
         response = client.post("/api/pipeline-runs/run-1/requeue")
 
     assert response.status_code == 409
+
+
+def test_use_snapshot_rejects_missing_runtime_config():
+    """Choosing saved settings must not silently fall back to the live template."""
+    original = _stopped_run(run_id="run-1")
+    original.config_path = "/nonexistent/runtime_configs/config_run-1.yaml"
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run") as mock_create, \
+         patch("app.run_pipeline_background") as mock_bg:
+        response = client.post(
+            "/api/pipeline-runs/run-1/requeue", json={"use_snapshot": True}
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"] == "snapshot_unavailable"
+    assert "сохранённ" in detail["message"].lower() or "настройк" in detail["message"].lower()
+    mock_create.assert_not_called()
+    mock_bg.assert_not_called()
+
+
+def test_use_snapshot_rejects_missing_preprocessing_snapshot(tmp_path):
+    """Pipeline snapshot without preprocessing copy must not mix two configs."""
+    retained = tmp_path / "config_run-1.yaml"
+    retained.write_text("general: {}\nstages: {}\n", encoding="utf-8")
+    missing_preproc = tmp_path / "preprocessing_run-1.yaml"  # not created
+
+    original = _stopped_run(run_id="run-1")
+    original.config_path = str(retained)
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.preprocessing_snapshot_path", return_value=missing_preproc), \
+         patch("app.create_pipeline_run") as mock_create, \
+         patch("app.run_pipeline_background") as mock_bg:
+        response = client.post(
+            "/api/pipeline-runs/run-1/requeue", json={"use_snapshot": True}
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"] == "snapshot_unavailable"
+    mock_create.assert_not_called()
+    mock_bg.assert_not_called()
 
 
 def test_use_snapshot_passes_retained_runtime_config_to_pipeline(tmp_path):
