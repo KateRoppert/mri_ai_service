@@ -143,6 +143,88 @@ class PipelineManager:
         logger.info(f"Runtime конфиг создан: {runtime_config_path}")
         
         return runtime_config_path
+
+    @staticmethod
+    def _points_at_live_preprocessing(value: Any) -> bool:
+        """True when a stage arg still names the live preprocessing YAML."""
+        if value is None:
+            return False
+        name = Path(str(value)).name
+        return name == "preprocessing_config.yaml"
+
+    def create_runtime_config_from_snapshot(
+        self,
+        run_id: str,
+        input_path: str,
+        output_path: str,
+        snapshot_config_path: Path,
+        lesion_type: str = "glioblastoma",
+        preprocessing_snapshot: Optional[Path] = None,
+    ) -> Path:
+        """
+        Build a new run's runtime YAML from a stopped run's retained config.
+
+        Paths and lesion_type are overwritten for the requeue; stage enablement
+        and other settings stay as they were when the original run was stopped.
+        When a preprocessing snapshot exists, stage args that still name
+        configs/preprocessing_config.yaml are rewritten to that absolute path
+        so stages 05/07/08 use the saved steps — the live file is left alone.
+        """
+        snapshot_config_path = Path(snapshot_config_path)
+        if not snapshot_config_path.is_file():
+            raise FileNotFoundError(
+                f"Retained runtime config not found: {snapshot_config_path}"
+            )
+
+        with open(snapshot_config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        if "general" not in config or not isinstance(config["general"], dict):
+            config["general"] = {}
+
+        config["general"]["root_input_dir"] = input_path
+        config["general"]["root_output_dir"] = output_path
+        config["general"]["lesion_type"] = lesion_type
+
+        for stage_name, stage_config in config.get("stages", {}).items():
+            if not isinstance(stage_config, dict):
+                continue
+            if "script" in stage_config:
+                script_path = stage_config["script"]
+                if not Path(script_path).is_absolute():
+                    absolute_script_path = self.pipeline_root / script_path
+                    stage_config["script"] = str(absolute_script_path)
+                    logger.debug(
+                        "Преобразован путь скрипта %s: %s -> %s",
+                        stage_name, script_path, absolute_script_path,
+                    )
+
+        if preprocessing_snapshot is not None:
+            pre_path = Path(preprocessing_snapshot)
+            if pre_path.is_file():
+                snap_abs = str(pre_path.resolve())
+                for stage_config in (config.get("stages") or {}).values():
+                    if not isinstance(stage_config, dict):
+                        continue
+                    args = stage_config.get("args")
+                    if not isinstance(args, dict):
+                        continue
+                    for key in ("config", "preprocessing-config"):
+                        if self._points_at_live_preprocessing(args.get(key)):
+                            args[key] = snap_abs
+
+        runtime_configs_dir = self.pipeline_root / "runtime_configs"
+        runtime_configs_dir.mkdir(exist_ok=True)
+
+        runtime_config_path = runtime_configs_dir / f"config_{run_id}.yaml"
+        with open(runtime_config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+
+        logger.info(
+            "Runtime конфиг из snapshot создан: %s (from %s)",
+            runtime_config_path, snapshot_config_path,
+        )
+        return runtime_config_path
     
     def validate_input_path(self, input_path: str) -> bool:
         """
@@ -217,6 +299,8 @@ class PipelineManager:
         input_path: str,
         output_path: str,
         lesion_type: str = "glioblastoma",
+        snapshot_runtime_config: Optional[Path] = None,
+        preprocessing_snapshot: Optional[Path] = None,
     ) -> Optional[subprocess.Popen]:
         """
         Запускает pipeline как subprocess
@@ -225,6 +309,11 @@ class PipelineManager:
             run_id: ID запуска
             input_path: Путь к входным данным
             output_path: Путь для результатов
+            snapshot_runtime_config: retained runtime YAML from a stopped run;
+                when present and readable, resume from that snapshot instead of
+                rebuilding from the live pipeline_config.yaml template
+            preprocessing_snapshot: retained preprocessing YAML to point stages
+                05/07/08 at when resuming with snapshot_runtime_config
             
         Returns:
             subprocess.Popen объект или None при ошибке
@@ -240,10 +329,21 @@ class PipelineManager:
             return None
         
         try:
-            # Создаём runtime конфиг
-            config_path = self.create_runtime_config(
-                run_id, input_path, output_path, lesion_type=lesion_type
-            )
+            snap = Path(snapshot_runtime_config) if snapshot_runtime_config else None
+            if snap is not None and snap.is_file():
+                config_path = self.create_runtime_config_from_snapshot(
+                    run_id,
+                    input_path,
+                    output_path,
+                    snapshot_config_path=snap,
+                    lesion_type=lesion_type,
+                    preprocessing_snapshot=preprocessing_snapshot,
+                )
+            else:
+                # Создаём runtime конфиг from the live template
+                config_path = self.create_runtime_config(
+                    run_id, input_path, output_path, lesion_type=lesion_type
+                )
             
             # Формируем команду запуска
             cmd = [

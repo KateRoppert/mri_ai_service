@@ -208,6 +208,8 @@ def run_pipeline_background(
     output_path: str,
     db: Session,
     lesion_type: str = "glioblastoma",
+    snapshot_runtime_config: Optional[Path] = None,
+    preprocessing_snapshot: Optional[Path] = None,
 ):
     """
     Фоновая задача для запуска pipeline
@@ -217,6 +219,9 @@ def run_pipeline_background(
         input_path: Путь к входным данным
         output_path: Путь к результатам
         db: Сессия БД
+        snapshot_runtime_config: retained pipeline runtime YAML when resuming
+            a stopped run with use_snapshot
+        preprocessing_snapshot: retained preprocessing YAML for that resume
     """
     logger.info(f"Фоновый запуск pipeline для run_id: {run_id}")
     
@@ -227,6 +232,8 @@ def run_pipeline_background(
     process = pipeline_manager.start_pipeline(
         run_id, input_path, output_path,
         lesion_type=lesion_type,
+        snapshot_runtime_config=snapshot_runtime_config,
+        preprocessing_snapshot=preprocessing_snapshot,
     )
     
     if not process:
@@ -569,6 +576,32 @@ async def requeue_pipeline_run(
         parent_run_id=run_id,
     )
 
+    # Resume on saved settings: pass the retained runtime YAML (and the
+    # preprocessing copy taken at stop) so the orchestrator does not rebuild
+    # from today's live templates.
+    snapshot_runtime_config = None
+    preprocessing_snapshot = None
+    if (
+        original_run.status == PipelineStatus.STOPPED
+        and body.use_snapshot
+    ):
+        retained = (
+            Path(original_run.config_path)
+            if original_run.config_path
+            else pipeline_manager.runtime_config_path(original_run.run_id)
+        )
+        if retained.is_file():
+            snapshot_runtime_config = retained
+            pre = preprocessing_snapshot_path(original_run.run_id)
+            if pre.is_file():
+                preprocessing_snapshot = pre
+        else:
+            logger.warning(
+                "use_snapshot requested for run %s but retained config missing at %s — "
+                "falling back to live template",
+                original_run.run_id, retained,
+            )
+
     background_tasks.add_task(
         run_pipeline_background,
         run.run_id,
@@ -576,6 +609,8 @@ async def requeue_pipeline_run(
         run.output_path,
         db,
         lesion_type=run.lesion_type,
+        snapshot_runtime_config=snapshot_runtime_config,
+        preprocessing_snapshot=preprocessing_snapshot,
     )
 
     asyncio.create_task(pipeline_monitor.start_monitoring(
