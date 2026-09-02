@@ -239,6 +239,14 @@ class PipelineStartRequest(BaseModel):
     )
 
 
+class RequeueRequest(BaseModel):
+    """Опции повторного запуска."""
+    use_snapshot: bool = Field(
+        False,
+        description="Использовать настройки остановленного запуска, а не текущие",
+    )
+
+
 class PipelineStartResponse(BaseModel):
     """Ответ на запуск pipeline"""
     run_id: str = Field(..., description="Уникальный ID запуска")

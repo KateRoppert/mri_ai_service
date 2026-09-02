@@ -3,7 +3,7 @@
 """
 
 import asyncio
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -13,10 +13,12 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 import json
 import logging
+import shutil
 import signal
 import subprocess
 import uvicorn
 import os
+import yaml
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
@@ -38,6 +40,7 @@ COREG_DICE_THRESHOLD = 0.7
 from models import (
     PipelineStartRequest,
     PipelineStartResponse,
+    RequeueRequest,
     PipelineStatusResponse,
     PipelineStatus,
     StageProgress,
@@ -67,6 +70,7 @@ from models import (
     MergeSessionsResponse,
     PipelineLossesResponse,
 )
+from config_diff import diff_configs
 from database import (
     get_db,
     init_db,
@@ -82,7 +86,7 @@ from database import (
     SessionLocal,
 )
 from websocket_manager import ws_manager
-from pipeline_monitor import pipeline_monitor
+from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
 from pipeline_manager import PipelineManager
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -159,6 +163,26 @@ pipeline_manager = PipelineManager()
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
+
+def preprocessing_snapshot_path(run_id: str) -> Path:
+    """Where a stopped run's preprocessing settings were copied at stop time."""
+    return pipeline_manager.runtime_config_path(run_id).parent / f"preprocessing_{run_id}.yaml"
+
+
+def load_config_snapshot(config_path: Optional[str]) -> dict:
+    """Settings a stopped run was started with, or {} if not retained."""
+    if not config_path:
+        return {}
+    path = Path(config_path)
+    if not path.is_file():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning("Could not read config snapshot %s: %s", path, e)
+        return {}
+
 
 def _kill_process_tree(process: subprocess.Popen) -> None:
     """
@@ -440,6 +464,18 @@ async def stop_pipeline_run(
         completed_at=datetime.utcnow(),
     )
 
+    # Retain preprocessing settings as they were at stop — resume compares
+    # this copy against the live file (pipeline runtime YAML has no steps).
+    try:
+        if PREPROCESSING_CONFIG.is_file():
+            snap = preprocessing_snapshot_path(run_id)
+            snap.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(PREPROCESSING_CONFIG, snap)
+    except OSError as e:
+        logger.warning(
+            "Could not snapshot preprocessing config for run %s: %s", run_id, e
+        )
+
     process = pipeline_manager.get_process(run_id)
     if process is not None:
         _kill_process_tree(process)
@@ -472,7 +508,8 @@ async def stop_pipeline_run(
 async def requeue_pipeline_run(
     run_id: str,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    body: RequeueRequest = Body(default_factory=RequeueRequest),
+    db: Session = Depends(get_db),
 ):
     """
     Перезапускает pipeline на тех же input/output путях, что и исходный
@@ -500,6 +537,29 @@ async def requeue_pipeline_run(
             status_code=409,
             detail="На этом пути уже выполняется другая обработка — дождитесь её завершения",
         )
+
+    # A stopped run may be resumed, but not blindly: resuming adopts current
+    # settings, so a configuration changed since the stop would split the
+    # output between two behaviours with nothing recording it.
+    if original_run.status == PipelineStatus.STOPPED and not body.use_snapshot:
+        # Compare the preprocessing copy taken at stop — not the pipeline
+        # runtime YAML (config_path), which has no steps[].params.
+        snapshot = load_config_snapshot(
+            str(preprocessing_snapshot_path(original_run.run_id))
+        )
+        if snapshot:
+            with open(PREPROCESSING_CONFIG, encoding="utf-8") as f:
+                current = yaml.safe_load(f) or {}
+            differences = diff_configs(snapshot, current)
+            if differences:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "settings_changed",
+                        "message": "Настройки изменились с момента остановки",
+                        "differences": differences,
+                    },
+                )
 
     run = create_pipeline_run(
         db,
