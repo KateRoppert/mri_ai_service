@@ -1098,20 +1098,23 @@ class PipelineManager:
             if isinstance(info, dict)
         }
 
-    def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False):
+    def runtime_config_path(self, run_id: str) -> Path:
+        """Where this run's runtime config lives."""
+        return self.pipeline_root / "runtime_configs" / f"config_{run_id}.yaml"
+
+    def cleanup_runtime_config(self, run_id: str, keep_for_debug: bool = False,
+                               keep_as_snapshot: bool = False):
         """
-        Удаляет runtime конфиг после завершения
-        
-        Args:
-            run_id: ID запуска
-            keep_for_debug: Если True, конфиг не удаляется (для отладки)
+        Remove a run's runtime config.
+
+        keep_as_snapshot: retain it because the run was stopped and may be
+        resumed — resume compares these settings against the current ones to
+        catch a configuration change between the two halves of the work.
         """
-        if keep_for_debug:
-            config_path = self.pipeline_root / "runtime_configs" / f"config_{run_id}.yaml"
-            logger.info(f"Runtime конфиг сохранён для отладки: {config_path}")
+        if keep_for_debug or keep_as_snapshot:
             return
-            
-        config_path = self.pipeline_root / "runtime_configs" / f"config_{run_id}.yaml"
+
+        config_path = self.runtime_config_path(run_id)
         if config_path.exists():
             try:
                 config_path.unlink()

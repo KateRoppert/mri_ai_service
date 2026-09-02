@@ -223,7 +223,14 @@ def run_pipeline_background(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
         return_code = process.returncode
-        
+
+        # Stop commits status=stopped on another Session; do not overwrite it
+        # with completed/failed from the kill's exit code.
+        db.expire_all()
+        existing = get_pipeline_run(db, run_id)
+        if existing and existing.status == PipelineStatus.STOPPED.value:
+            return
+
         if return_code == 0:
             # Успешное завершение
             logger.info(f"Pipeline успешно завершён для run_id: {run_id}")
@@ -276,25 +283,31 @@ def run_pipeline_background(
         logger.error(f"Таймаут выполнения pipeline для run_id: {run_id}")
         _kill_process_tree(process)
 
-        update_pipeline_run(
-            db,
-            run_id,
-            status="failed",
-            error_message="Превышено время ожидания выполнения",
-            completed_at=datetime.utcnow()
-        )
+        db.expire_all()
+        existing = get_pipeline_run(db, run_id)
+        if not (existing and existing.status == PipelineStatus.STOPPED.value):
+            update_pipeline_run(
+                db,
+                run_id,
+                status="failed",
+                error_message="Превышено время ожидания выполнения",
+                completed_at=datetime.utcnow()
+            )
     
     except Exception as e:
         # Другие ошибки
         logger.error(f"Ошибка выполнения pipeline для run_id: {run_id}: {e}")
-        
-        update_pipeline_run(
-            db,
-            run_id,
-            status="failed",
-            error_message=str(e),
-            completed_at=datetime.utcnow()
-        )
+
+        db.expire_all()
+        existing = get_pipeline_run(db, run_id)
+        if not (existing and existing.status == PipelineStatus.STOPPED.value):
+            update_pipeline_run(
+                db,
+                run_id,
+                status="failed",
+                error_message=str(e),
+                completed_at=datetime.utcnow()
+            )
     
     finally:
         # Мониторинг остановится автоматически когда pipeline завершится
@@ -304,8 +317,18 @@ def run_pipeline_background(
         # is no longer running, so a stop request must stop finding it.
         pipeline_manager.unregister_process(run_id)
 
-        # Очистка runtime конфига (с учётом настройки отладки)
-        pipeline_manager.cleanup_runtime_config(run_id, keep_for_debug=settings.keep_runtime_configs)
+        # Stopped runs keep the runtime config as a snapshot for resume.
+        # Re-read past this Session's cache — stop commits on another Session.
+        db.expire_all()
+        run = get_pipeline_run(db, run_id)
+        keep_as_snapshot = bool(
+            run and run.status == PipelineStatus.STOPPED.value
+        )
+        pipeline_manager.cleanup_runtime_config(
+            run_id,
+            keep_for_debug=settings.keep_runtime_configs,
+            keep_as_snapshot=keep_as_snapshot,
+        )
 
 
 # ============================================
@@ -433,6 +456,7 @@ async def stop_pipeline_run(
         run_id,
         status=PipelineStatus.STOPPED.value,
         stopped_at_stage=run.current_stage,
+        config_path=str(pipeline_manager.runtime_config_path(run_id)),
         completed_at=datetime.utcnow(),
     )
 
