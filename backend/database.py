@@ -58,6 +58,10 @@ class PipelineRun(Base):
     # Тип поражения (glioblastoma / multiple_sclerosis)
     lesion_type = Column(String, nullable=True, default='glioblastoma')
 
+    # Остановка оператором: на каком этапе прервали и кто нажал кнопку.
+    stopped_at_stage = Column(Integer, nullable=True)
+    stopped_by = Column(String, nullable=True)
+
     # Если этот запуск — requeue (повторная обработка после ручной правки),
     # здесь лежит run_id исходного запуска. NULL для обычных запусков.
     parent_run_id = Column(String, nullable=True)
@@ -255,6 +259,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_add_lesion_type()
     _migrate_add_parent_run_id()
+    _migrate_add_stop_columns()
 
 
 def _migrate_add_lesion_type():
@@ -281,6 +286,23 @@ def _migrate_add_parent_run_id():
                 "ALTER TABLE pipeline_runs ADD COLUMN parent_run_id VARCHAR"
             ))
             conn.commit()
+
+
+def _migrate_add_stop_columns():
+    """Add stopped_at_stage / stopped_by to pipeline_runs if not present."""
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            __import__('sqlalchemy').text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'stopped_at_stage' not in cols:
+            conn.execute(__import__('sqlalchemy').text(
+                "ALTER TABLE pipeline_runs ADD COLUMN stopped_at_stage INTEGER"
+            ))
+        if 'stopped_by' not in cols:
+            conn.execute(__import__('sqlalchemy').text(
+                "ALTER TABLE pipeline_runs ADD COLUMN stopped_by VARCHAR"
+            ))
+        conn.commit()
 
 
 def reset_db():

@@ -14,6 +14,9 @@ class PipelineStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Deliberately ended by an operator — distinct from FAILED, which is a
+    # defect. Mixing them would make the failure rate meaningless.
+    STOPPED = "stopped"
 
 
 class QualityCategory(str, Enum):
