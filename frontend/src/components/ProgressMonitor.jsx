@@ -1,13 +1,14 @@
 /**
  * Компонент для мониторинга выполнения pipeline
  */
-import { useEffect, useState } from 'react';
-import { Card, Progress, Space, Tag, Button, Divider, Alert } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Card, Progress, Space, Tag, Button, Divider, Alert, Modal, message } from 'antd';
 import { 
   SyncOutlined, 
   CheckCircleOutlined, 
   CloseCircleOutlined,
-  ReloadOutlined 
+  ReloadOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import StageProgress from './StageProgress';
 import QualityReport from './QualityReport';
@@ -15,7 +16,8 @@ import NIfTIViewer from './NIfTIViewer';
 import ClinicalReport from './ClinicalReport';
 import IncompletePatients from './IncompletePatients';
 import wsService from '../services/websocket';
-import { getPipelineStatus, getEntitiesForRun } from '../services/api';
+import { confirmAndResume } from '../utils/resumeRun';
+import { getPipelineStatus, getEntitiesForRun, stopPipelineRun } from '../services/api';
 
 const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
@@ -24,17 +26,37 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   const [currentStage, setCurrentStage] = useState(0);
   const [status, setStatus] = useState('running');
   const [error, setError] = useState(null);
+  const [stopping, setStopping] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [showQualityReport, setShowQualityReport] = useState(false);
   const [showVisualization, setShowVisualization] = useState(false);
   const [showClinicalReport, setShowClinicalReport] = useState(false);
   const [showIncompletePatients, setShowIncompletePatients] = useState(false);
   const [validationRef, setValidationRef] = useState(null);
   const [parentRunId, setParentRunId] = useState(null);
+  // WS callbacks close over a stale render; refs keep terminal-state guards correct.
+  const statusRef = useRef('running');
+  const terminalNotifiedRef = useRef(false);
 
   /**
    * Подключение к WebSocket при монтировании компонента
    */
   useEffect(() => {
+    statusRef.current = 'running';
+    terminalNotifiedRef.current = false;
+
+    // Belt and braces alongside the key= in App.jsx: reset everything a
+    // previous run left behind. A stale 'stopped' here hides the Stop
+    // button, and stale stages show the old run's progress bars.
+    setStatus('running');
+    setStages({});
+    setOverallProgress(0);
+    setCurrentStage(0);
+    setError(null);
+    setStopping(false);
+    setResuming(false);
+    setParentRunId(null);
+
     // Сначала получаем текущий статус через REST API
     fetchInitialStatus();
 
@@ -45,8 +67,12 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
         runId,
         handleWebSocketMessage,
         (error) => {
-            // Не показываем ошибку если pipeline завершён
-            if (status !== 'completed' && status !== 'failed') {
+            // Не показываем ошибку если pipeline уже в терминальном статусе
+            if (
+              statusRef.current !== 'completed' &&
+              statusRef.current !== 'failed' &&
+              statusRef.current !== 'stopped'
+            ) {
             handleWebSocketError(error);
             }
         }
@@ -78,7 +104,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
    * Обработчик сообщений от WebSocket
    */
   const handleWebSocketMessage = (data) => {
-    if (data.type === 'progress_update') {
+    if (data.type === 'progress_update' || data.type === 'status') {
       updateStatus(data);
     }
   };
@@ -131,18 +157,67 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
    * Обновить состояние на основе данных от backend
    */
   const updateStatus = (data) => {
-    setStatus(data.status);
-    setOverallProgress(data.overall_progress || 0);
-    setCurrentStage(data.current_stage || 0);
-    
+    const incoming = data.status;
+
+    // Stale progress ticks must not revive a deliberate stop.
+    if (
+      statusRef.current === 'stopped' &&
+      (incoming === 'running' || incoming === 'pending')
+    ) {
+      return;
+    }
+
+    if (incoming != null) {
+      statusRef.current = incoming;
+      setStatus(incoming);
+    }
+
+    // WS type:status may omit progress fields — keep last known values.
+    if (data.overall_progress != null) {
+      setOverallProgress(data.overall_progress);
+    }
+    if (data.current_stage != null) {
+      setCurrentStage(data.current_stage);
+    } else if (data.stopped_at_stage != null) {
+      setCurrentStage(data.stopped_at_stage);
+    }
+
     if (data.stages) {
       setStages(data.stages);
     }
 
-    // Если pipeline завершён - уведомляем родительский компонент
-    if (data.status === 'completed' || data.status === 'failed') {
-      if (onComplete) {
-        onComplete(data);
+    // A stop arrives as a bare status change: the last progress tick still
+    // described the interrupted stage as "running", and nothing else will
+    // correct it. Left alone the UI keeps a spinner and a half-filled bar
+    // on a stage that is no longer executing.
+    if (incoming === 'stopped') {
+      setStages((prev) => {
+        const corrected = {};
+        for (const [key, stage] of Object.entries(prev || {})) {
+          // Only the stage that was actually executing is "interrupted";
+          // stages that never started stay "pending", which reads honestly.
+          corrected[key] =
+            stage && stage.status === 'running'
+              ? { ...stage, status: 'stopped' }
+              : stage;
+        }
+        return corrected;
+      });
+    }
+
+    // Terminal statuses unlock «Новая обработка» via App.onComplete.
+    if (
+      incoming === 'completed' ||
+      incoming === 'failed' ||
+      incoming === 'stopped'
+    ) {
+      if (onComplete && !terminalNotifiedRef.current) {
+        terminalNotifiedRef.current = true;
+        onComplete({
+          ...data,
+          run_id: data.run_id || runId,
+          status: incoming,
+        });
       }
     }
   };
@@ -162,6 +237,65 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   };
 
   /**
+   * Остановить выполняющийся запуск (с подтверждением)
+   */
+  const handleStop = () => {
+    Modal.confirm({
+      title: 'Остановить обработку?',
+      // The action is irreversible and may land an hour into a run, so the
+      // dialog states what survives and what is lost rather than asking a
+      // bare yes/no.
+      content: (
+        <div>
+          <p>Уже обработанные пациенты сохранятся, их результаты останутся доступны.</p>
+          <p>Текущий этап будет прерван — эти пациенты обработаются заново при возобновлении.</p>
+        </div>
+      ),
+      okText: 'Остановить',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: async () => {
+        setStopping(true);
+        try {
+          const result = await stopPipelineRun(runId);
+          message.success(
+            `Обработка остановлена на этапе ${result.stopped_at_stage ?? '—'}`
+          );
+          updateStatus({
+            ...result,
+            run_id: result.run_id || runId,
+            status: 'stopped',
+          });
+        } catch (error) {
+          message.error(
+            error.response?.data?.detail || 'Не удалось остановить обработку'
+          );
+        } finally {
+          setStopping(false);
+        }
+      },
+    });
+  };
+
+  /**
+   * Возобновить остановленный запуск прямо отсюда — ходить за этим в
+   * историю запусков неудобно, раз остановка была сделана на этом экране.
+   */
+  const handleResume = async () => {
+    setResuming(true);
+    try {
+      await confirmAndResume(runId, {
+        onResumed: (result) => {
+          // Resume starts a NEW run; the app switches this view to it.
+          onRequeued?.(result);
+        },
+      });
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  /**
    * Определяем общий статус
    */
   const getOverallStatus = () => {
@@ -178,7 +312,19 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
           icon: <CloseCircleOutlined />,
           text: 'Ошибка выполнения',
         };
+      case 'stopped':
+        return {
+          color: 'default',
+          icon: <StopOutlined />,
+          text: 'Обработка остановлена',
+        };
       case 'running':
+      case 'pending':
+        return {
+          color: 'processing',
+          icon: <SyncOutlined spin />,
+          text: 'Выполняется обработка',
+        };
       default:
         return {
           color: 'processing',
@@ -220,18 +366,68 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
 
       {/* Общий прогресс */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ marginBottom: 8 }}>
+        <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <strong>Общий прогресс:</strong>
+          {(status === 'running' || status === 'pending') && (
+            <Button danger onClick={handleStop} loading={stopping}>
+              Остановить
+            </Button>
+          )}
         </div>
         <Progress
           percent={Math.round(overallProgress)}
           status={
             status === 'completed' ? 'success' :
-            status === 'failed' ? 'exception' : 'active'
+            status === 'failed' ? 'exception' :
+            status === 'stopped' ? 'normal' :
+            'active'
           }
+          strokeColor={status === 'stopped' ? '#faad14' : undefined}
           size={['default', 12]}
         />
       </div>
+
+      {/* Что произошло и что делать дальше — иначе остановленный запуск
+          выглядит просто как застывший прогресс. */}
+      {status === 'stopped' && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<StopOutlined />}
+          message="Обработка остановлена"
+          description={
+            <>
+              <div>
+                Результаты пациентов, обработанных до остановки, сохранены и
+                доступны в истории запусков.
+              </div>
+              <div style={{ marginTop: 4 }}>
+                Запуск можно возобновить с этого места — уже обработанные
+                пациенты повторно считаться не будут. Те, чья обработка
+                прервалась на середине, будут посчитаны заново.
+              </div>
+            </>
+          }
+          action={
+            <Space direction="vertical" size={8}>
+              <Button
+                type="primary"
+                size="small"
+                onClick={handleResume}
+                loading={resuming}
+              >
+                Возобновить
+              </Button>
+              {onSwitchToHistory && (
+                <Button size="small" onClick={onSwitchToHistory}>
+                  К истории запусков
+                </Button>
+              )}
+            </Space>
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       {/* Ошибка (если есть) */}
       {error && (

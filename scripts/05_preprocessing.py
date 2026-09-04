@@ -22,6 +22,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 # Allow imports from the project root (utils/)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
+from utils.nifti_integrity import is_complete_nifti
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from pipeline_validator import InputOutputValidator
 
@@ -285,7 +286,10 @@ def check_subject_processed(
         filename = f"{subject_id}_{session_id}_{modality}.nii.gz"
         output_file = output_anat / filename
         
-        if not output_file.exists():
+        # A file that exists may still be truncated — a run stopped mid-write
+        # leaves exactly that. Treat incomplete output as not done, or the
+        # damaged volume is carried into segmentation and the report.
+        if not is_complete_nifti(output_file):
             missing_on_output.append(modality)
     
     # Processed if no missing modalities on output

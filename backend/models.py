@@ -14,6 +14,9 @@ class PipelineStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Deliberately ended by an operator — distinct from FAILED, which is a
+    # defect. Mixing them would make the failure rate meaningless.
+    STOPPED = "stopped"
 
 
 class QualityCategory(str, Enum):
@@ -233,6 +236,14 @@ class PipelineStartRequest(BaseModel):
                 "use_default_output": False
             }
         }
+    )
+
+
+class RequeueRequest(BaseModel):
+    """Опции повторного запуска."""
+    use_snapshot: bool = Field(
+        False,
+        description="Использовать настройки остановленного запуска, а не текущие",
     )
 
 

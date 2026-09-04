@@ -35,6 +35,7 @@ from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentM
 import sys as _sys
 _sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
+from utils.nifti_integrity import is_complete_nifti
 from pipeline_validator import InputOutputValidator
 
 # --- Logger Setup ---
@@ -659,7 +660,7 @@ class BIDSScanner:
         skipped = 0
         
         for session in sessions:
-            if session.output_mask_path.exists():
+            if is_complete_nifti(session.output_mask_path):
                 identifier = session.get_identifier()
                 logger.debug(f"⊙ Skipping {identifier}: Output mask already exists at {session.output_mask_path}")
                 skipped += 1

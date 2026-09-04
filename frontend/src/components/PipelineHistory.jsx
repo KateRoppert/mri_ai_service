@@ -11,10 +11,12 @@ import {
   CloseCircleOutlined,
   SyncOutlined,
   MedicineBoxOutlined,
+  PauseCircleOutlined,
 } from '@ant-design/icons';
 import { getPipelineHistory } from '../services/api';
+import { confirmAndResume } from '../utils/resumeRun';
 
-const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses }) => {
+const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses, onRunResumed }) => {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [total, setTotal] = useState(0);
@@ -96,6 +98,12 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
           icon: <CloseCircleOutlined />,
           text: 'Ошибка',
         };
+      case 'stopped':
+        return {
+          color: 'orange',
+          icon: <PauseCircleOutlined />,
+          text: 'Остановлен',
+        };
       case 'pending':
       default:
         return {
@@ -104,6 +112,21 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
           text: 'Ожидание',
         };
     }
+  };
+
+  /**
+   * Возобновить остановленный запуск. При 409 с differences — диалог
+   * выбора: продолжить на сохранённых настройках или отменить.
+   */
+  const handleResume = async (runId) => {
+    // Resuming creates a NEW run; onRunResumed lets the app switch to it so
+    // the pipeline tab stops showing the stopped one.
+    await confirmAndResume(runId, {
+      onResumed: (result) => {
+        fetchHistory();
+        onRunResumed?.(result);
+      },
+    });
   };
 
   /**
@@ -214,6 +237,11 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
       width: 200,
       render: (_, record) => (
         <Space direction="vertical" size={2}>
+          {record.status === 'stopped' && (
+            <Button size="small" onClick={() => handleResume(record.run_id)}>
+              Возобновить
+            </Button>
+          )}
           {record.status === 'completed' && record.current_stage >= 3 && (
             <Button
               type="link"

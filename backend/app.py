@@ -3,7 +3,7 @@
 """
 
 import asyncio
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -13,10 +13,12 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 import json
 import logging
+import shutil
 import signal
 import subprocess
 import uvicorn
 import os
+import yaml
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
@@ -38,6 +40,7 @@ COREG_DICE_THRESHOLD = 0.7
 from models import (
     PipelineStartRequest,
     PipelineStartResponse,
+    RequeueRequest,
     PipelineStatusResponse,
     PipelineStatus,
     StageProgress,
@@ -67,6 +70,7 @@ from models import (
     MergeSessionsResponse,
     PipelineLossesResponse,
 )
+from config_diff import diff_configs
 from database import (
     get_db,
     init_db,
@@ -74,6 +78,7 @@ from database import (
     get_pipeline_run,
     get_active_run_by_output_path,
     update_pipeline_run,
+    update_pipeline_run_if_active,
     get_stage_executions,
     update_stage_execution,
     get_pipeline_history,
@@ -81,7 +86,7 @@ from database import (
     SessionLocal,
 )
 from websocket_manager import ws_manager
-from pipeline_monitor import pipeline_monitor
+from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
 from pipeline_manager import PipelineManager
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -159,6 +164,26 @@ pipeline_manager = PipelineManager()
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
 
+def preprocessing_snapshot_path(run_id: str) -> Path:
+    """Where a stopped run's preprocessing settings were copied at stop time."""
+    return pipeline_manager.runtime_config_path(run_id).parent / f"preprocessing_{run_id}.yaml"
+
+
+def load_config_snapshot(config_path: Optional[str]) -> dict:
+    """Settings a stopped run was started with, or {} if not retained."""
+    if not config_path:
+        return {}
+    path = Path(config_path)
+    if not path.is_file():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning("Could not read config snapshot %s: %s", path, e)
+        return {}
+
+
 def _kill_process_tree(process: subprocess.Popen) -> None:
     """
     Kill the whole process group of a subprocess, not just the direct
@@ -183,6 +208,8 @@ def run_pipeline_background(
     output_path: str,
     db: Session,
     lesion_type: str = "glioblastoma",
+    snapshot_runtime_config: Optional[Path] = None,
+    preprocessing_snapshot: Optional[Path] = None,
 ):
     """
     Фоновая задача для запуска pipeline
@@ -192,21 +219,31 @@ def run_pipeline_background(
         input_path: Путь к входным данным
         output_path: Путь к результатам
         db: Сессия БД
+        snapshot_runtime_config: retained pipeline runtime YAML when resuming
+            a stopped run with use_snapshot
+        preprocessing_snapshot: retained preprocessing YAML for that resume
     """
     logger.info(f"Фоновый запуск pipeline для run_id: {run_id}")
     
-    # Обновляем статус на "running"
-    update_pipeline_run(db, run_id, status="running", started_at=datetime.now(timezone.utc))
+    # only_if_active: a stop may have already committed on another Session
+    updated = update_pipeline_run_if_active(
+        db, run_id, status="running", started_at=datetime.now(timezone.utc)
+    )
+    if updated is None:
+        logger.info("Run %s is no longer active — not starting pipeline", run_id)
+        return
     
     # Запускаем pipeline
     process = pipeline_manager.start_pipeline(
         run_id, input_path, output_path,
         lesion_type=lesion_type,
+        snapshot_runtime_config=snapshot_runtime_config,
+        preprocessing_snapshot=preprocessing_snapshot,
     )
     
     if not process:
-        # Ошибка запуска
-        update_pipeline_run(
+        # Ошибка запуска — do not clobber a stop that committed during start
+        update_pipeline_run_if_active(
             db,
             run_id,
             status="failed",
@@ -216,14 +253,25 @@ def run_pipeline_background(
         logger.error(f"Не удалось запустить pipeline для run_id: {run_id}")
         return
     
-    timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
-    logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
-
     # Ждём завершения процесса
     try:
+        # Stop may have committed while validate_input_path / Popen ran.
+        db.expire_all()
+        run = get_pipeline_run(db, run_id)
+        if run and run.status == PipelineStatus.STOPPED.value:
+            logger.info(
+                "Run %s was stopped before the process was waited on — killing",
+                run_id,
+            )
+            _kill_process_tree(process)
+            return
+
+        timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
+        logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
+
         stdout, stderr = process.communicate(timeout=timeout)
         return_code = process.returncode
-        
+
         if return_code == 0:
             # Успешное завершение
             logger.info(f"Pipeline успешно завершён для run_id: {run_id}")
@@ -241,8 +289,8 @@ def run_pipeline_background(
                 
                 logger.info(f"Качество: {quality_score} ({quality_category}), всего отчётов: {len(quality_reports)}")
             
-            # Обновляем статус
-            update_pipeline_run(
+            # only_if_active: a stop may have already committed on another Session
+            update_pipeline_run_if_active(
                 db,
                 run_id,
                 status="completed",
@@ -263,7 +311,7 @@ def run_pipeline_background(
             
             error_msg = stderr[-500:] if stderr else "Неизвестная ошибка"
             
-            update_pipeline_run(
+            update_pipeline_run_if_active(
                 db,
                 run_id,
                 status="failed",
@@ -276,7 +324,7 @@ def run_pipeline_background(
         logger.error(f"Таймаут выполнения pipeline для run_id: {run_id}")
         _kill_process_tree(process)
 
-        update_pipeline_run(
+        update_pipeline_run_if_active(
             db,
             run_id,
             status="failed",
@@ -287,8 +335,8 @@ def run_pipeline_background(
     except Exception as e:
         # Другие ошибки
         logger.error(f"Ошибка выполнения pipeline для run_id: {run_id}: {e}")
-        
-        update_pipeline_run(
+
+        update_pipeline_run_if_active(
             db,
             run_id,
             status="failed",
@@ -299,9 +347,27 @@ def run_pipeline_background(
     finally:
         # Мониторинг остановится автоматически когда pipeline завершится
         # (проверка статуса в _monitor_loop)
-        
-        # Очистка runtime конфига (с учётом настройки отладки)
-        pipeline_manager.cleanup_runtime_config(run_id, keep_for_debug=settings.keep_runtime_configs)
+
+        # Normal completion, failure and timeout all land here — the process
+        # is no longer running, so a stop request must stop finding it.
+        pipeline_manager.unregister_process(run_id)
+
+        # Stopped runs keep the runtime config as a snapshot for resume.
+        # Re-read past this Session's cache — stop commits on another Session.
+        # Keep if status is stopped OR config_path was recorded (belt after races).
+        db.expire_all()
+        run = get_pipeline_run(db, run_id)
+        keep_as_snapshot = bool(
+            run and (
+                run.status == PipelineStatus.STOPPED.value
+                or run.config_path
+            )
+        )
+        pipeline_manager.cleanup_runtime_config(
+            run_id,
+            keep_for_debug=settings.keep_runtime_configs,
+            keep_as_snapshot=keep_as_snapshot,
+        )
 
 
 # ============================================
@@ -386,11 +452,87 @@ async def start_pipeline(
     )
 
 
+@app.post("/api/pipeline-runs/{run_id}/stop")
+async def stop_pipeline_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Остановить выполняющийся запуск, сохранив уже полученные результаты.
+
+    Kills the whole process group immediately — draining the current stage
+    was rejected at design time because the wait is unbounded from the
+    operator's point of view. Files being written at that moment are left
+    truncated; the stages' completeness check (utils/nifti_integrity.py)
+    makes sure they are recomputed rather than skipped on the next run.
+    """
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    if run.status not in (PipelineStatus.PENDING, PipelineStatus.RUNNING):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Запуск уже завершён (статус: {run.status})",
+        )
+
+    # Commit stopped + snapshot path BEFORE kill so communicate() returning
+    # on the background task cannot race a failed write into the gap.
+    update_pipeline_run(
+        db,
+        run_id,
+        status=PipelineStatus.STOPPED.value,
+        stopped_at_stage=run.current_stage,
+        config_path=str(pipeline_manager.runtime_config_path(run_id)),
+        completed_at=datetime.utcnow(),
+    )
+
+    # Retain preprocessing settings as they were at stop — resume compares
+    # this copy against the live file (pipeline runtime YAML has no steps).
+    try:
+        if PREPROCESSING_CONFIG.is_file():
+            snap = preprocessing_snapshot_path(run_id)
+            snap.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(PREPROCESSING_CONFIG, snap)
+    except OSError as e:
+        logger.warning(
+            "Could not snapshot preprocessing config for run %s: %s", run_id, e
+        )
+
+    process = pipeline_manager.get_process(run_id)
+    if process is not None:
+        _kill_process_tree(process)
+        pipeline_manager.unregister_process(run_id)
+        logger.info("Stopped run %s at stage %s", run_id, run.current_stage)
+    else:
+        # No process for a run the DB calls active: the backend was restarted,
+        # which killed the pipeline with it. Correct the record rather than
+        # reporting an error for something already true.
+        logger.warning(
+            "Run %s marked active but no process found — recording as stopped",
+            run_id,
+        )
+
+    # Push the new state to every open tab watching this run.
+    await ws_manager.broadcast(run_id, {
+        "type": "status",
+        "status": PipelineStatus.STOPPED.value,
+        "stopped_at_stage": run.current_stage,
+    })
+
+    return {
+        "run_id": run_id,
+        "status": PipelineStatus.STOPPED.value,
+        "stopped_at_stage": run.current_stage,
+    }
+
+
 @app.post("/api/pipeline-runs/{run_id}/requeue", response_model=PipelineStartResponse)
 async def requeue_pipeline_run(
     run_id: str,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    body: RequeueRequest = Body(default_factory=RequeueRequest),
+    db: Session = Depends(get_db),
 ):
     """
     Перезапускает pipeline на тех же input/output путях, что и исходный
@@ -419,6 +561,79 @@ async def requeue_pipeline_run(
             detail="На этом пути уже выполняется другая обработка — дождитесь её завершения",
         )
 
+    # A stopped run may be resumed, but not blindly: resuming adopts current
+    # settings, so a configuration changed since the stop would split the
+    # output between two behaviours with nothing recording it.
+    if original_run.status == PipelineStatus.STOPPED and not body.use_snapshot:
+        # Compare the preprocessing copy taken at stop — not the pipeline
+        # runtime YAML (config_path), which has no steps[].params.
+        snapshot = load_config_snapshot(
+            str(preprocessing_snapshot_path(original_run.run_id))
+        )
+        if not snapshot:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "snapshot_unavailable",
+                    "message": (
+                        "Снимок настроек предобработки недоступен — "
+                        "возобновление на прежних настройках невозможно"
+                    ),
+                },
+            )
+        with open(PREPROCESSING_CONFIG, encoding="utf-8") as f:
+            current = yaml.safe_load(f) or {}
+        differences = diff_configs(snapshot, current)
+        if differences:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "settings_changed",
+                    "message": "Настройки изменились с момента остановки",
+                    "differences": differences,
+                },
+            )
+
+    # Resume on saved settings: require both retained files before creating
+    # a new run. Falling back to live templates would silently mix stop-time
+    # stage enablement with today's preprocessing steps.
+    snapshot_runtime_config = None
+    preprocessing_snapshot = None
+    if (
+        original_run.status == PipelineStatus.STOPPED
+        and body.use_snapshot
+    ):
+        retained = (
+            Path(original_run.config_path)
+            if original_run.config_path
+            else pipeline_manager.runtime_config_path(original_run.run_id)
+        )
+        pre = preprocessing_snapshot_path(original_run.run_id)
+        if not retained.is_file():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "snapshot_unavailable",
+                    "message": (
+                        "Сохранённые настройки запуска недоступны — "
+                        "возобновление на прежних настройках невозможно"
+                    ),
+                },
+            )
+        if not pre.is_file():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "snapshot_unavailable",
+                    "message": (
+                        "Снимок настроек предобработки недоступен — "
+                        "возобновление на прежних настройках невозможно"
+                    ),
+                },
+            )
+        snapshot_runtime_config = retained
+        preprocessing_snapshot = pre
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
@@ -434,6 +649,8 @@ async def requeue_pipeline_run(
         run.output_path,
         db,
         lesion_type=run.lesion_type,
+        snapshot_runtime_config=snapshot_runtime_config,
+        preprocessing_snapshot=preprocessing_snapshot,
     )
 
     asyncio.create_task(pipeline_monitor.start_monitoring(

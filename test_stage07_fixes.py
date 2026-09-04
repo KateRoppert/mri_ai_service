@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import nibabel as nib
+import numpy as np
 import pytest
 
 PROJ_ROOT = Path(__file__).parent
@@ -250,11 +252,15 @@ class TestSkippedCounterInBenchmark:
             d = seg_dir / sub / ses / "anat" / lesion_type
             d.mkdir(parents=True)
             (d / f"{sub}_{ses}_t1_segmask.nii.gz").write_bytes(b"")
-            # Pre-create native mask for first n_preexisting subjects
+            # Pre-create a complete native mask for first n_preexisting subjects
             if i <= n_preexisting:
                 native_dir = out_dir / sub / ses / "anat" / lesion_type
-                native_dir.mkdir(parents=True)
-                (native_dir / f"{sub}_{ses}_t1_segmask_native_t1.nii.gz").write_bytes(b"")
+                native_path = native_dir / f"{sub}_{ses}_t1_segmask_native_t1.nii.gz"
+                native_path.parent.mkdir(parents=True, exist_ok=True)
+                nib.save(
+                    nib.Nifti1Image(np.zeros((4, 4, 4), dtype=np.uint8), np.eye(4)),
+                    str(native_path),
+                )
 
         captured_metrics = []
 

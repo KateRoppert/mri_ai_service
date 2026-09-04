@@ -17,6 +17,10 @@ from multiprocessing import Pool, cpu_count
 from collections import defaultdict
 from pipeline_validator import InputOutputValidator
 
+# Allow imports from the project root (utils/)
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.nifti_integrity import is_complete_nifti
+
 def process_series_worker(args):
     """
     Worker function for multiprocessing conversion.
@@ -177,7 +181,7 @@ class NiftiConverter:
     def check_output_exists(self, output_dir: Path, patient_id: str, 
                            session: str, modality: str) -> bool:
         """
-        Check if output NIfTI file already exists.
+        Check if output NIfTI is already complete.
         
         Args:
             output_dir: Root output directory
@@ -186,7 +190,7 @@ class NiftiConverter:
             modality: Modality name
             
         Returns:
-            True if file exists, False otherwise
+            True if the expected NIfTI exists and is complete, False otherwise
         """
         # Expected BIDS path
         subject_dir = output_dir / f"sub-{patient_id}"
@@ -196,7 +200,7 @@ class NiftiConverter:
         # Expected filename
         expected_file = anat_dir / f"sub-{patient_id}_ses-{session}_{modality}.nii.gz"
         
-        return expected_file.exists()
+        return is_complete_nifti(expected_file)
     
     def convert_series(self, series_path: Path, patient_id: str, 
                       modality: str, output_dir: Path, session: str = "001") -> Tuple[bool, Optional[str]]:

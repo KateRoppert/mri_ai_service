@@ -131,6 +131,17 @@ function App() {
   };
 
   /**
+   * Возобновление создаёт НОВЫЙ запуск, а не оживляет остановленный.
+   * Показываем именно его: иначе вкладка запуска продолжает показывать
+   * остановленный прогон с неактивными полосами и без кнопки остановки.
+   */
+  const handleRunResumed = (response) => {
+    if (!response?.run_id) return;
+    handlePipelineStarted(response);
+    setActiveTabKey('pipeline');
+  };
+
+  /**
    * Переключить на вкладку истории запусков (используется баннером-ссылкой
    * в ProgressMonitor, ведущей к исходному запуску после requeue)
    */
@@ -211,6 +222,13 @@ function App() {
                         </Card>
                       ) : (
                         <ProgressMonitor
+                          // Remount on a new run instead of reusing the
+                          // previous one's state. Without this React keeps
+                          // the same instance across runs, so a finished
+                          // run's status/stages leak into the next one — a
+                          // run started after a stop inherited status
+                          // "stopped" and never rendered its Stop button.
+                          key={activeRun.runId}
                           runId={activeRun.runId}
                           lesionType={activeRun.lesionType}
                           onComplete={handlePipelineComplete}
@@ -239,6 +257,7 @@ function App() {
                   ),
                   children: (
                     <PipelineHistory
+                      onRunResumed={handleRunResumed}
                       onShowQualityReport={handleShowHistoryQualityReport}
                       onShowVisualization={handleShowHistoryVisualization}
                       onShowClinicalReport={handleShowHistoryClinicalReport}
