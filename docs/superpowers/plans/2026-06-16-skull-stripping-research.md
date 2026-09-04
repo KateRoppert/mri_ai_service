@@ -1,5 +1,7 @@
 # Skull Stripping Research Implementation Plan
 
+> **FROZEN (2026-09-04).** Do not execute this file. Plugin Tasks 1.1–1.3, 2.1 and 3.1 landed on `main` with different APIs (`STRIPPERS`, `get_stripper(params)`, `HdBetStripper`, GPU pool). Remaining work: [2026-09-04-skull-stripping-research.md](2026-09-04-skull-stripping-research.md). Keep this document as the original task text and long code samples for Phases 5–10 (apply the overlay in the September plan).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a config-driven, MAS-ready skull-stripping plugin layer in Stage 05 plus a standalone benchmark harness that compares 7 skull-stripping tools across 4 datasets, producing the statistical analysis and paper that justify 2 production winners.

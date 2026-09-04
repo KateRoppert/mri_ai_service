@@ -1,7 +1,7 @@
 # Skull Stripping Research — Design Spec
-**Branch:** `feat/skull-stripping-research` (Этап 5.5)
-**Date:** 2026-06-15
-**Status:** Approved, ready for implementation planning
+**Branch:** `feat/skull-stripping-research-v2` (Этап 5.5; June branch reconnected onto `origin/main`)
+**Date:** 2026-06-15 (status updated 2026-09-04)
+**Status:** §8 plugin (BET + HD-BET + GPU pool) is on `main`. Remaining: cascade/validation, other tools, benchmark, paper. Executable plan: `docs/superpowers/plans/2026-09-04-skull-stripping-research.md`.
 
 ---
 
