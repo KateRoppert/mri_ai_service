@@ -2,7 +2,7 @@
 venv/
 
 # Python cache
-__pycache__/
+**/__pycache__/
 *.pyc
 .pytest_cache/
 *.backup
@@ -81,6 +81,7 @@ data/clinical_dicom/
 data/dropbox_33/
 data/templates/ms_zones_raw/
 data/templates/ms_zones_work/
+data/MS60
 .superpowers/
 
 # Generated longitudinal diff cache
@@ -90,3 +91,8 @@ backend/data/slicer_cache/
 backend/data/hdbet_weights/
 pipeline_config_calibration.yaml
 .calibration_scratch/
+
+# Skull-stripping: track test CODE despite the blanket `tests/` ignore above.
+!scripts/preprocessing_steps/skull_stripping/tests/
+!scripts/preprocessing_steps/skull_stripping/tests/**
+scripts/preprocessing_steps/skull_stripping/tests/**/__pycache__/

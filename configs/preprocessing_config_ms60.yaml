@@ -64,6 +64,14 @@ steps:
       vertical_gradient: -0.1               # -g parameter (-1.0-1.0)
       apply_to_all: true                  # Применить маску ко всем модальностям
       cleanup: true                       # Удалить промежуточные файлы
+      # GPU device selection (used by GPU tools such as hdbet; ignored by bet).
+      #   auto — pick usable CUDA GPUs by free VRAM, else CPU (default)
+      #   cuda:N — force a specific card; cpu — force CPU
+      device: "auto"
+      # GPU indices never to use (e.g. [0] to protect a display card).
+      exclude_gpus: []
+      # Optional cap on concurrent GPU jobs; null = one per usable card.
+      gpu_pool_size: null
 
 # Expected modalities (BIDS suffixes)
 modalities:

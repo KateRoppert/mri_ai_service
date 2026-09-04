@@ -63,6 +63,21 @@ steps:
       # пайплайн не падает, а переключается на этот с предупреждением в лог.
       fallback_method: "bet"
 
+      # GPU device selection (used by GPU tools such as hdbet; ignored by bet).
+      #   auto    — pick usable CUDA GPUs by free VRAM, else CPU (default)
+      #   cuda:N  — force a specific card
+      #   cpu     — force CPU
+      device: "auto"
+      # GPU indices never to use. On a workstation, list the display card here
+      # (e.g. [0]) so HD-BET never freezes the desktop.
+      exclude_gpus: [0]
+      # Optional hard cap on concurrent GPU skull-stripping jobs.
+      # null = one job per usable card.
+      gpu_pool_size: null
+      # Test-time augmentation: better masks, slower + more VRAM. Left to the
+      # tool default (on for GPU, off for CPU) unless set here.
+      # disable_tta: false
+
       reference_modality: "t1"           # На какой модальности создавать маску
       apply_to_all: true                  # Применить маску ко всем модальностям
       cleanup: true                       # Удалить промежуточные файлы

@@ -38,6 +38,7 @@ class HdBetStripper(SkullStripperBase):
     """HD-BET — deep learning brain extraction."""
 
     name = "hdbet"
+    uses_gpu = True
 
     def is_available(self) -> bool:
         """HD-BET is usable if its CLI is on PATH."""
