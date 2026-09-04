@@ -16,6 +16,7 @@ import NIfTIViewer from './NIfTIViewer';
 import ClinicalReport from './ClinicalReport';
 import IncompletePatients from './IncompletePatients';
 import wsService from '../services/websocket';
+import { confirmAndResume } from '../utils/resumeRun';
 import { getPipelineStatus, getEntitiesForRun, stopPipelineRun } from '../services/api';
 
 const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory }) => {
@@ -26,6 +27,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   const [status, setStatus] = useState('running');
   const [error, setError] = useState(null);
   const [stopping, setStopping] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [showQualityReport, setShowQualityReport] = useState(false);
   const [showVisualization, setShowVisualization] = useState(false);
   const [showClinicalReport, setShowClinicalReport] = useState(false);
@@ -52,6 +54,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
     setCurrentStage(0);
     setError(null);
     setStopping(false);
+    setResuming(false);
     setParentRunId(null);
 
     // Сначала получаем текущий статус через REST API
@@ -275,6 +278,24 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   };
 
   /**
+   * Возобновить остановленный запуск прямо отсюда — ходить за этим в
+   * историю запусков неудобно, раз остановка была сделана на этом экране.
+   */
+  const handleResume = async () => {
+    setResuming(true);
+    try {
+      await confirmAndResume(runId, {
+        onResumed: (result) => {
+          // Resume starts a NEW run; the app switches this view to it.
+          onRequeued?.(result);
+        },
+      });
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  /**
    * Определяем общий статус
    */
   const getOverallStatus = () => {
@@ -381,18 +402,28 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
                 доступны в истории запусков.
               </div>
               <div style={{ marginTop: 4 }}>
-                Запуск можно возобновить с этого места — кнопка «Возобновить»
-                на вкладке «История запусков». Пациенты, обработка которых
+                Запуск можно возобновить с этого места — уже обработанные
+                пациенты повторно считаться не будут. Те, чья обработка
                 прервалась на середине, будут посчитаны заново.
               </div>
             </>
           }
           action={
-            onSwitchToHistory && (
-              <Button size="small" onClick={onSwitchToHistory}>
-                К истории запусков
+            <Space direction="vertical" size={8}>
+              <Button
+                type="primary"
+                size="small"
+                onClick={handleResume}
+                loading={resuming}
+              >
+                Возобновить
               </Button>
-            )
+              {onSwitchToHistory && (
+                <Button size="small" onClick={onSwitchToHistory}>
+                  К истории запусков
+                </Button>
+              )}
+            </Space>
           }
           style={{ marginBottom: 16 }}
         />

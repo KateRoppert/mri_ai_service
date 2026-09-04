@@ -131,6 +131,17 @@ function App() {
   };
 
   /**
+   * Возобновление создаёт НОВЫЙ запуск, а не оживляет остановленный.
+   * Показываем именно его: иначе вкладка запуска продолжает показывать
+   * остановленный прогон с неактивными полосами и без кнопки остановки.
+   */
+  const handleRunResumed = (response) => {
+    if (!response?.run_id) return;
+    handlePipelineStarted(response);
+    setActiveTabKey('pipeline');
+  };
+
+  /**
    * Переключить на вкладку истории запусков (используется баннером-ссылкой
    * в ProgressMonitor, ведущей к исходному запуску после requeue)
    */
@@ -246,6 +257,7 @@ function App() {
                   ),
                   children: (
                     <PipelineHistory
+                      onRunResumed={handleRunResumed}
                       onShowQualityReport={handleShowHistoryQualityReport}
                       onShowVisualization={handleShowHistoryVisualization}
                       onShowClinicalReport={handleShowHistoryClinicalReport}
