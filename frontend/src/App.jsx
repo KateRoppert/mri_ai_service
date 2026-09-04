@@ -211,6 +211,13 @@ function App() {
                         </Card>
                       ) : (
                         <ProgressMonitor
+                          // Remount on a new run instead of reusing the
+                          // previous one's state. Without this React keeps
+                          // the same instance across runs, so a finished
+                          // run's status/stages leak into the next one — a
+                          // run started after a stop inherited status
+                          // "stopped" and never rendered its Stop button.
+                          key={activeRun.runId}
                           runId={activeRun.runId}
                           lesionType={activeRun.lesionType}
                           onComplete={handlePipelineComplete}

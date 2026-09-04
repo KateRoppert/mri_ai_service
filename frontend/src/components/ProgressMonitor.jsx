@@ -43,6 +43,17 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
     statusRef.current = 'running';
     terminalNotifiedRef.current = false;
 
+    // Belt and braces alongside the key= in App.jsx: reset everything a
+    // previous run left behind. A stale 'stopped' here hides the Stop
+    // button, and stale stages show the old run's progress bars.
+    setStatus('running');
+    setStages({});
+    setOverallProgress(0);
+    setCurrentStage(0);
+    setError(null);
+    setStopping(false);
+    setParentRunId(null);
+
     // Сначала получаем текущий статус через REST API
     fetchInitialStatus();
 
@@ -170,6 +181,25 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
 
     if (data.stages) {
       setStages(data.stages);
+    }
+
+    // A stop arrives as a bare status change: the last progress tick still
+    // described the interrupted stage as "running", and nothing else will
+    // correct it. Left alone the UI keeps a spinner and a half-filled bar
+    // on a stage that is no longer executing.
+    if (incoming === 'stopped') {
+      setStages((prev) => {
+        const corrected = {};
+        for (const [key, stage] of Object.entries(prev || {})) {
+          // Only the stage that was actually executing is "interrupted";
+          // stages that never started stay "pending", which reads honestly.
+          corrected[key] =
+            stage && stage.status === 'running'
+              ? { ...stage, status: 'stopped' }
+              : stage;
+        }
+        return corrected;
+      });
     }
 
     // Terminal statuses unlock «Новая обработка» via App.onComplete.
@@ -331,9 +361,42 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
             status === 'stopped' ? 'normal' :
             'active'
           }
+          strokeColor={status === 'stopped' ? '#faad14' : undefined}
           size={['default', 12]}
         />
       </div>
+
+      {/* Что произошло и что делать дальше — иначе остановленный запуск
+          выглядит просто как застывший прогресс. */}
+      {status === 'stopped' && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<StopOutlined />}
+          message="Обработка остановлена"
+          description={
+            <>
+              <div>
+                Результаты пациентов, обработанных до остановки, сохранены и
+                доступны в истории запусков.
+              </div>
+              <div style={{ marginTop: 4 }}>
+                Запуск можно возобновить с этого места — кнопка «Возобновить»
+                на вкладке «История запусков». Пациенты, обработка которых
+                прервалась на середине, будут посчитаны заново.
+              </div>
+            </>
+          }
+          action={
+            onSwitchToHistory && (
+              <Button size="small" onClick={onSwitchToHistory}>
+                К истории запусков
+              </Button>
+            )
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       {/* Ошибка (если есть) */}
       {error && (

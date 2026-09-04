@@ -7,6 +7,7 @@ import {
   CloseCircleOutlined,
   SyncOutlined,
   ClockCircleOutlined,
+  StopOutlined,
   FileTextOutlined,
   EyeOutlined,
   MedicineBoxOutlined,
@@ -39,6 +40,15 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
           icon: <CloseCircleOutlined />,
           text: 'Ошибка',
           progressStatus: 'exception',
+        };
+      case 'stopped':
+        // Interrupted by the operator, not a failure — it neither finished
+        // nor broke, and must not keep spinning as though still running.
+        return {
+          color: 'warning',
+          icon: <StopOutlined />,
+          text: 'Прерван',
+          progressStatus: 'normal',
         };
       case 'pending':
       default:
@@ -130,7 +140,8 @@ const StageProgress = ({ stageNumber, stageName, status, progress, onShowQuality
         strokeColor={
           status === 'completed' ? '#52c41a' :
           status === 'running' ? '#1890ff' :
-          status === 'failed' ? '#ff4d4f' : '#d9d9d9'
+          status === 'failed' ? '#ff4d4f' :
+          status === 'stopped' ? '#faad14' : '#d9d9d9'
         }
       />
     </div>
