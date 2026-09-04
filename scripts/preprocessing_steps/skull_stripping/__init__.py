@@ -39,6 +39,7 @@ from .dispatcher import (
     try_stripper,
 )
 from .hdbet import HdBetStripper
+from .synthstrip import SynthStripStripper
 from .gpu_pool import acquire_device, resolve_devices
 from .validation import (
     cascade_decision_message,
@@ -55,6 +56,7 @@ __all__ = [
     "SkullStripperBase",
     "BetStripper",
     "HdBetStripper",
+    "SynthStripStripper",
     "STRIPPERS",
     "SkullStripperUnavailable",
     "get_stripper",

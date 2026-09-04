@@ -20,14 +20,16 @@ from typing import Any, Dict, Optional
 from .base import SkullStripperBase
 from .bet import BetStripper
 from .hdbet import HdBetStripper
+from .synthstrip import SynthStripStripper
 
 logger = logging.getLogger(__name__)
 
-# Registry of implemented tools. The research spec lists more (SynthStrip,
-# MNI masks, SAM, DeepBET); they land here as they are implemented.
+# Registry of implemented tools. Remaining research tools (BrainMaGe, MNI
+# masks, SAM, DeepBET) land here as they are implemented.
 STRIPPERS = {
     "bet": BetStripper,
     "hdbet": HdBetStripper,
+    "synthstrip": SynthStripStripper,
 }
 
 DEFAULT_METHOD = "bet"

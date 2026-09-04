@@ -46,7 +46,7 @@ Branch `feat/skull-stripping-research-v2` = `origin/main` + research docs (spec,
 | 2.1 Config `method` / `fallback` / `tool_params` | **done on main** (and more: GPU keys, production `hdbet`) | `configs/preprocessing_config.yaml` |
 | 3.1 HD-BET | **done on main** | `hdbet.py`, HD-BET 2.x CLI, GPU pool |
 | GPU device portability | **done on main** (separate spec 2026-08-31) | `gpu_pool.py`, Stage 05 `build_pool` |
-| 3.2 SynthStrip | **not done** | Task B |
+| 3.2 SynthStrip | **done on v2** (wrapper + manifest; CLI in web image via FreeSurfer) | Task B |
 | 3.3 BrainMaGe | **not done** | Task C |
 | 4.1 MNI strict/loose | **not done** | Task D |
 | 4.2 SAM + DeepBET stubs | **not done** | Task E |
@@ -203,17 +203,19 @@ Expected: PASS. GPU tests must still pass.
 
 **Files:** `synthstrip.py`, `services/skull-stripping/synthstrip/manifest.yaml`, register in `STRIPPERS`, `tests/test_synthstrip.py`.
 
-- [ ] **Step 1: Failing tests** — register via `STRIPPERS`, not `get_stripper("synthstrip")`. Availability: `shutil.which` for `mri_synthstrip`. Command builder: `-i`, `-o`, `-m`, optional `-b` / `border` from `tool_params`. `uses_gpu = False` unless you confirm a GPU CLI path.
+- [x] **Step 1: Failing tests** — register via `STRIPPERS`, not `get_stripper("synthstrip")`. Availability: `shutil.which` for `mri_synthstrip`. Command builder: `-i`, `-o`, `-m`, optional `-b` / `border` from `tool_params`. `uses_gpu = False` unless you confirm a GPU CLI path.
 
-- [ ] **Step 2: Run — expect FAIL**
+- [x] **Step 2: Run — expect FAIL**
 
-- [ ] **Step 3: Implement wrapper** — subprocess + timeout; normalize mask to `mask_path`. Verify flags with `mri_synthstrip --help` before locking the test.
+- [x] **Step 3: Implement wrapper** — subprocess + timeout; normalize mask to `mask_path`. Verify flags with `mri_synthstrip --help` before locking the test.
 
-- [ ] **Step 4: Manifest** — `lesion_type_preference` keys `glioblastoma` / `multiple_sclerosis`; `cascade_priority: 2`; `fallback_to: bet`.
+- [x] **Step 4: Manifest** — `lesion_type_preference` keys `glioblastoma` / `multiple_sclerosis`; `cascade_priority: 2`; `fallback_to: bet`.
 
-- [ ] **Step 5: Tests PASS + timeboxed install smoke. DEVLOG.**
+- [x] **Step 5: Tests PASS + timeboxed install smoke. DEVLOG.**
 
-- [ ] **Step 6: Commit** `feat(ss): add SynthStrip wrapper and manifest`
+CLI lives in the web image (`FREESURFER_HOME` / `mri_synthstrip`). `-g` exists upstream, not wired (`uses_gpu` stays False). Host venv has no CLI.
+
+- [x] **Step 6: Commit** `feat(ss): add SynthStrip wrapper and manifest`
 
 June plan Step 3 code is a starting point; fix registry names and `uses_gpu`.
 
