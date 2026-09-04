@@ -42,7 +42,7 @@ Branch `feat/skull-stripping-research-v2` = `origin/main` + research docs (spec,
 | 1.1 Package + BET | **done on main** | `skull_stripping/{base,bet,__init__}.py` |
 | 1.2 BET manifest | **done on main** | `services/skull-stripping/bet/manifest.yaml` |
 | 1.3 Dispatcher + fallback | **done on main** | `dispatcher.py` `STRIPPERS` / `get_stripper(params)` |
-| 1.4 Cascade + mask validation | **not done** | this plan, Task A |
+| 1.4 Cascade + mask validation | **done on v2** (2026-09-04; two-tier gates, not June 700–1900 fail-closed) | `validation.py`, cascade in `__init__.py` |
 | 2.1 Config `method` / `fallback` / `tool_params` | **done on main** (and more: GPU keys, production `hdbet`) | `configs/preprocessing_config.yaml` |
 | 3.1 HD-BET | **done on main** | `hdbet.py`, HD-BET 2.x CLI, GPU pool |
 | GPU device portability | **done on main** (separate spec 2026-08-31) | `gpu_pool.py`, Stage 05 `build_pool` |
@@ -126,17 +126,19 @@ Default when `cascade` is absent: `[method, fallback_method]` if fallback set, e
 
 GBM mass effect can shrink/distort brain volume. Start with the June defaults (`min_ml=700`, `max_ml=1900`, `min_dominant_fraction=0.95`) but make them overridable via `params["validation"]`. If a plausible tumour mask fails volume gates, loosen via config rather than deleting validation.
 
-- [ ] **Step 1: Failing `test_validation.py`**
+- [x] **Step 1: Failing `test_validation.py`**
 
 Use the June plan’s four cases (valid blob / empty / too large / fragmented). Import `validate_mask` from `preprocessing_steps.skull_stripping.validation`.
 
-- [ ] **Step 2: Run — expect FAIL** (`validation` missing)
+- [x] **Step 2: Run — expect FAIL** (`validation` missing)
 
 `python -m pytest scripts/preprocessing_steps/skull_stripping/tests/test_validation.py -v`
 
-- [ ] **Step 3: Implement `validation.py`** as in the June plan (scipy.ndimage.label, volume in ml, dominant component).
+- [x] **Step 3: Implement `validation.py`** as in the June plan (scipy.ndimage.label, volume in ml, dominant component).
 
-- [ ] **Step 4: Failing cascade tests**
+Hard gates are **wider** than the June 700–1900 / 0.95 sample (see `DEFAULT_*` in `validation.py`): catastrophe 300–2500 ml, LCC 0.70 after dropping `< 1 ml` speckles. Review flags use 1000–1800 / 0.95 / edge-touch and do **not** retry. `fail_closed: false` is log-only.
+
+- [x] **Step 4: Failing cascade tests**
 
 ```python
 from preprocessing_steps.skull_stripping import dispatcher
@@ -154,7 +156,7 @@ def test_build_cascade_method_only():
     assert dispatcher.build_cascade_order({"method": "bet"}) == ["bet"]
 ```
 
-- [ ] **Step 5: `build_cascade_order` in `dispatcher.py`**
+- [x] **Step 5: `build_cascade_order` in `dispatcher.py`**
 
 ```python
 def build_cascade_order(params: dict) -> list[str]:
@@ -178,7 +180,7 @@ In `process_subject_skull_stripping`, replace the single `_run_strip` with: for 
 
 If every candidate fails: return `{success: False, error: ...}` like today.
 
-- [ ] **Step 6: Config** — add comments + optional keys, do not remove GPU block:
+- [x] **Step 6: Config** — add comments + optional keys, do not remove GPU block:
 
 ```yaml
       # Ordered extras after method (optional). Absent cascade still means
@@ -187,13 +189,13 @@ If every candidate fails: return `{success: False, error: ...}` like today.
       validation: {}   # mask-integrity; {} = adult defaults in validation.py
 ```
 
-- [ ] **Step 7: Tests**
+- [x] **Step 7: Tests**
 
 `python -m pytest scripts/preprocessing_steps/skull_stripping/tests/test_validation.py scripts/preprocessing_steps/skull_stripping/tests/test_cascade.py scripts/preprocessing_steps/skull_stripping/tests/test_gpu_pool.py scripts/preprocessing_steps/skull_stripping/tests/test_gpu_dispatch.py -v`
 
 Expected: PASS. GPU tests must still pass.
 
-- [ ] **Step 8: Commit** `feat(ss): cascade selection + mask-integrity validation`
+- [x] **Step 8: Commit** `feat(ss): cascade selection + mask-integrity validation`
 
 ---
 
@@ -341,7 +343,7 @@ Winners and filled Results sections need real GPU runs on the four datasets — 
 | DEVLOG current | every task + Task K |
 | 2 production winners | after real benchmark, not a code commit |
 | ADD-1 BrainMaGe | Task C |
-| ADD-2 cascade + validation | Task A |
+| ADD-2 cascade + validation | **Task A done** on v2 (two-tier; production hdbet→bet) |
 | ADD-3 selection experiment | Task I |
 | ADD-4 worst-case + reproducibility | Tasks H/I |
 | ADD-5 characteristic analysis | Task I |

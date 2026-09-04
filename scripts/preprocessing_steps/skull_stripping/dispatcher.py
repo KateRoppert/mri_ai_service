@@ -92,6 +92,43 @@ def get_stripper(params: Optional[Dict[str, Any]] = None) -> SkullStripperBase:
     return fallback_stripper
 
 
+def build_cascade_order(params: Optional[Dict[str, Any]] = None) -> list:
+    """Ordered, de-duplicated cascade: primary method first, then extras.
+
+    If ``cascade`` is absent, ``fallback_method`` is the only extra — same
+    pair ``get_stripper`` would consider. Empty strings are skipped.
+    """
+    params = params or {}
+    method = str(params.get("method", DEFAULT_METHOD) or DEFAULT_METHOD).lower()
+    chain = params.get("cascade") or (
+        [params["fallback_method"]] if params.get("fallback_method") else []
+    )
+    order: list = []
+    seen: set = set()
+    for name in [method, *chain]:
+        if not name:
+            continue
+        name = str(name).lower()
+        if name not in seen:
+            order.append(name)
+            seen.add(name)
+    return order
+
+
+def try_stripper(name: str) -> Optional[SkullStripperBase]:
+    """Instantiate ``name`` if it is registered and available, else None."""
+    key = str(name).lower()
+    cls = STRIPPERS.get(key)
+    if cls is None:
+        logger.warning("Cascade: unknown stripper %r, skipping", name)
+        return None
+    inst = cls()
+    if not inst.is_available():
+        logger.warning("Cascade: %r unavailable, skipping", name)
+        return None
+    return inst
+
+
 def get_tool_params(params: Optional[Dict[str, Any]] = None,
                     stripper: Optional[SkullStripperBase] = None) -> Dict[str, Any]:
     """

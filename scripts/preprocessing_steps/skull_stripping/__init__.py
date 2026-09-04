@@ -16,7 +16,7 @@ Existing imports keep working:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import nibabel as nib
 import numpy as np
@@ -33,11 +33,20 @@ from .bet import (
 from .dispatcher import (
     STRIPPERS,
     SkullStripperUnavailable,
+    build_cascade_order,
     get_stripper,
     get_tool_params,
+    try_stripper,
 )
 from .hdbet import HdBetStripper
 from .gpu_pool import acquire_device, resolve_devices
+from .validation import (
+    cascade_decision_message,
+    format_mask_check_line,
+    mask_metrics,
+    validate_mask,
+    validation_gate_banner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +59,10 @@ __all__ = [
     "SkullStripperUnavailable",
     "get_stripper",
     "get_tool_params",
+    "build_cascade_order",
+    "try_stripper",
+    "validate_mask",
+    "mask_metrics",
     # backward-compatible surface of the original module
     "setup_fsl_environment",
     "get_fsl_env",
@@ -100,18 +113,16 @@ def process_subject_skull_stripping(
 
     reference_modality = params.get("reference_modality", "t1c")
 
-    # Pick the tool before touching any files, so an unavailable tool falls
-    # back (or fails) up front rather than halfway through a subject.
-    try:
-        stripper = get_stripper(params)
-    except SkullStripperUnavailable as e:
-        logger.error("Skull stripping unavailable: %s", e)
-        return {"success": False, "error": str(e)}
-
-    tool_params = get_tool_params(params, stripper)
-
     # Step 1: Create brain mask on reference modality
-    logger.info(f"Step 1: Creating brain mask on {reference_modality} using {stripper.name}")
+    order = build_cascade_order(params)
+    vcfg = dict(params.get("validation") or {})
+    validation_enabled = vcfg.get("enabled", True)
+    logger.info(
+        "Step 1: Creating brain mask on %s; cascade %s",
+        reference_modality,
+        order,
+    )
+    logger.info("%s", validation_gate_banner(vcfg))
 
     ref_pattern = f"{subject_id}_{session_id}_{reference_modality}.nii.gz"
     ref_files = list(subject_dir.glob(ref_pattern))
@@ -130,41 +141,127 @@ def process_subject_skull_stripping(
     mask_pattern = f"{subject_id}_{session_id}_brain_mask.nii.gz"
     mask_path = transform_dir / subject_id / session_id / "anat" / mask_pattern
 
-    def _run_strip(tool_params_local):
-        return stripper.strip(
-            input_path=ref_file,
-            output_path=ref_output,
-            mask_path=mask_path,
-            params=tool_params_local,
+    extra_gpu: Dict[str, Any] = {}
+    if "disable_tta" in params:
+        extra_gpu["disable_tta"] = params["disable_tta"]
+
+    strip_result: Optional[Dict[str, Any]] = None
+    used: Optional[str] = None
+    accepted = False
+
+    for i, name in enumerate(order, start=1):
+        remaining = order[i:]
+        cand = try_stripper(name)
+        if cand is None:
+            logger.info(
+                "Cascade attempt %d/%d: skip %r (unknown or unavailable); remaining %s",
+                i,
+                len(order),
+                name,
+                remaining,
+            )
+            continue
+
+        logger.info("Cascade attempt %d/%d: running %r", i, len(order), name)
+        tool_params = get_tool_params(params, cand)
+
+        def _run_strip(tool, tool_params_local):
+            return tool.strip(
+                input_path=ref_file,
+                output_path=ref_output,
+                mask_path=mask_path,
+                params=tool_params_local,
+            )
+
+        if getattr(cand, "uses_gpu", False):
+            # Pin GPU tools only for this candidate. CPU fallback must not
+            # hold a pool slot (Stage 05 serialises GPU jobs through it).
+            if gpu_pool is not None:
+                with acquire_device(gpu_pool) as device:
+                    logger.info("Skull stripping (%s) on device %s", cand.name, device)
+                    strip_result = _run_strip(
+                        cand, {**tool_params, "device": device, **extra_gpu}
+                    )
+            else:
+                device = resolve_devices(params)[0]
+                logger.info("Skull stripping (%s) on device %s", cand.name, device)
+                strip_result = _run_strip(
+                    cand, {**tool_params, "device": device, **extra_gpu}
+                )
+        else:
+            strip_result = _run_strip(cand, tool_params)
+
+        strip_result.setdefault("method", cand.name)
+        used = cand.name
+
+        if not strip_result.get("success"):
+            logger.info(
+                "%s",
+                cascade_decision_message(
+                    name=name,
+                    accepted=False,
+                    remaining=remaining,
+                    strip_failed=True,
+                    validation_enabled=validation_enabled,
+                ),
+            )
+            continue
+
+        if not validation_enabled:
+            logger.info(
+                "%s",
+                cascade_decision_message(
+                    name=name,
+                    accepted=True,
+                    remaining=remaining,
+                    validation_enabled=False,
+                ),
+            )
+            accepted = True
+            break
+
+        check = validate_mask(mask_path, **vcfg)
+        strip_result["mask_validation"] = check
+        logger.info("Cascade %r mask metrics: %s", name, format_mask_check_line(check))
+        if check["valid"]:
+            logger.info(
+                "%s",
+                cascade_decision_message(
+                    name=name,
+                    accepted=True,
+                    remaining=remaining,
+                    check=check,
+                    validation_enabled=True,
+                ),
+            )
+            accepted = True
+            break
+        logger.info(
+            "%s",
+            cascade_decision_message(
+                name=name,
+                accepted=False,
+                remaining=remaining,
+                check=check,
+                validation_enabled=True,
+            ),
         )
 
-    if getattr(stripper, "uses_gpu", False):
-        # A GPU tool: pin it to a device. With a pool (Stage 05) acquire a
-        # slot so only pool-size jobs share the GPUs at once; without one
-        # (direct callers / sequential resolve) pick a device inline.
-        extra = {}
-        if "disable_tta" in params:
-            extra["disable_tta"] = params["disable_tta"]
-        if gpu_pool is not None:
-            with acquire_device(gpu_pool) as device:
-                logger.info("Skull stripping on device %s", device)
-                strip_result = _run_strip({**tool_params, "device": device, **extra})
-        else:
-            device = resolve_devices(params)[0]
-            logger.info("Skull stripping on device %s", device)
-            strip_result = _run_strip({**tool_params, "device": device, **extra})
-    else:
-        strip_result = _run_strip(tool_params)
-
-    # Record which tool produced this, so a run's provenance survives a
-    # later config change.
-    strip_result.setdefault("method", stripper.name)
-
-    results[reference_modality] = strip_result
-
-    if not strip_result["success"]:
-        logger.error(f"Failed to create brain mask on {reference_modality}")
+    if not accepted:
+        error = f"No usable stripper in cascade {order}"
+        logger.error("Failed to create brain mask on %s: %s", reference_modality, error)
+        payload: Dict[str, Any] = {
+            "success": False,
+            "error": error,
+            "method": used,
+        }
+        if strip_result:
+            payload = {**strip_result, **payload}
+        results[reference_modality] = payload
         return results
+
+    logger.info("Skull stripper used: %s (cascade %s)", used, order)
+    results[reference_modality] = strip_result
 
     # Step 2: Apply mask to other modalities
     logger.info("Step 2: Applying brain mask to other modalities")

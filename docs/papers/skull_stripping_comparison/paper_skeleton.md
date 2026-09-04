@@ -63,6 +63,32 @@ Friedman. Research questions table.>>
 - Atlas: MNI152 for all datasets (GBM overrides SRI24 for consistency).
 - Hardware: NVIDIA RTX 5070 12GB VRAM.
 
+### 3.6 Runtime cascade and mask-integrity gate (ADD-2)
+
+Implemented 2026-09-04 in Stage 05 (`scripts/preprocessing_steps/skull_stripping/`).
+The production chain, when `cascade` is omitted, is **`method` then `fallback_method`**
+— currently HD-BET → BET. A second GPU stripper is not on the clinical path: a false
+retry already pays for a full HD-BET (TTA) run.
+
+The mask check is **two-tier**, so GBM mass effect and HD-BET speckle do not inflate
+runtime. Textbook adult windows (e.g. 700–1900 ml, LCC 0.95) are **review signals**,
+not fail-closed cascade triggers. MNI leakage is a warning in the benchmark (Task D),
+not a Stage 05 gate — atlas ≠ GT under mass effect.
+
+| Layer | Checks | Effect |
+|---|---|---|
+| Catastrophe | volume 300–2500 ml; dominant component ≥ 0.70 after dropping islands `< 1 ml`; empty/missing file | `valid=False` → try next stripper |
+| Review | volume 1000–1800 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05` | log `review_flags` only; keep the mask |
+| Atlas (later) | MNI loose / very-loose outside-ratio | benchmark QA, not runtime retry |
+
+`validation.fail_closed: false` demotes volume/LCC catastrophe to flags (empty/missing
+still fail — the mask cannot be applied). Metrics live in `mask_metrics()` (volume, LCC,
+edge-touch, bbox fill). Tune via `params.validation`; if a plausible tumour mask trips
+a gate, loosen the numbers rather than deleting the check.
+
+<<Once the four-dataset run exists: fraction of subjects that retried BET, review-flag
+histogram, false-retry notes from KR visual QA.>>
+
 ## 4. Results
 ### 4.1 Per-tool quality (table) <<auto from report.py>>
 ### 4.2 Tool × dataset interaction (heatmap) <<dsc_heatmap_tool_x_dataset.png>>
@@ -74,8 +100,12 @@ Friedman. Research questions table.>>
 ### 4.8 Characteristic → tool analysis (ADD-5) <<which characteristics matter>>
 
 ## 5. Discussion
-- Limitations: atlas pseudo-GT imperfect under GBM mass effect.
-- MAS implications: manifests, cascade priority, lesion-type preference.
+- Limitations: atlas pseudo-GT imperfect under GBM mass effect; runtime validation
+  therefore uses morphology/volume catastrophe, not DSC vs MNI.
+- MAS implications: manifests, cascade of validated agents (unavailable/invalid → next),
+  cascade priority, lesion-type preference. Integrity gate ≠ quality ranking.
+- Production cascade today is HD-BET → BET only; SynthStrip/SAM join via config after
+  their wrappers exist, not as a default GPU retry.
 - Recommended 2 production winners + parameters.
 
 ## 6. Conclusion

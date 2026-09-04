@@ -1,4 +1,5 @@
 from preprocessing_steps.skull_stripping import (
+    dispatcher,
     gpu_pool,
     process_subject_skull_stripping,
 )
@@ -26,7 +27,9 @@ def _setup(monkeypatch, tmp_path, fake):
     anat = tmp_path / "sub-001" / "ses-001" / "anat"
     anat.mkdir(parents=True)
     (anat / "sub-001_ses-001_t1.nii.gz").write_bytes(b"x")
-    monkeypatch.setattr(ss, "get_stripper", lambda params: fake)
+    # Cascade instantiates via STRIPPERS[name](), not get_stripper().
+    monkeypatch.setattr(ss, "STRIPPERS", {"hdbet": lambda: fake})
+    monkeypatch.setattr(dispatcher, "STRIPPERS", {"hdbet": lambda: fake})
     return anat
 
 
@@ -34,8 +37,15 @@ def test_gpu_tool_receives_device_from_pool(monkeypatch, tmp_path):
     fake = _FakeStripper()
     anat = _setup(monkeypatch, tmp_path, fake)
     pool = gpu_pool.build_pool(["cuda:1"])
-    params = {"reference_modality": "t1", "apply_to_all": False,
-              "cleanup": False, "disable_tta": True}
+    params = {
+        "method": "hdbet",
+        "reference_modality": "t1",
+        "apply_to_all": False,
+        "cleanup": False,
+        "disable_tta": True,
+        # This test pins the GPU slot; mask integrity is covered elsewhere.
+        "validation": {"enabled": False},
+    }
 
     process_subject_skull_stripping(
         subject_dir=anat, output_dir=tmp_path / "out",

@@ -78,6 +78,17 @@ steps:
       # tool default (on for GPU, off for CPU) unless set here.
       # disable_tta: false
 
+      # Ordered extras after method (optional). Absent cascade still means
+      # method then fallback_method — production stays hdbet → bet.
+      # Do not add a second GPU tool here; a false validation retry already
+      # pays for a full HD-BET run.
+      # cascade: ["synthstrip", "bet"]
+      # Mask-integrity gate (ADD-2). {} = adult catastrophe defaults in
+      # validation.py (300–2500 ml, LCC after dropping <1 ml speckles).
+      # Review flags (1000–1800 ml, edge-touch) are logged, not retried.
+      # fail_closed: false → log-only (empty/missing still fail).
+      validation: {}
+
       reference_modality: "t1"           # На какой модальности создавать маску
       apply_to_all: true                  # Применить маску ко всем модальностям
       cleanup: true                       # Удалить промежуточные файлы
