@@ -202,3 +202,31 @@ def test_cascade_decision_review_flags_still_accept():
     assert "ACCEPT 'hdbet'" in msg
     assert "review_flags=MASK_VOLUME_TOO_SMALL" in msg
     assert "not a retry" in msg
+
+
+def test_hole_gate_rejects_swiss_cheese_seen_in_production(tmp_path):
+    """Calibrated on real runs, not guessed.
+
+    Every correct mask measured on this project's data has 0.00 ml of
+    enclosed holes; the defective MNI mask (KA126/sub-024) had 10.71 ml
+    across 11 cavities and passed the old 20 ml gate. Cavities inside a
+    brain mask are swiss cheese — ventricles belong to the mask as 1s — so
+    there is no legitimate middle ground to protect.
+    """
+    import numpy as np
+    import nibabel as nib
+    from preprocessing_steps.skull_stripping.validation import validate_mask
+
+    arr = np.zeros((30, 30, 30), dtype=np.uint8)
+    arr[3:27, 3:27, 3:27] = 1                     # ~1728 ml at 5 mm voxels
+    arr[12:15, 12:15, 12:15] = 0                  # enclosed cavity ~3.4 ml
+    path = tmp_path / "holed.nii.gz"
+    img = nib.Nifti1Image(arr, np.eye(4))
+    img.header.set_zooms((5.0, 5.0, 5.0))
+    nib.save(img, str(path))
+
+    check = validate_mask(path)
+
+    assert check["hole_volume_ml"] > 0
+    assert check["valid"] is False, "an enclosed cavity must fail the hard gate"
+    assert "holes" in check["reason"]

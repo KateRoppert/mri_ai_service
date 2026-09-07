@@ -154,6 +154,13 @@ def process_subject_skull_stripping(
     strip_result: Optional[Dict[str, Any]] = None
     used: Optional[str] = None
     accepted = False
+    # First candidate that cleared the hard gates but raised review flags.
+    # Held in reserve: if nothing cleaner turns up, it beats having no mask.
+    # First rather than last because the cascade order IS the operator's
+    # preference — `method` is what they wanted, so with nothing clean to
+    # prefer, that ranking still decides.
+    reserve: Optional[tuple] = None
+    retry_on_review = bool(vcfg.get("retry_on_review", True))
 
     # Stage 05 hands us the SAME directory as subject_dir and output_dir
     # (05_preprocessing.py: registered_anat == output_dir/sub/ses/anat), so
@@ -265,6 +272,41 @@ def process_subject_skull_stripping(
         strip_result["mask_validation"] = check
         logger.info("Cascade %r mask metrics: %s", name, format_mask_check_line(check))
         if check["valid"]:
+            flags = check.get("review_flags") or []
+            has_more = any(try_stripper(n) is not None for n in remaining)
+
+            # A flagged mask is a detected defect. Shipping it while untried
+            # tools remain is what made validation decorative: eyes and holes
+            # were flagged and accepted anyway.
+            if flags and retry_on_review and has_more:
+                if reserve is None:
+                    reserve = (strip_result, cand_output, cand_mask, name)
+                logger.info(
+                    "%s",
+                    cascade_decision_message(
+                        name=name,
+                        accepted=False,
+                        remaining=remaining,
+                        check=check,
+                        validation_enabled=True,
+                        review_retry=True,
+                    ),
+                )
+                continue
+
+            if flags and reserve is not None:
+                # This one is flagged too and it is the last chance; the
+                # reserved candidate came earlier in the cascade, i.e. the
+                # operator ranked it higher. Prefer that one.
+                strip_result, cand_output, cand_mask, name = reserve
+                check = strip_result.get("mask_validation") or check
+                used = name
+                logger.info(
+                    "Cascade exhausted with only flagged masks — keeping the "
+                    "higher-ranked %r",
+                    name,
+                )
+
             logger.info(
                 "%s",
                 cascade_decision_message(
@@ -288,6 +330,23 @@ def process_subject_skull_stripping(
                 validation_enabled=True,
             ),
         )
+
+    if not accepted and reserve is not None:
+        # Nothing cleaner appeared. Keep the reserved mask rather than
+        # failing the subject outright — a flagged mask is still a mask.
+        strip_result, cand_output, cand_mask, name = reserve
+        used = name
+        flags = ";".join(
+            (strip_result.get("mask_validation") or {}).get("review_flags") or []
+        )
+        logger.warning(
+            "Cascade exhausted with no clean mask — keeping %r with "
+            "review_flags=%s",
+            name,
+            flags or "none",
+        )
+        _promote(strip_result, cand_output, cand_mask)
+        accepted = True
 
     scratch_ctx.cleanup()
 

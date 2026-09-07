@@ -50,6 +50,13 @@ def _empty_mask():
     return np.zeros((24, 24, 24), dtype=np.uint8)
 
 
+def _clean_mask():
+    """Inside both the hard gates and the review windows (~1331 ml)."""
+    arr = np.zeros((26, 26, 26), dtype=np.uint8)
+    arr[2:24, 2:24, 2:24] = 1          # 22^3 x 125 mm3 = 1331 ml
+    return arr
+
+
 class _FakeStripper:
     def __init__(self, name, uses_gpu, mask_arr, available=True):
         self.name = name
@@ -119,35 +126,123 @@ def test_cascade_retries_when_first_mask_fails_validation(monkeypatch, tmp_path)
     assert results["t1"]["mask_validation"]["valid"] is True
 
 
-def test_review_flags_do_not_trigger_next_stripper(monkeypatch, tmp_path):
-    # 1000 ml is inside hard gates but below review_min_ml=1200 → flags only.
-    first = _FakeStripper("hdbet", True, _passing_mask())
-    second = _FakeStripper("bet", False, _passing_mask())
-    _register(monkeypatch, {
-        "hdbet": lambda: first,
-        "bet": lambda: second,
-    })
+def _flagged_mask():
+    """Passes hard gates, trips review flags (small but not catastrophic)."""
+    arr = np.zeros((24, 24, 24), dtype=np.uint8)
+    arr[2:22, 2:22, 2:22] = 1          # 1000 ml
+    return arr
+
+
+def test_review_flags_move_on_to_the_next_stripper(monkeypatch, tmp_path):
+    """Flags are the whole point of the cascade.
+
+    A mask that trips review flags is not good enough to stop on while
+    untried tools remain — otherwise validation detects a defect and then
+    ships it anyway, which is what happened in production (MNI masks with
+    eyes and holes were accepted with flags raised).
+    """
+    first = _FakeStripper("hdbet", True, _flagged_mask())     # flagged
+    second = _FakeStripper("bet", False, _clean_mask())       # clean
+    _register(monkeypatch, {"hdbet": lambda: first, "bet": lambda: second})
     anat = _subject_anat(tmp_path)
-    params = {
-        "method": "hdbet",
-        "fallback_method": "bet",
-        "reference_modality": "t1",
-        "apply_to_all": False,
-        "cleanup": False,
-        "validation": {"review_min_ml": 1200, "review_max_ml": 1800},
-    }
     results = process_subject_skull_stripping(
         subject_dir=anat,
         output_dir=tmp_path / "out",
         transform_dir=tmp_path / "xfm",
         modalities=["t1"],
-        params=params,
+        params={
+            "method": "hdbet",
+            "fallback_method": "bet",
+            "reference_modality": "t1",
+            "apply_to_all": False,
+            "cleanup": False,
+            "validation": {"review_min_ml": 1200, "review_max_ml": 1800},
+        },
     )
     assert first.calls == 1
-    assert second.calls == 0
+    assert second.calls == 1
+    assert results["t1"]["method"] == "bet"
+    assert not (results["t1"]["mask_validation"].get("review_flags") or [])
+
+
+def test_flagged_mask_is_kept_when_no_tool_is_left(monkeypatch, tmp_path):
+    """Better a flagged mask than none: the patient still needs one."""
+    only = _FakeStripper("hdbet", True, _flagged_mask())
+    _register(monkeypatch, {"hdbet": lambda: only})
+    anat = _subject_anat(tmp_path)
+    results = process_subject_skull_stripping(
+        subject_dir=anat,
+        output_dir=tmp_path / "out",
+        transform_dir=tmp_path / "xfm",
+        modalities=["t1"],
+        params={
+            "method": "hdbet",
+            "reference_modality": "t1",
+            "apply_to_all": False,
+            "cleanup": False,
+            "validation": {"review_min_ml": 1200, "review_max_ml": 1800},
+        },
+    )
     assert results["t1"]["success"] is True
     assert results["t1"]["method"] == "hdbet"
     assert "MASK_VOLUME_TOO_SMALL" in results["t1"]["mask_validation"]["review_flags"]
+
+
+def test_first_flagged_candidate_wins_when_all_are_flagged(monkeypatch, tmp_path):
+    """All flagged → keep the configured preference order.
+
+    `method` is first in the cascade because the operator ranked it highest;
+    with nothing clean to prefer, that ranking still decides.
+    """
+    first = _FakeStripper("hdbet", True, _flagged_mask())
+    second = _FakeStripper("bet", False, _flagged_mask())
+    _register(monkeypatch, {"hdbet": lambda: first, "bet": lambda: second})
+    anat = _subject_anat(tmp_path)
+    results = process_subject_skull_stripping(
+        subject_dir=anat,
+        output_dir=tmp_path / "out",
+        transform_dir=tmp_path / "xfm",
+        modalities=["t1"],
+        params={
+            "method": "hdbet",
+            "fallback_method": "bet",
+            "reference_modality": "t1",
+            "apply_to_all": False,
+            "cleanup": False,
+            "validation": {"review_min_ml": 1200, "review_max_ml": 1800},
+        },
+    )
+    assert first.calls == 1
+    assert second.calls == 1, "the cascade should have tried the alternative"
+    assert results["t1"]["method"] == "hdbet", "fall back to the preferred tool"
+
+
+def test_retry_on_review_can_be_switched_off(monkeypatch, tmp_path):
+    """Escape hatch: keep the old accept-on-flags behaviour via config."""
+    first = _FakeStripper("hdbet", True, _flagged_mask())
+    second = _FakeStripper("bet", False, _clean_mask())
+    _register(monkeypatch, {"hdbet": lambda: first, "bet": lambda: second})
+    anat = _subject_anat(tmp_path)
+    results = process_subject_skull_stripping(
+        subject_dir=anat,
+        output_dir=tmp_path / "out",
+        transform_dir=tmp_path / "xfm",
+        modalities=["t1"],
+        params={
+            "method": "hdbet",
+            "fallback_method": "bet",
+            "reference_modality": "t1",
+            "apply_to_all": False,
+            "cleanup": False,
+            "validation": {
+                "review_min_ml": 1200,
+                "review_max_ml": 1800,
+                "retry_on_review": False,
+            },
+        },
+    )
+    assert second.calls == 0
+    assert results["t1"]["method"] == "hdbet"
 
 
 def test_cascade_logs_metrics_and_accept_without_retry(monkeypatch, tmp_path, caplog):

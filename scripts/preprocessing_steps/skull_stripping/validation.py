@@ -47,9 +47,13 @@ DEFAULT_REVIEW_MIN_DOMINANT_FRACTION = 0.95
 DEFAULT_REVIEW_MAX_EDGE_TOUCH = 0.05
 # Enclosed background cavities (mask==0 completely surrounded by brain).
 # Adult ventricles belong *inside* a skull-strip mask as 1s; holes here
-# are swiss cheese, not CSF. 20 ml is already visually obvious.
-DEFAULT_MAX_HOLE_ML = 20.0
-DEFAULT_REVIEW_MAX_HOLE_ML = 2.0
+# are swiss cheese, not CSF — so there is no legitimate middle ground and
+# the gate can sit low. Calibrated on this project's runs: every correct
+# mask measured 0.00 ml of holes, while the defective MNI mask
+# (KA126/sub-024) had 10.71 ml across 11 cavities and sailed through the
+# previous 20 ml gate.
+DEFAULT_MAX_HOLE_ML = 2.0
+DEFAULT_REVIEW_MAX_HOLE_ML = 0.5
 
 PathLike = Union[str, Path]
 
@@ -301,6 +305,7 @@ def cascade_decision_message(
     check: Optional[Dict[str, Any]] = None,
     strip_failed: bool = False,
     validation_enabled: bool = True,
+    review_retry: bool = False,
 ) -> str:
     """Explain ACCEPT / REJECT and whether the next stripper will run."""
     rest = [str(x) for x in remaining if x]
@@ -343,6 +348,19 @@ def cascade_decision_message(
         return (
             f"Cascade decision: ACCEPT {name!r} — hard gates passed"
             f"{review_note}; no further tools in cascade"
+        )
+
+    if review_retry:
+        # Not a catastrophe — the mask cleared the hard gates but raised
+        # flags, and something untried might do better.
+        if next_name:
+            return (
+                f"Cascade decision: REJECT {name!r} — review flags {flag_s}; "
+                f"trying next: {next_name} (kept in reserve if nothing is cleaner)"
+            )
+        return (
+            f"Cascade decision: ACCEPT {name!r} — review flags {flag_s}; "
+            f"no further tools in cascade"
         )
 
     reason = (check or {}).get("reason", "invalid mask")
