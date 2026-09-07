@@ -97,7 +97,9 @@ def test_no_fallback_needed_when_primary_available(all_available, caplog):
 
 def test_unknown_method_raises(all_available):
     with pytest.raises(SkullStripperUnavailable, match="unknown skull stripping method"):
-        get_stripper({"method": "synthstrip"})  # spec'd, not implemented yet
+        # A name no tool will ever claim. (This used to say "synthstrip",
+        # which stopped being unknown once that wrapper landed.)
+        get_stripper({"method": "no_such_stripper"})
 
 
 def test_unknown_fallback_raises(only_bet_available):
