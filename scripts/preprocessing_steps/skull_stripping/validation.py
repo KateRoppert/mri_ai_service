@@ -4,16 +4,19 @@ Two layers, because a false cascade retry on GBM (mass effect, HD-BET
 speckle) pays for a full extra tool run:
 
 * **Hard fail** (`valid=False`) — catastrophe only: missing/empty mask,
-  volume outside a wide adult range, or no dominant component after
-  dropping islands smaller than ``speckle_ml``. This is what the cascade
-  uses to try the next stripper.
-* **Review flags** — tighter windows (volume, LCC, FOV-edge touch) logged
-  for QA. They do not reject the mask. Set ``fail_closed=False`` to also
-  demote the hard volume/LCC gates to flags (empty/missing still fail).
+  volume outside a wide adult range, no dominant component after
+  dropping islands smaller than ``speckle_ml``, or enclosed cavities
+  (black holes inside an otherwise connected brain). This is what the
+  cascade uses to try the next stripper.
+* **Review flags** — tighter windows (volume, LCC, FOV-edge touch, small
+  holes) logged for QA. They do not reject the mask. Set
+  ``fail_closed=False`` to also demote the hard volume/LCC/hole gates to
+  flags (empty/missing still fail).
 
 Defaults are wide on purpose. Tune via ``params["validation"]`` rather
-than deleting the gate. MNI leakage is Task D / the benchmark, not this
-runtime check.
+than deleting the gate. MNI *leakage* (skull left on) remains a
+benchmark warning, not a Stage 05 retry. Enclosed holes are the opposite
+failure and *do* retry.
 """
 
 from __future__ import annotations
@@ -42,6 +45,11 @@ DEFAULT_REVIEW_MIN_ML = 1000.0
 DEFAULT_REVIEW_MAX_ML = 1800.0
 DEFAULT_REVIEW_MIN_DOMINANT_FRACTION = 0.95
 DEFAULT_REVIEW_MAX_EDGE_TOUCH = 0.05
+# Enclosed background cavities (mask==0 completely surrounded by brain).
+# Adult ventricles belong *inside* a skull-strip mask as 1s; holes here
+# are swiss cheese, not CSF. 20 ml is already visually obvious.
+DEFAULT_MAX_HOLE_ML = 20.0
+DEFAULT_REVIEW_MAX_HOLE_ML = 2.0
 
 PathLike = Union[str, Path]
 
@@ -49,6 +57,48 @@ PathLike = Union[str, Path]
 def _voxel_ml(img: nib.Nifti1Image) -> float:
     zooms = img.header.get_zooms()[:3]
     return float(np.prod(zooms)) / 1000.0
+
+
+def _empty_metrics() -> Dict[str, Any]:
+    return {
+        "mask_voxels": 0,
+        "mask_volume_ml": 0.0,
+        "lcc_ratio": 0.0,
+        "dominant_fraction": 0.0,
+        "edge_touch_ratio": 0.0,
+        "bbox_fill_ratio": 0.0,
+        "n_components": 0,
+        "n_components_kept": 0,
+        "hole_volume_ml": 0.0,
+        "n_holes": 0,
+    }
+
+
+def _enclosed_holes(data: np.ndarray, voxel_ml: float) -> tuple[float, int]:
+    """Background components that do not touch the FOV face.
+
+    These are cavities inside the brain mask (swiss cheese), not the
+    outside-the-head air and not sulci that open to the exterior.
+    """
+    labeled, n_bg = label(~data)
+    if n_bg == 0:
+        return 0.0, 0
+    edge = np.zeros_like(data, dtype=bool)
+    edge[0, :, :] = True
+    edge[-1, :, :] = True
+    edge[:, 0, :] = True
+    edge[:, -1, :] = True
+    edge[:, :, 0] = True
+    edge[:, :, -1] = True
+    touching = np.zeros(n_bg + 1, dtype=bool)
+    touching[np.unique(labeled[edge])] = True
+    touching[0] = False
+    sizes = np.bincount(labeled.ravel(), minlength=n_bg + 1)
+    interior = ~touching
+    interior[0] = False
+    n_holes = int(interior.sum())
+    hole_ml = float(sizes[interior].sum() * voxel_ml)
+    return hole_ml, n_holes
 
 
 def mask_metrics(
@@ -62,17 +112,7 @@ def mask_metrics(
     """
     path = Path(mask_path)
     if not path.is_file():
-        return {
-            "mask_exists": False,
-            "mask_voxels": 0,
-            "mask_volume_ml": 0.0,
-            "lcc_ratio": 0.0,
-            "dominant_fraction": 0.0,
-            "edge_touch_ratio": 0.0,
-            "bbox_fill_ratio": 0.0,
-            "n_components": 0,
-            "n_components_kept": 0,
-        }
+        return {"mask_exists": False, **_empty_metrics()}
 
     img = nib.load(str(path))
     data = np.asanyarray(img.dataobj) > 0
@@ -81,17 +121,7 @@ def mask_metrics(
     volume_ml = float(voxels * voxel_ml)
 
     if voxels == 0:
-        return {
-            "mask_exists": True,
-            "mask_voxels": 0,
-            "mask_volume_ml": 0.0,
-            "lcc_ratio": 0.0,
-            "dominant_fraction": 0.0,
-            "edge_touch_ratio": 0.0,
-            "bbox_fill_ratio": 0.0,
-            "n_components": 0,
-            "n_components_kept": 0,
-        }
+        return {"mask_exists": True, **_empty_metrics()}
 
     labeled, n_components = label(data)
     sizes = np.bincount(labeled.ravel())[1:]
@@ -112,6 +142,7 @@ def mask_metrics(
     mn = coords.min(0)
     mx = coords.max(0) + 1
     bbox_fill_ratio = float(voxels / max(int(np.prod(mx - mn)), 1))
+    hole_volume_ml, n_holes = _enclosed_holes(data, voxel_ml)
 
     return {
         "mask_exists": True,
@@ -123,6 +154,8 @@ def mask_metrics(
         "bbox_fill_ratio": bbox_fill_ratio,
         "n_components": int(n_components),
         "n_components_kept": int(kept.size),
+        "hole_volume_ml": hole_volume_ml,
+        "n_holes": n_holes,
     }
 
 
@@ -137,18 +170,22 @@ def validate_mask(
     review_max_ml: float = DEFAULT_REVIEW_MAX_ML,
     review_min_dominant_fraction: float = DEFAULT_REVIEW_MIN_DOMINANT_FRACTION,
     review_max_edge_touch_ratio: Optional[float] = DEFAULT_REVIEW_MAX_EDGE_TOUCH,
+    max_hole_ml: float = DEFAULT_MAX_HOLE_ML,
+    review_max_hole_ml: float = DEFAULT_REVIEW_MAX_HOLE_ML,
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Return validity, reason, metrics, and review flags.
 
-    ``fail_closed=True`` (default): volume / LCC catastrophe rejects the
-    mask and the cascade may retry. ``fail_closed=False``: those become
-    review flags; only missing/empty masks still fail (cannot apply them).
-    Extra kwargs are ignored so ``params["validation"]`` can be splatted in.
+    ``fail_closed=True`` (default): volume / LCC / enclosed-hole catastrophe
+    rejects the mask and the cascade may retry. ``fail_closed=False``: those
+    become review flags; only missing/empty masks still fail (cannot apply
+    them). Extra kwargs are ignored so ``params["validation"]`` can be
+    splatted in.
     """
     metrics = mask_metrics(mask_path, speckle_ml=speckle_ml)
     volume_ml = float(metrics["mask_volume_ml"])
     dominant_fraction = float(metrics["dominant_fraction"])
+    hole_volume_ml = float(metrics.get("hole_volume_ml") or 0.0)
     review_flags: list[str] = []
 
     result: Dict[str, Any] = {
@@ -174,6 +211,7 @@ def validate_mask(
         metrics["n_components_kept"] == 0
         or dominant_fraction < min_dominant_fraction
     )
+    hole_fail = hole_volume_ml > max_hole_ml
 
     if volume_fail:
         hard_reason = f"volume {volume_ml:.0f}ml out of [{min_ml},{max_ml}]"
@@ -196,6 +234,19 @@ def validate_mask(
         review_flags.append("MASK_FRAGMENTED")
         result["reason"] = hard_reason
 
+    if hole_fail:
+        n_holes = int(metrics.get("n_holes") or 0)
+        hard_reason = (
+            f"holes {hole_volume_ml:.1f}ml in {n_holes} cavities "
+            f"(max {max_hole_ml:.0f}ml)"
+        )
+        if fail_closed:
+            result["valid"] = False
+            result["reason"] = hard_reason
+            return result
+        review_flags.append("MASK_HOLES")
+        result["reason"] = hard_reason
+
     if volume_ml < review_min_ml:
         review_flags.append("MASK_VOLUME_TOO_SMALL")
     if volume_ml > review_max_ml:
@@ -207,6 +258,8 @@ def validate_mask(
         and metrics["edge_touch_ratio"] > review_max_edge_touch_ratio
     ):
         review_flags.append("EDGE_TOUCH")
+    if hole_volume_ml > review_max_hole_ml and "MASK_HOLES" not in review_flags:
+        review_flags.append("MASK_HOLES")
 
     if review_flags:
         logger.debug(
@@ -230,8 +283,11 @@ def format_mask_check_line(check: Dict[str, Any]) -> str:
     edge = float(check.get("edge_touch_ratio") or 0.0)
     n_comp = int(check.get("n_components") or 0)
     n_kept = int(check.get("n_components_kept") or 0)
+    hole_ml = float(check.get("hole_volume_ml") or 0.0)
+    n_holes = int(check.get("n_holes") or 0)
     return (
         f"volume={volume:.1f} ml, LCC={lcc:.3f}, edge_touch={edge:.3f}, "
+        f"holes={hole_ml:.1f} ml (n={n_holes}), "
         f"components={n_comp} (kept={n_kept}), valid={check.get('valid')}, "
         f"reason={check.get('reason', '')}, review_flags={flag_s}"
     )
@@ -310,11 +366,13 @@ def validation_gate_banner(vcfg: Optional[Dict[str, Any]] = None) -> str:
     max_ml = float(cfg.get("max_ml", DEFAULT_MAX_ML))
     min_lcc = float(cfg.get("min_dominant_fraction", DEFAULT_MIN_DOMINANT_FRACTION))
     speckle = float(cfg.get("speckle_ml", DEFAULT_SPECKLE_ML))
+    max_hole = float(cfg.get("max_hole_ml", DEFAULT_MAX_HOLE_ML))
     rmin = float(cfg.get("review_min_ml", DEFAULT_REVIEW_MIN_ML))
     rmax = float(cfg.get("review_max_ml", DEFAULT_REVIEW_MAX_ML))
     fail_closed = cfg.get("fail_closed", True)
     return (
         f"Mask validation gates: hard volume [{min_ml:.0f}, {max_ml:.0f}] ml, "
-        f"min LCC {min_lcc:.2f} (islands < {speckle:.1f} ml ignored); "
+        f"min LCC {min_lcc:.2f} (islands < {speckle:.1f} ml ignored), "
+        f"max enclosed holes {max_hole:.0f} ml; "
         f"review volume [{rmin:.0f}, {rmax:.0f}] ml; fail_closed={fail_closed}"
     )

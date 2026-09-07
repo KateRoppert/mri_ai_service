@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import nibabel as nib
 
@@ -260,3 +261,92 @@ def test_all_candidates_fail_returns_error(monkeypatch, tmp_path):
     )
     assert results["t1"]["success"] is False
     assert "error" in results["t1"]
+
+
+class _InputRecordingStripper(_FakeStripper):
+    """Records what the input volume contained when strip() was called."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seen_input_bytes = None
+
+    def strip(self, input_path, output_path, mask_path=None, params=None):
+        self.seen_input_bytes = Path(input_path).read_bytes()
+        return super().strip(input_path, output_path, mask_path, params)
+
+
+def test_retry_gets_the_original_volume_not_the_first_tools_output(
+    monkeypatch, tmp_path
+):
+    """A rejected candidate must not corrupt the input for the next one.
+
+    Stage 05 passes the SAME directory as subject_dir and output_dir
+    (05_preprocessing.py: registered_anat == output_dir/sub/ses/anat), so a
+    stripper writing its result to output_path overwrites the very volume the
+    next cascade candidate has to read. The earlier retry test hid this by
+    using two different directories.
+    """
+    anat = tmp_path / "sub-001" / "ses-001" / "anat"
+    anat.mkdir(parents=True)
+    original = b"ORIGINAL-REGISTERED-VOLUME-WITH-SKULL"
+    (anat / "sub-001_ses-001_t1.nii.gz").write_bytes(original)
+
+    first = _InputRecordingStripper("hdbet", True, _empty_mask())      # rejected
+    second = _InputRecordingStripper("bet", False, _passing_mask())    # accepted
+    _register(monkeypatch, {"hdbet": lambda: first, "bet": lambda: second})
+
+    process_subject_skull_stripping(
+        subject_dir=anat,
+        # Production wiring: output lands in the same anat directory.
+        output_dir=tmp_path,
+        transform_dir=tmp_path / "xfm",
+        modalities=["t1"],
+        params={
+            "method": "hdbet",
+            "fallback_method": "bet",
+            "reference_modality": "t1",
+            "apply_to_all": False,
+            "cleanup": False,
+        },
+    )
+
+    assert first.seen_input_bytes == original
+    assert second.seen_input_bytes == original, (
+        "second candidate read the first one's output instead of the "
+        "original volume"
+    )
+
+
+def test_rejected_candidate_does_not_leave_its_mask_behind(monkeypatch, tmp_path):
+    """Only the accepted tool's mask may reach the final path.
+
+    Otherwise a rejected mask sits at mask_path and gets applied to the other
+    modalities in step 2.
+    """
+    anat = tmp_path / "sub-001" / "ses-001" / "anat"
+    anat.mkdir(parents=True)
+    (anat / "sub-001_ses-001_t1.nii.gz").write_bytes(b"original")
+
+    first = _FakeStripper("hdbet", True, _empty_mask())     # rejected: empty
+    second = _FakeStripper("bet", False, _passing_mask())   # accepted
+    _register(monkeypatch, {"hdbet": lambda: first, "bet": lambda: second})
+
+    results = process_subject_skull_stripping(
+        subject_dir=anat,
+        output_dir=tmp_path,
+        transform_dir=tmp_path / "xfm",
+        modalities=["t1"],
+        params={
+            "method": "hdbet",
+            "fallback_method": "bet",
+            "reference_modality": "t1",
+            "apply_to_all": False,
+            "cleanup": False,
+        },
+    )
+
+    final_mask = tmp_path / "xfm" / "sub-001" / "ses-001" / "anat" / "sub-001_ses-001_brain_mask.nii.gz"
+    assert final_mask.is_file()
+    arr = np.asanyarray(nib.load(str(final_mask)).dataobj)
+    assert arr.sum() > 0, "the accepted tool's mask must be the one that lands"
+    assert results["t1"]["method"] == "bet"

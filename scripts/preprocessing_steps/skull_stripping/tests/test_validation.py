@@ -94,6 +94,53 @@ def test_empty_still_fails_when_fail_closed_false(tmp_path):
     assert res["valid"] is False
 
 
+def test_internal_holes_fail_even_when_volume_and_lcc_pass(tmp_path):
+    """Swiss-cheese mask: one connected blob, adult volume, enclosed cavities.
+
+    LCC of the foreground stays ~1.0 — that is why the old gate accepted
+    MNI-mask outputs with black holes throughout the brain.
+    """
+    arr = np.zeros((80, 80, 80), dtype=np.uint8)
+    arr[10:70, 10:70, 10:70] = 1  # 216 ml solid cube @1mm
+    arr[25:45, 25:45, 25:45] = 0  # 8 ml enclosed hole
+    arr[50:58, 50:58, 50:58] = 0  # 0.5 ml enclosed hole
+    res = validate_mask(
+        _write_mask(tmp_path, arr),
+        min_ml=50,
+        max_ml=2500,
+        min_dominant_fraction=0.70,
+        max_hole_ml=5.0,
+    )
+    assert res["valid"] is False
+    assert "hole" in res["reason"]
+    assert res["hole_volume_ml"] > 5.0
+
+
+def test_solid_mask_reports_zero_hole_volume(tmp_path):
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[5:35, 5:35, 5:35] = 1
+    metrics = mask_metrics(_write_mask(tmp_path, arr))
+    assert metrics["hole_volume_ml"] == 0.0
+    assert metrics["n_holes"] == 0
+    res = validate_mask(_write_mask(tmp_path, arr), min_ml=5, max_ml=2500)
+    assert res["valid"] is True
+
+
+def test_holes_become_review_flags_when_fail_closed_false(tmp_path):
+    arr = np.zeros((80, 80, 80), dtype=np.uint8)
+    arr[10:70, 10:70, 10:70] = 1
+    arr[25:45, 25:45, 25:45] = 0
+    res = validate_mask(
+        _write_mask(tmp_path, arr),
+        min_ml=50,
+        max_ml=2500,
+        max_hole_ml=5.0,
+        fail_closed=False,
+    )
+    assert res["valid"] is True
+    assert any("HOLE" in f for f in res["review_flags"])
+
+
 def test_mask_metrics_reports_volume_and_edge_touch(tmp_path):
     arr = np.zeros((10, 10, 10))
     arr[0:3, 0:3, 0:3] = 1  # touches FOV corner
@@ -117,6 +164,7 @@ def test_format_mask_check_line_includes_volume_and_flags():
     })
     assert "volume=1342.4 ml" in line
     assert "LCC=0.991" in line
+    assert "holes=0.0 ml" in line
     assert "review_flags=MASK_VOLUME_TOO_SMALL" in line
 
 

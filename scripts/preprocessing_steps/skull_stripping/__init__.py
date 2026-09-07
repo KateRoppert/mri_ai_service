@@ -15,6 +15,8 @@ Existing imports keep working:
 """
 
 import logging
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -40,6 +42,7 @@ from .dispatcher import (
 )
 from .hdbet import HdBetStripper
 from .synthstrip import SynthStripStripper
+from .mni_mask import MniMaskStripper
 from .gpu_pool import acquire_device, resolve_devices
 from .validation import (
     cascade_decision_message,
@@ -57,6 +60,7 @@ __all__ = [
     "BetStripper",
     "HdBetStripper",
     "SynthStripStripper",
+    "MniMaskStripper",
     "STRIPPERS",
     "SkullStripperUnavailable",
     "get_stripper",
@@ -151,6 +155,36 @@ def process_subject_skull_stripping(
     used: Optional[str] = None
     accepted = False
 
+    # Stage 05 hands us the SAME directory as subject_dir and output_dir
+    # (05_preprocessing.py: registered_anat == output_dir/sub/ses/anat), so
+    # writing a candidate straight to ref_output would overwrite the very
+    # volume the next cascade candidate must read — the second tool would
+    # skull-strip an already-stripped image. Candidates therefore write into
+    # a scratch directory and only the accepted one is moved into place.
+    # Scratch sits next to the output so the move stays on one filesystem.
+    ref_output.parent.mkdir(parents=True, exist_ok=True)
+    # cleanup() below covers the normal path; TemporaryDirectory's finalizer
+    # covers an exception escaping the loop, so no scratch survives in the
+    # pipeline's output directory either way (verified).
+    scratch_ctx = tempfile.TemporaryDirectory(
+        prefix=".skullstrip_", dir=str(ref_output.parent)
+    )
+
+    def _promote(result: Dict[str, Any], cand_output: Path, cand_mask: Path) -> None:
+        """Move the accepted candidate onto the real output paths.
+
+        Done only once a candidate is accepted, so a rejected tool never
+        touches the registered volume or the mask the other modalities are
+        masked with.
+        """
+        mask_path.parent.mkdir(parents=True, exist_ok=True)
+        if cand_output.is_file():
+            shutil.move(str(cand_output), str(ref_output))
+            result["output_path"] = str(ref_output)
+        if cand_mask.is_file():
+            shutil.move(str(cand_mask), str(mask_path))
+            result["mask_path"] = str(mask_path)
+
     for i, name in enumerate(order, start=1):
         remaining = order[i:]
         cand = try_stripper(name)
@@ -167,11 +201,15 @@ def process_subject_skull_stripping(
         logger.info("Cascade attempt %d/%d: running %r", i, len(order), name)
         tool_params = get_tool_params(params, cand)
 
+        scratch = Path(scratch_ctx.name)
+        cand_output = scratch / f"{i:02d}_{name}_{ref_pattern}"
+        cand_mask = scratch / f"{i:02d}_{name}_{mask_pattern}"
+
         def _run_strip(tool, tool_params_local):
             return tool.strip(
                 input_path=ref_file,
-                output_path=ref_output,
-                mask_path=mask_path,
+                output_path=cand_output,
+                mask_path=cand_mask,
                 params=tool_params_local,
             )
 
@@ -219,10 +257,11 @@ def process_subject_skull_stripping(
                     validation_enabled=False,
                 ),
             )
+            _promote(strip_result, cand_output, cand_mask)
             accepted = True
             break
 
-        check = validate_mask(mask_path, **vcfg)
+        check = validate_mask(cand_mask, **vcfg)
         strip_result["mask_validation"] = check
         logger.info("Cascade %r mask metrics: %s", name, format_mask_check_line(check))
         if check["valid"]:
@@ -236,6 +275,7 @@ def process_subject_skull_stripping(
                     validation_enabled=True,
                 ),
             )
+            _promote(strip_result, cand_output, cand_mask)
             accepted = True
             break
         logger.info(
@@ -248,6 +288,8 @@ def process_subject_skull_stripping(
                 validation_enabled=True,
             ),
         )
+
+    scratch_ctx.cleanup()
 
     if not accepted:
         error = f"No usable stripper in cascade {order}"
