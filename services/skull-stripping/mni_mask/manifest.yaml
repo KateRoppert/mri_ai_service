@@ -1,0 +1,42 @@
+# MNI152 atlas-mask baseline (strict / loose). Cheap CPU control for the
+# skull-stripping comparison — not a production winner on its own.
+#
+# Behaviour: scripts/preprocessing_steps/skull_stripping/mni_mask.py
+
+name: mni_mask
+version: "1.0"
+tool_type: skull_stripping
+
+compute:
+  requires_gpu: false
+  gpu_memory_gb: 0
+  ram_gb: 2
+  cpu_fallback: true
+
+lesion_type_preference:
+  glioblastoma: low           # mass effect vs a population atlas
+  multiple_sclerosis: medium
+
+modality_support:
+  primary: [t1, t1c, t2, t2fl]
+  apply_to: [t1, t1c, t2, t2fl]
+
+quality_notes: >
+  Deterministic atlas mask in MNI152 1mm space. Strict = FSL
+  MNI152_T1_1mm_brain_mask; loose = ~2 mm dilation. Answers "is a GPU
+  stripper worth the cost?" — not a clinical default. Requires inputs
+  registered to MNI152_FSL (production atlas).
+
+install:
+  method: none
+  package: data/templates/MNI152_T1_1mm_brain_mask.nii.gz
+  model_download: none
+
+default_params:
+  variant: strict             # strict | loose
+  dilation_vox: 2             # used when variant is loose
+
+mas_metadata:
+  agent_type: skull_stripper
+  cascade_priority: 4
+  fallback_to: bet
