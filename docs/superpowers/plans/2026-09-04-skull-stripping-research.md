@@ -254,7 +254,7 @@ Atlas baseline: `MniMaskStripper` with variant `strict` (undilated MNI152 brain 
 Mask file: `data/templates/MNI152_T1_1mm_brain_mask.nii.gz` (FSL brain mask, not a threshold on the skull-on T1).
 
 - [x] Tests for both variants, implementation, `STRIPPERS["mni_mask"]` (variant from `tool_params`), manifest.
-- [ ] Commit `feat(ss): add MNI atlas-mask stripper (strict/loose)` — wait for Kate after manual test.
+- [x] Committed (wrapper landed incidentally in 75fa7d4; manifest + template in 6e0fd63). Kate verified via real cascade runs 2026-09-07 (KA123/KA126/KA126_4).
 
 June Task 4.1 samples apply with registry-name overlay.
 
