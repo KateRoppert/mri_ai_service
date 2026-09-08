@@ -42,15 +42,31 @@ Branch `feat/skull-stripping-research-v2` = `origin/main` + research docs (spec,
 | 1.1 Package + BET | **done on main** | `skull_stripping/{base,bet,__init__}.py` |
 | 1.2 BET manifest | **done on main** | `services/skull-stripping/bet/manifest.yaml` |
 | 1.3 Dispatcher + fallback | **done on main** | `dispatcher.py` `STRIPPERS` / `get_stripper(params)` |
-| 1.4 Cascade + mask validation | **done on v2** (2026-09-04; two-tier gates, not June 700–1900 fail-closed) | `validation.py`, cascade in `__init__.py` |
+| 1.4 Cascade + mask validation | **done on v2** (2026-09-04; hardened 2026-09-07: flags now steer the cascade, hole gate 20→2 ml, candidates no longer overwrite the input) | `validation.py`, cascade in `__init__.py` |
 | 2.1 Config `method` / `fallback` / `tool_params` | **done on main** (and more: GPU keys, production `hdbet`) | `configs/preprocessing_config.yaml` |
 | 3.1 HD-BET | **done on main** | `hdbet.py`, HD-BET 2.x CLI, GPU pool |
 | GPU device portability | **done on main** (separate spec 2026-08-31) | `gpu_pool.py`, Stage 05 `build_pool` |
 | 3.2 SynthStrip | **done on v2** (wrapper + manifest; CLI in web image via FreeSurfer) | Task B |
 | 3.3 BrainMaGe | **not done** | Task C |
-| 4.1 MNI strict/loose | **not done** | Task D |
+| 4.1 MNI strict/loose | **done on v2** (2026-09-04; prod atlas already MNI152_FSL) | Task D |
 | 4.2 SAM + DeepBET stubs | **not done** | Task E |
 | 5–10 Benchmark + paper fill | **not done** (scaffold only) | Tasks F–K; long samples in the June plan |
+
+### Carried forward from the 2026-09-07 hardening
+
+- `mni_mask` leaks onto the eyes under the production **Rigid** registration —
+  an atlas mask cannot fit a head it was never scaled to. Treat it as a
+  baseline, not a candidate for first place in a production cascade.
+- **The spec's "DSC vs MNI152 brain mask as pseudo-GT" is unsafe as written**
+  (§4 of the design spec): measured Dice is 0.84–0.87 for correct HD-BET masks
+  and 0.997 for a mask containing the patient's eyes, so the metric ranks the
+  broken mask first. Decide on a better reference before Phase 5 (visual
+  scoring, consensus mask, or affine/nonlinear registration for the benchmark
+  arm only).
+- An intensity-based leakage metric was prototyped and rejected: skull and
+  scalp are tissue, so "background inside the mask" does not separate the
+  classes. Calibrating any future version needs volumes that still have skull —
+  every file under `preprocessed/` is already masked.
 
 **Do not implement:** replacing `skull_stripping.py` (already a package); a second HD-BET wrapper; `resolve_stripper`; production `cascade: ["bet"]`.
 
@@ -233,11 +249,12 @@ Follow June Task 3.3 body with the Global Constraints overlay.
 
 ## Phase D — MNI strict + loose (was Task 4.1)
 
-Atlas baseline: `MniMaskStripper` with variant `strict` (undilated MNI152 brain mask) and `loose` (~2 mm dilation). Inputs are already in atlas space after Stage 05 registration; benchmark will force MNI152 (see Task F).
+Atlas baseline: `MniMaskStripper` with variant `strict` (undilated MNI152 brain mask) and `loose` (~2 mm dilation). Inputs are already in atlas space after Stage 05 registration; production atlas is **MNI152_FSL** (Kate, 2026-09-04), not SRI24.
 
-Template: `data/templates/MNI152_T1_1mm.nii.gz`. Do not change production atlas (`SRI24` in live config).
+Mask file: `data/templates/MNI152_T1_1mm_brain_mask.nii.gz` (FSL brain mask, not a threshold on the skull-on T1).
 
-- [ ] Tests for both variants, implementation, `STRIPPERS["mni_mask"]` (variant from `tool_params`), manifest, commit.
+- [x] Tests for both variants, implementation, `STRIPPERS["mni_mask"]` (variant from `tool_params`), manifest.
+- [ ] Commit `feat(ss): add MNI atlas-mask stripper (strict/loose)` — wait for Kate after manual test.
 
 June Task 4.1 samples apply with registry-name overlay.
 
