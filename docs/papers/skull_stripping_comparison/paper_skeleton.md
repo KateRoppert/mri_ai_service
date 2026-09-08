@@ -60,7 +60,9 @@ Friedman. Research questions table.>>
 ### 3.5 Preprocessing and Hardware
 - Stages 1–4 via `prepare_data.py`, `skull_stripping: disabled`, bias correction
   registration-only; benchmark input is the registration-space image.
-- Atlas: MNI152 for all datasets (GBM overrides SRI24 for consistency).
+- Atlas: MNI152 for all datasets. Production Stage 05 already uses `atlas.name: MNI152_FSL`
+  (not SRI24). The `mni_mask` plugin (strict / ~2 mm loose) is the cheap atlas baseline
+  in that same space.
 - Hardware: NVIDIA RTX 5070 12GB VRAM.
 
 ### 3.6 Runtime cascade and mask-integrity gate (ADD-2)
@@ -71,19 +73,46 @@ The production chain, when `cascade` is omitted, is **`method` then `fallback_me
 retry already pays for a full HD-BET (TTA) run.
 
 The mask check is **two-tier**, so GBM mass effect and HD-BET speckle do not inflate
-runtime. Textbook adult windows (e.g. 700–1900 ml, LCC 0.95) are **review signals**,
-not fail-closed cascade triggers. MNI leakage is a warning in the benchmark (Task D),
-not a Stage 05 gate — atlas ≠ GT under mass effect.
+runtime. Textbook adult windows are **review signals** rather than catastrophe gates —
+but review is not inert: a flagged mask advances the cascade while untried tools remain
+(revised 2026-09-07, see below). MNI leakage is a warning in the benchmark (Task D), not
+a Stage 05 gate — atlas ≠ GT under mass effect.
 
 | Layer | Checks | Effect |
 |---|---|---|
-| Catastrophe | volume 300–2500 ml; dominant component ≥ 0.70 after dropping islands `< 1 ml`; empty/missing file | `valid=False` → try next stripper |
-| Review | volume 1000–1800 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05` | log `review_flags` only; keep the mask |
+| Catastrophe | volume 300–2500 ml; dominant component ≥ 0.70 after dropping islands `< 1 ml`; enclosed hole volume `> 2` ml; empty/missing file | `valid=False` → try next stripper |
+| Review | volume 1000–1800 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05`; enclosed holes `> 0.5` ml | try the next tool if one is untried; otherwise keep the mask and log `review_flags` |
 | Atlas (later) | MNI loose / very-loose outside-ratio | benchmark QA, not runtime retry |
 
-`validation.fail_closed: false` demotes volume/LCC catastrophe to flags (empty/missing
+**Revision after the first production runs (2026-09-07).** As first written, review flags
+were log-only. Over six runs the gate raised four flags and switched tools zero times: it
+detected the defects and shipped them anyway — MNI masks containing the patient's eyes
+(1838 ml, volume flag) and one with 10.71 ml of holes across 11 cavities (under the
+original 20 ml catastrophe threshold). Three changes followed:
+
+1. Review flags now advance the cascade while untried tools remain. The flagged mask is
+   held in reserve and used only if nothing cleaner appears — a flagged mask still beats
+   no mask. When every candidate is flagged, the earliest wins, since cascade order is
+   the operator's stated preference. `validation.retry_on_review: false` restores the
+   log-only behaviour.
+2. The enclosed-hole catastrophe gate drops 20 ml → 2 ml. Calibration on this project's
+   masks: every correct mask measures exactly 0.00 ml of enclosed holes, and cavities
+   inside a brain mask are swiss cheese rather than anatomy (ventricles belong to the
+   mask as 1s), so no legitimate middle ground needed protecting.
+3. Candidates now write to a scratch directory and only the accepted mask is promoted.
+   Stage 05 passes one directory as both `subject_dir` and `output_dir`, so a rejected
+   candidate had been overwriting the very volume the next candidate must read; a retry
+   would have skull-stripped an already-stripped image. Latent until (1) made retries
+   possible.
+
+Effect on the same subjects: `mni_mask` 1838 ml (eyes) → `synthstrip` 1332 ml clean;
+`mni_mask` 1827 ml (eyes + holes) → `synthstrip` 1443 ml clean; a clean HD-BET mask
+(1297 ml) is still accepted on the first attempt, so the gate costs nothing when the
+first tool is right.
+
+`validation.fail_closed: false` demotes volume/LCC/hole catastrophe to flags (empty/missing
 still fail — the mask cannot be applied). Metrics live in `mask_metrics()` (volume, LCC,
-edge-touch, bbox fill). Tune via `params.validation`; if a plausible tumour mask trips
+edge-touch, bbox fill, enclosed hole volume). Tune via `params.validation`; if a plausible tumour mask trips
 a gate, loosen the numbers rather than deleting the check.
 
 <<Once the four-dataset run exists: fraction of subjects that retried BET, review-flag
@@ -102,6 +131,21 @@ histogram, false-retry notes from KR visual QA.>>
 ## 5. Discussion
 - Limitations: atlas pseudo-GT imperfect under GBM mass effect; runtime validation
   therefore uses morphology/volume catastrophe, not DSC vs MNI.
+- **Measured: DSC against the MNI152 brain mask inverts the ranking.** On our runs a
+  mask containing the patient's eyes scores 0.997 against
+  `MNI152_T1_1mm_brain_mask`, while correct HD-BET masks score 0.84–0.87 — the atlas
+  metric would place the broken mask first. This is not mass effect alone: the atlas
+  mask *is* the defective mask, since production registration is rigid (6 DOF) and an
+  atlas mask cannot fit a head it was never scaled to. Any atlas-referenced DSC in §4
+  needs a different reference (consensus mask, visual scoring, or an affine/nonlinear
+  arm used for the benchmark only).
+- **`mni_mask` is a baseline, not a production candidate.** Its leakage onto orbital
+  structures is a property of applying an unscaled atlas mask under rigid registration,
+  not a defect of the wrapper — worth stating explicitly so the comparison is read as a
+  statement about the approach rather than the implementation.
+- An intensity-based leakage metric ("background voxels inside the mask") was prototyped
+  and rejected: skull and scalp are tissue, so the measure runs backwards — 0.00% air
+  inside the defective mask against 2.47% inside a correct one.
 - MAS implications: manifests, cascade of validated agents (unavailable/invalid → next),
   cascade priority, lesion-type preference. Integrity gate ≠ quality ranking.
 - Production cascade today is HD-BET → BET only; SynthStrip/SAM join via config after
