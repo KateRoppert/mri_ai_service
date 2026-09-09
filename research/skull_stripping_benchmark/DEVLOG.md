@@ -3,6 +3,61 @@
 Updated at the end of each working session: date · done · blockers · next step.
 Tracks actual vs estimated timeline (estimate: 6–8 weeks part-time).
 
+## 2026-09-09 (tool matrix — 12 subjects x 4 tools)
+
+- **Done:** `run_tool_matrix.py` runs every stripper over identical input and
+  records metrics + timing; `atlas_space.py` holds the resample shared with
+  the contact sheet; `analyze_matrix.py` builds a leave-one-out STAPLE
+  consensus and scores each tool on it. `make_contact_sheet.py` gained a
+  `--matrix-dir --tool` mode. 27 unit tests.
+- **Input** is the atlas-space skull-on volume, i.e. exactly what Stage 05
+  hands its stripper. Tool parameters are read from the live
+  `preprocessing_config.yaml`, not restated, so the comparison matches
+  production. 48 runs, no tool crashed.
+
+| tool | accepted | volume ml | max leak | mean s |
+|---|---|---|---|---|
+| hdbet | 12/12 | 1125–1677 | 0.007 % | 15.3 |
+| synthstrip | 12/12 (1 flag) | 1332–1780 | 0.051 % | 4.0 |
+| bet | 9/12 | 1371–2956 | 2.217 % | 5.2 |
+| mni_mask | 0/12 clean | 1838 (constant) | 1.039 % | 0.5 |
+
+- **Leakage is the metric that works, and it is now measured from both
+  sides.** Correct HD-BET masks top out at 0.007 %; every known-bad
+  `mni_mask` starts at 0.058 %. The 0.05 % threshold sits in that gap — it
+  was a guess on 2026-09-07 and is now bracketed by real data.
+- **The one SynthStrip flag is a true positive.** sub-042, 0.051 %, volume
+  1453 ml (unremarkable). The contact sheet shows the mask bulging over a
+  bright frontal-left blob. Volume would never have caught it; leakage did.
+- **The volume review band is nearly useless in the range that matters.**
+  Best good mask 1780 ml (synthstrip sub-039), worst known-bad mask 1838 ml
+  (`mni_mask`, all subjects). 58 ml apart, and the 1800 ml gate sits inside
+  that gap by luck rather than design. It flags nothing leakage does not
+  already flag, while risking a false retry on any large head. Recommend
+  widening to ~900–2000 ml and letting leakage carry the load.
+- **Visual finding — the gate is a catastrophe detector, not a quality
+  ranker, and now there is data.** Eight BET masks passed every gate but are
+  visibly looser than HD-BET's, riding on a rim of CSF and dura. Leakage
+  cannot see it: dura and CSF are not bright, and the metric counts voxels
+  above the head's 99th intensity percentile. The three BET masks it did
+  reject are visually catastrophic (whole scalp inside the mask), so the
+  gate is doing its actual job.
+- **Reference: consensus works mechanically but is not yet trustworthy.**
+  Leave-one-out STAPLE gives synthstrip 0.937, hdbet 0.923, bet 0.899,
+  mni_mask 0.858. The ranking is an artefact of size: each tool's reference,
+  built from the other three, averages +225 ml against HD-BET's own masks
+  and +3 ml against SynthStrip's. SynthStrip wins by sitting closest to the
+  mean, and the mean is dragged up by the two poor tools. Pairwise agreement
+  says the same thing more honestly — hdbet vs synthstrip 0.945 is by far
+  the highest, and both agree with mni_mask at 0.84.
+- **Consequence for the plan:** a consensus reference needs more good raters
+  than we have. Phase C (BrainMaGe) and Phase E stop being optional extras
+  and become prerequisites for any DSC number in the paper. Until then the
+  defensible outputs are failure rate, runtime, and the reference-free
+  metrics — not a DSC ranking.
+- **Blockers:** none. **Next step:** Kate's call on widening the volume band,
+  then Phase C to get the consensus a fourth credible rater.
+
 ## 2026-09-09 (calibration sample — dropbox_33, n=12)
 
 - **Done:** seeded random sample of 12 dropbox_33 patients through stages

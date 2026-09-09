@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import logging
 from pathlib import Path
@@ -35,36 +36,15 @@ import nibabel as nib
 import numpy as np
 from scipy import ndimage
 
-logger = logging.getLogger(__name__)
+from atlas_space import DEFAULT_ATLAS, head_paths, to_atlas_space
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ATLAS = PROJECT_ROOT / "data" / "templates" / "MNI152_T1_1mm.nii.gz"
+logger = logging.getLogger(__name__)
 
 # Axial levels sampled across the mask, as fractions of its z-extent. The
 # extent is stretched downward first (see SUBMASK_MM) so the lowest panel
 # lands near the orbits, where leftover eye tissue shows up.
 AXIAL_FRACTIONS = (0.05, 0.25, 0.45, 0.62, 0.80)
 SUBMASK_MM = 20
-
-
-def load_atlas_space_head(raw_path: Path, affine_path: Path, atlas_path: Path) -> np.ndarray:
-    """Resample the raw (skull-on) volume into atlas space.
-
-    Reorientation earlier in Stage 05 permutes the array but preserves world
-    coordinates, and ANTs transforms act in world space — so the saved
-    T1→atlas affine applies to the untouched NIfTI just as well as to the
-    reoriented one. Verified by checking that no mask voxel lands on
-    background after the resample.
-    """
-    import ants  # imported lazily: heavy, and only this path needs it
-
-    moved = ants.apply_transforms(
-        fixed=ants.image_read(str(atlas_path)),
-        moving=ants.image_read(str(raw_path)),
-        transformlist=[str(affine_path)],
-        interpolator="linear",
-    )
-    return moved.numpy()
 
 
 def outline(mask_slice: np.ndarray) -> np.ndarray:
@@ -137,29 +117,67 @@ def row_label(trace: dict) -> str:
     return "\n".join(parts)
 
 
-def build(run_dir: Path, traces_dir: Path, out_path: Path, atlas: Path,
-          modality: str = "t1", per_subject_dir: Path = None):
+def cascade_rows(run_dir: Path, traces_dir: Path, atlas: Path, modality: str):
+    """Rows for one cascade run: whichever mask the cascade actually shipped."""
     traces = sorted(traces_dir.glob("*.json"))
     if not traces:
         raise SystemExit(f"No traces in {traces_dir}")
-
-    rows = []
-    for tf in traces:
-        trace = json.loads(tf.read_text())
+    for trace_file in traces:
+        trace = json.loads(trace_file.read_text())
         sub, ses = trace["subject"], trace["session"]
-        anat = f"{sub}/{ses}/anat"
-        raw = run_dir / "nifti" / anat / f"{sub}_{ses}_{modality}.nii.gz"
-        aff = run_dir / "transformations" / anat / f"{sub}_{ses}_{modality}_to_atlas.mat"
-        msk = run_dir / "transformations" / anat / f"{sub}_{ses}_brain_mask.nii.gz"
+        raw, aff, msk = head_paths(run_dir, sub, ses, modality)
         missing = [p for p in (raw, aff, msk) if not p.exists()]
         if missing:
             logger.warning("%s: skipped, missing %s", sub, [p.name for p in missing])
             continue
-        head = load_atlas_space_head(raw, aff, atlas)
-        mask = nib.load(str(msk)).get_fdata() > 0
-        rows.append((row_label(trace), head, mask))
+        yield (row_label(trace), to_atlas_space(raw, aff, atlas),
+               nib.load(str(msk)).get_fdata() > 0)
         logger.info("%s: rendered (%s)", sub, trace["selected"]["tool"])
 
+
+def matrix_rows(matrix_dir: Path, tool: str, modality: str):
+    """Rows for one tool out of the tool matrix.
+
+    Reads the skull-on volume the matrix already wrote rather than resampling
+    again — every tool in the matrix was given that exact file, so this shows
+    the mask over the true input rather than a re-derived approximation.
+    """
+    rows_by_key = {}
+    matrix_csv = matrix_dir / "tool_matrix.csv"
+    if matrix_csv.exists():
+        with matrix_csv.open() as handle:
+            for row in csv.DictReader(handle):
+                rows_by_key[(row["subject"], row["session"], row["tool"])] = row
+
+    for mask_path in sorted((matrix_dir / "masks" / tool).glob("*_mask.nii.gz")):
+        sub, ses = mask_path.name.split("_")[0], mask_path.name.split("_")[1]
+        head_path = matrix_dir / "heads" / f"{sub}_{ses}_{modality}.nii.gz"
+        if not head_path.exists():
+            logger.warning("%s: no skull-on volume at %s", sub, head_path)
+            continue
+        yield (matrix_label(sub, tool, rows_by_key.get((sub, ses, tool))),
+               nib.load(str(head_path)).get_fdata(),
+               nib.load(str(mask_path)).get_fdata() > 0)
+        logger.info("%s: rendered (%s)", sub, tool)
+
+
+def matrix_label(subject: str, tool: str, row: dict) -> str:
+    """Subject plus this tool's verdict — a reviewer comparing tools needs to
+    see what the gate said about the very mask they are looking at."""
+    if not row:
+        return f"{subject}\n{tool}"
+    parts = [subject, tool, f"{float(row['mask_volume_ml']):.0f} ml"]
+    leak = float(row["leak_fraction"] or 0) * 100
+    parts.append(f"leak {leak:.3f}%")
+    if row["valid"] != "True":
+        parts.append("REJECTED")
+    elif row["review_flags"]:
+        parts.append("FLAG: " + row["review_flags"].replace(";", ","))
+    return "\n".join(parts)
+
+
+def build(rows, out_path: Path, title: str, per_subject_dir: Path = None):
+    rows = list(rows)
     if not rows:
         raise SystemExit("Nothing to render")
 
@@ -169,8 +187,7 @@ def build(run_dir: Path, traces_dir: Path, out_path: Path, atlas: Path,
                                squeeze=False)
     for axes, (label, head, mask) in zip(axgrid, rows):
         draw_row(axes, head, mask, label)
-    fig.suptitle(f"Skull stripping — cascade output over skull-on T1 "
-                 f"({len(rows)} subjects)", fontsize=11)
+    fig.suptitle(f"{title} ({len(rows)} subjects)", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=110)
@@ -193,10 +210,13 @@ def build(run_dir: Path, traces_dir: Path, out_path: Path, atlas: Path,
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--run-dir", type=Path, required=True,
+    p.add_argument("--run-dir", type=Path,
                    help="Pipeline run directory (holds nifti/ and transformations/)")
-    p.add_argument("--traces-dir", type=Path, required=True,
+    p.add_argument("--traces-dir", type=Path,
                    help="Directory of *_cascade.json traces")
+    p.add_argument("--matrix-dir", type=Path,
+                   help="Tool-matrix directory (heads/, masks/, tool_matrix.csv)")
+    p.add_argument("--tool", help="With --matrix-dir: which tool to render")
     p.add_argument("--out", type=Path, required=True, help="Output PNG")
     p.add_argument("--atlas", type=Path, default=DEFAULT_ATLAS)
     p.add_argument("--modality", default="t1",
@@ -205,7 +225,18 @@ def main():
                    help="Also write one full-size sheet per subject here")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    build(a.run_dir, a.traces_dir, a.out, a.atlas, a.modality, a.per_subject_dir)
+
+    if a.matrix_dir:
+        if not a.tool:
+            raise SystemExit("--matrix-dir needs --tool")
+        rows = matrix_rows(a.matrix_dir, a.tool, a.modality)
+        title = f"{a.tool} — mask over skull-on T1"
+    else:
+        if not (a.run_dir and a.traces_dir):
+            raise SystemExit("Need --run-dir and --traces-dir (or --matrix-dir)")
+        rows = cascade_rows(a.run_dir, a.traces_dir, a.atlas, a.modality)
+        title = "Skull stripping — cascade output over skull-on T1"
+    build(rows, a.out, title, a.per_subject_dir)
 
 
 if __name__ == "__main__":

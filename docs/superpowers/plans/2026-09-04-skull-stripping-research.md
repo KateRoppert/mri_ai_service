@@ -241,6 +241,8 @@ June plan Step 3 code is a starting point; fix registry names and `uses_gpu`.
 
 Same wrapper pattern. Register `"brainmage"`. Timebox install (~2h). If unpackable, `is_available()` is False and the tool is documented in DEVLOG as excluded — still ship the stub + manifest so the dispatcher can skip it.
 
+**Promoted in priority 2026-09-09.** The tool matrix showed a four-tool consensus reference is dominated by its two weak members (see Phase G). Every additional credible rater is what makes DSC in the paper possible at all, so this is now on the critical path rather than an extra.
+
 - [ ] Tests, wrapper, registry, manifest, smoke, commit `feat(ss): add BrainMaGe wrapper and manifest`
 
 Follow June Task 3.3 body with the Global Constraints overlay.
@@ -288,11 +290,16 @@ Long sample: June plan Task 5.1.
 
 ## Phase G — Metrics (was Task 6.1)
 
-`metrics.py`: DSC, HD95, over-stripping, leakage, brain volume ml vs MNI152 brain mask as pseudo-GT; timing via `perf_counter`; RAM `psutil`; VRAM `pynvml` around the strip call (do not require `strip()` to return VRAM).
+`metrics.py`: DSC, HD95, over-stripping, leakage, brain volume ml; timing via `perf_counter`; RAM `psutil`; VRAM `pynvml` around the strip call (do not require `strip()` to return VRAM).
 
+**The reference question is settled negatively — do not implement DSC against the atlas.** Measured 2026-09-07: Dice against `MNI152_T1_1mm_brain_mask` scores a mask containing the patient's eyes at 0.997 and correct HD-BET masks at 0.84–0.87. Under Rigid (6 DOF) registration an atlas mask cannot fit a head it was not scaled to, so the atlas ranks the broken mask first. The cascade's own output is no better: it picked HD-BET for all twelve calibration subjects, so scoring HD-BET against it returns 1.000 by construction.
+
+Leave-one-out STAPLE consensus (`analyze_matrix.py`, 2026-09-09) is the working replacement, but it is **not yet usable with four tools**: each tool's reference is built from the other three, and with `bet` and `mni_mask` among them the reference skews large — +225 ml against HD-BET's own masks, +3 ml against SynthStrip's. The resulting ranking rewards typicality, not correctness. More credible raters are needed first.
+
+- [ ] Phases C and E first — they are prerequisites for any DSC number, not optional extras.
 - [ ] Failing tests with tiny synthetic masks, implement, commit.
 
-Limitation for the paper (already in spec §4): atlas pseudo-GT is imperfect under GBM mass effect — qualitative review by KR remains.
+Until the consensus has enough raters, the defensible outputs are failure rate, runtime, and the reference-free integrity metrics. Qualitative review by KR remains (contact sheets: `make_contact_sheet.py`).
 
 ---
 
