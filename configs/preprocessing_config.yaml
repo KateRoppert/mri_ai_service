@@ -70,8 +70,11 @@ steps:
       #   cuda:N  — force a specific card
       #   cpu     — force CPU
       device: "auto"
-      # GPU indices never to use. On a workstation, list the display card here
-      # (e.g. [0]) so HD-BET never freezes the desktop.
+      # GPU indices never to use. On a multi-GPU workstation list the display
+      # card here (e.g. [0]) so HD-BET never freezes the desktop. On a
+      # single-GPU machine leave this empty: excluding index 0 there leaves
+      # HD-BET no card and silently drops it to CPU — minutes per volume
+      # instead of ~16 s.
       exclude_gpus: []
       # Optional hard cap on concurrent GPU skull-stripping jobs.
       # null = one job per usable card.
@@ -85,10 +88,13 @@ steps:
       # Do not add a second GPU tool here; a false validation retry already
       # pays for a full HD-BET run.
       cascade: ["synthstrip", "bet"]
-      # Mask-integrity gate (ADD-2). {} = adult catastrophe defaults in
-      # validation.py (300–2500 ml, LCC after dropping <1 ml speckles,
-      # enclosed holes > 20 ml). Review flags (1000–1800 ml, edge-touch,
-      # holes > 2 ml) are logged, not retried.
+      # Mask-integrity gate (ADD-2). {} = defaults from validation.py.
+      #   катастрофа  — объём 300–2500 мл, LCC ≥ 0.70 после отсева
+      #                 островков < 1 мл, полости > 2 мл → следующий инструмент
+      #   review      — объём 1000–1800 мл, LCC ≥ 0.95, касание края FOV,
+      #                 полости > 0.5 мл, асимметрия > 0.05, утечка > 0.05 %
+      # Review-флаги тоже двигают каскад, пока есть непробованный инструмент
+      # (d842861); отключается через validation.retry_on_review: false.
       # fail_closed: false → log-only (empty/missing still fail).
       validation: {}
 
