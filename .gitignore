@@ -98,3 +98,4 @@ pipeline_config_calibration.yaml
 scripts/preprocessing_steps/skull_stripping/tests/**/__pycache__/
 !research/skull_stripping_benchmark/tests/
 !research/skull_stripping_benchmark/tests/**
+research/skull_stripping_benchmark/tests/**/__pycache__/

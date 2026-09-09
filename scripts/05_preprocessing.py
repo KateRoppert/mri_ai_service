@@ -211,6 +211,26 @@ def resolve_atlas_filename(atlas_config: dict) -> str:
     return ATLAS_PRESETS.get(atlas_config.get('name', ''), 'sri24_t1.nii.gz')
 
 
+def requires_fsl(config: dict) -> bool:
+    """Does this run need FSL?
+
+    Only skull stripping uses it (BET): reorient runs on nibabel, bias
+    correction and registration on ANTs. When the step is switched off —
+    as the skull-stripping benchmark does to produce registration-space
+    inputs with the skull still on — demanding FSL blocks a run that never
+    touches it.
+
+    An enabled step still requires FSL even when the configured method is a
+    deep-learning tool, because BET is the cascade's universal fallback. A
+    missing step entry is treated as enabled, matching how the stage handles
+    it elsewhere.
+    """
+    for step in (config or {}).get("steps", []) or []:
+        if step.get("name") == "skull_stripping":
+            return bool(step.get("enabled", True))
+    return True
+
+
 def prepare_atlas(config: dict) -> Path:
     """
     Download and prepare SRI24 atlas.
@@ -772,12 +792,15 @@ def main():
         if fsl_dir:
             setup_fsl_environment(fsl_dir)
         
-        # Check FSL
-        if not check_fsl_installed():
-            raise RuntimeError(
-                "FSL BET not found. Please install FSL or configure FSL path in config."
-            )
-        logger.info("✓ FSL BET is available")
+        # Check FSL — only when something in this run actually uses it.
+        if requires_fsl(config):
+            if not check_fsl_installed():
+                raise RuntimeError(
+                    "FSL BET not found. Please install FSL or configure FSL path in config."
+                )
+            logger.info("✓ FSL BET is available")
+        else:
+            logger.info("Skull stripping disabled — skipping the FSL check")
         
         # Prepare atlas
         atlas_path = prepare_atlas(config)
