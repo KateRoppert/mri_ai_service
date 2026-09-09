@@ -3,6 +3,51 @@
 Updated at the end of each working session: date · done · blockers · next step.
 Tracks actual vs estimated timeline (estimate: 6–8 weeks part-time).
 
+## 2026-09-09 (calibration sample — dropbox_33, n=12)
+
+- **Done:** seeded random sample of 12 dropbox_33 patients through stages
+  01/03/05 with `validation.trace_dir` set (`run_cascade_sample.py`). One
+  JSON trace per subject: cascade order, effective gates, every attempt with
+  its metrics and decision. Experiment-only — production still logs one line.
+- **Result: HD-BET accepted first try for all 12.** No tool switches, no
+  review flags. Volumes 1125–1677 ml, holes 0.00 ml everywhere, LCC 1.000,
+  edge-touch 0.000, asymmetry 0.001–0.045, leak 0.000–0.007 %.
+- **`/dev/shm` fix confirmed (`1077c70`).** The previous run of this same
+  sample had HD-BET fail on all 12 (`hdbet:strip_failed -> synthstrip:OK`);
+  after `shm_size: 4g` it succeeds on all 12 under the same Stage 05
+  parallelism. 15–18 s per subject on GPU.
+- **Contact sheet:** `make_contact_sheet.py` renders every subject as a row
+  of slices — 5 axial + mid coronal + mid sagittal — with the mask outline
+  over the **skull-on** volume. Leftover skull and cut brain are invisible
+  against the stripped output, which is why the background has to be the
+  original anatomy. No re-run needed: `transformations/` keeps both the brain
+  mask (it survives `cleanup: true`) and the T1→atlas affine, so the raw
+  NIfTI resamples into atlas space in 0.4 s. Alignment verified — 0.0000 of
+  the mask lands on background. Visual verdict: 12/12 correct, eyes and
+  orbital fat excluded, cerebellum and brainstem kept.
+- **Calibration finding — two review thresholds are too tight.** Margins from
+  the worst correct mask to the gate: holes 100 %, edge-touch 100 %, leak
+  86 %, but **volume review band only 6.9 %** (1677 ml observed vs 1800 ml
+  gate) and **asymmetry 10.5 %** (0.045 vs 0.05). Since `d842861` review
+  flags advance the cascade, a false alarm is no longer free — it throws away
+  a good HD-BET mask for a worse one. Recommendation pending Kate: widen the
+  review band to ~900–2000 ml and asymmetry to ~0.15 (a removed hemisphere
+  scores 0.3–0.5, so the separation stays large).
+- **Weakness of this calibration:** 12 positives, no negatives from real
+  data. Thresholds are currently anchored on one side by correct masks and on
+  the other by the two defective masks from 2026-09-07 (10.71 ml holes,
+  0.63 %/0.19 % leak). Proposed fix: run the same 12 registered volumes
+  through every tool (`bet`, `synthstrip`, `mni_mask`) — `mni_mask` is the
+  known eye-leak case — giving real negatives from the same data. That is
+  also most of Phase G/H.
+- **Side finding (KI-058):** `scripts/data/templates/MNI152_T1_1mm.nii.gz`
+  turned out to be a 39 KB XHTML page. `download_sri24_atlas()` writes any
+  HTTP 200 body without checking it is NIfTI, and the filename comes from
+  `atlas.name` while the URL is hardcoded to SRI24. Junk deleted, issue filed.
+- **Blockers:** none.
+- **Next step:** Kate's verdict on the contact sheet + the two thresholds,
+  then the per-tool matrix on the same 12 subjects.
+
 ## 2026-09-04 (Task D follow-up — holes)
 - **Done:** FSL `MNI152_T1_1mm_brain_mask` has ~11 ml enclosed cavities; NN resample onto an ANTs affine can add speckles. LCC of the foreground stays ~1.0, so the old gate accepted swiss-cheese masks. `MniMaskStripper` now `binary_fill_holes` after dilate. `mask_metrics` reports `hole_volume_ml` / `n_holes`; catastrophe if enclosed holes `> 20` ml, review if `> 2` ml. Tests: 53 passed.
 - **Blockers:** none.

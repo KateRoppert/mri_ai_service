@@ -6,6 +6,8 @@ fsl:
 atlas:
   # Выбор шаблона — единственное поле, которое нужно менять: "SRI24",
   # "MNI152_FSL" или "MNI152_ICBM" (имя файла подставится автоматически).
+  # Production: MNI152_FSL so Stage 05 space matches the mni_mask baseline
+  # and the Этап 5.5 benchmark (not SRI24).
   name: "MNI152_FSL"
   # NITRC direct download link for SRI24 T1 atlas
   url: "https://www.nitrc.org/frs/download.php/6267/sri24_t1.nii.gz"
@@ -70,7 +72,7 @@ steps:
       device: "auto"
       # GPU indices never to use. On a workstation, list the display card here
       # (e.g. [0]) so HD-BET never freezes the desktop.
-      exclude_gpus: [0]
+      exclude_gpus: []
       # Optional hard cap on concurrent GPU skull-stripping jobs.
       # null = one job per usable card.
       gpu_pool_size: null
@@ -82,10 +84,11 @@ steps:
       # method then fallback_method — production stays hdbet → bet.
       # Do not add a second GPU tool here; a false validation retry already
       # pays for a full HD-BET run.
-      # cascade: ["synthstrip", "bet"]
+      cascade: ["synthstrip", "bet"]
       # Mask-integrity gate (ADD-2). {} = adult catastrophe defaults in
-      # validation.py (300–2500 ml, LCC after dropping <1 ml speckles).
-      # Review flags (1000–1800 ml, edge-touch) are logged, not retried.
+      # validation.py (300–2500 ml, LCC after dropping <1 ml speckles,
+      # enclosed holes > 20 ml). Review flags (1000–1800 ml, edge-touch,
+      # holes > 2 ml) are logged, not retried.
       # fail_closed: false → log-only (empty/missing still fail).
       validation: {}
 
@@ -101,6 +104,8 @@ steps:
         # BET (используются, когда активен method: "bet")
         fractional_intensity: 0.35        # -f parameter (0.0-1.0)
         vertical_gradient: -0.1           # -g parameter (-1.0-1.0)
+        # MNI-маска (используется, когда активен method/каскад "mni_mask")
+        variant: strict                   # strict = без дилатации, loose = ~2 мм
 
 # Expected modalities (BIDS suffixes)
 modalities:

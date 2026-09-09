@@ -81,7 +81,7 @@ a Stage 05 gate — atlas ≠ GT under mass effect.
 | Layer | Checks | Effect |
 |---|---|---|
 | Catastrophe | volume 300–2500 ml; dominant component ≥ 0.70 after dropping islands `< 1 ml`; enclosed hole volume `> 2` ml; empty/missing file | `valid=False` → try next stripper |
-| Review | volume 1000–1800 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05`; enclosed holes `> 0.5` ml | try the next tool if one is untried; otherwise keep the mask and log `review_flags` |
+| Review | volume 1000–1800 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05`; enclosed holes `> 0.5` ml; left/right `asymmetry` `> 0.05`; intensity `leak_fraction` `> 0.05 %` | try the next tool if one is untried; otherwise keep the mask and log `review_flags` |
 | Atlas (later) | MNI loose / very-loose outside-ratio | benchmark QA, not runtime retry |
 
 **Revision after the first production runs (2026-09-07).** As first written, review flags
@@ -112,8 +112,42 @@ first tool is right.
 
 `validation.fail_closed: false` demotes volume/LCC/hole catastrophe to flags (empty/missing
 still fail — the mask cannot be applied). Metrics live in `mask_metrics()` (volume, LCC,
-edge-touch, bbox fill, enclosed hole volume). Tune via `params.validation`; if a plausible tumour mask trips
+edge-touch, bbox fill, enclosed hole volume, left/right asymmetry about the mid-sagittal
+plane in atlas space, and intensity leakage — the share of mask voxels above the head's
+99th intensity percentile, which is where skull and scalp fat sit on T1). Tune via `params.validation`; if a plausible tumour mask trips
 a gate, loosen the numbers rather than deleting the check.
+
+**Calibration on a random sample (2026-09-09, dropbox_33, n = 12).** Twelve seeded-random
+patients were run through the production cascade with a per-subject JSON trace recording
+the cascade order, the effective gates, and every attempt with its metrics and decision.
+HD-BET was accepted on the first attempt for all twelve: no switches, no flags. Visual
+review against the **skull-on** volume (mask outline over the original anatomy — the
+stripped output cannot show leftover skull or removed brain) confirmed all twelve are
+correct, with orbital contents excluded and cerebellum and brainstem retained.
+
+The value of the sample is the distance between correct masks and the gates:
+
+| Gate | Worst correct mask | Threshold | Margin |
+|---|---|---|---|
+| enclosed holes | 0.00 ml | 0.5 ml | 100 % |
+| FOV edge touch | 0.000 | 0.05 | 100 % |
+| intensity leakage | 0.007 % | 0.05 % | 86 % |
+| volume, review band | 1677 ml | 1800 ml | **6.9 %** |
+| left/right asymmetry | 0.045 | 0.05 | **10.5 %** |
+
+Holes, edge touch and leakage are far from firing on a correct mask, which is what a gate
+should look like. The volume band and the asymmetry gate are not: on twelve subjects from
+a single site one mask already sits within 7 % of a threshold. Because review flags now
+advance the cascade, a false alarm is no longer free — it discards a correct HD-BET mask
+in favour of whatever comes next. Both are inherited defaults rather than measured values,
+and both need widening: a removed hemisphere scores 0.3–0.5 on asymmetry, so a gate at
+0.15 keeps the separation while leaving room for genuine pathological asymmetry.
+
+The sample carries one structural weakness worth stating: it contains twelve positives and
+no negatives. Thresholds are anchored from below by correct masks and from above only by
+the two defective masks of 2026-09-07. Real negatives from the same data — the same twelve
+volumes stripped by every tool, `mni_mask` being the known eye-leak case — are needed
+before the numbers can be called measured rather than argued.
 
 <<Once the four-dataset run exists: fraction of subjects that retried BET, review-flag
 histogram, false-retry notes from KR visual QA.>>
