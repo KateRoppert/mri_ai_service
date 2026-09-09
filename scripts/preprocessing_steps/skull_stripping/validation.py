@@ -373,6 +373,40 @@ def validate_mask(
     return result
 
 
+
+def effective_gates(vcfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The thresholds actually in force, defaults included.
+
+    A trace that records only the overrides is unreadable later: the
+    production config is `validation: {}`, so it would say nothing about the
+    numbers that produced the decisions.
+    """
+    cfg = dict(vcfg or {})
+    return {
+        "min_ml": float(cfg.get("min_ml", DEFAULT_MIN_ML)),
+        "max_ml": float(cfg.get("max_ml", DEFAULT_MAX_ML)),
+        "min_dominant_fraction": float(
+            cfg.get("min_dominant_fraction", DEFAULT_MIN_DOMINANT_FRACTION)),
+        "speckle_ml": float(cfg.get("speckle_ml", DEFAULT_SPECKLE_ML)),
+        "max_hole_ml": float(cfg.get("max_hole_ml", DEFAULT_MAX_HOLE_ML)),
+        "review_min_ml": float(cfg.get("review_min_ml", DEFAULT_REVIEW_MIN_ML)),
+        "review_max_ml": float(cfg.get("review_max_ml", DEFAULT_REVIEW_MAX_ML)),
+        "review_min_dominant_fraction": float(
+            cfg.get("review_min_dominant_fraction",
+                    DEFAULT_REVIEW_MIN_DOMINANT_FRACTION)),
+        "review_max_edge_touch_ratio": float(
+            cfg.get("review_max_edge_touch_ratio", DEFAULT_REVIEW_MAX_EDGE_TOUCH)),
+        "review_max_hole_ml": float(
+            cfg.get("review_max_hole_ml", DEFAULT_REVIEW_MAX_HOLE_ML)),
+        "max_leak_fraction": float(
+            cfg.get("max_leak_fraction", DEFAULT_REVIEW_MAX_LEAK_FRACTION)),
+        "review_max_asymmetry": float(
+            cfg.get("review_max_asymmetry", DEFAULT_REVIEW_MAX_ASYMMETRY)),
+        "fail_closed": bool(cfg.get("fail_closed", True)),
+        "retry_on_review": bool(cfg.get("retry_on_review", True)),
+    }
+
+
 def format_mask_check_line(check: Dict[str, Any]) -> str:
     """One-line metrics for Stage 05 logs."""
     flags = check.get("review_flags") or []

@@ -14,6 +14,7 @@ Existing imports keep working:
     )
 """
 
+import json
 import logging
 import shutil
 import tempfile
@@ -46,6 +47,7 @@ from .mni_mask import MniMaskStripper
 from .gpu_pool import acquire_device, resolve_devices
 from .validation import (
     cascade_decision_message,
+    effective_gates,
     format_mask_check_line,
     mask_metrics,
     validate_mask,
@@ -79,6 +81,45 @@ __all__ = [
     "process_subject_skull_stripping",
     "compare_before_after_stripping",
 ]
+
+
+
+def _write_trace(
+    *,
+    trace_dir: Path,
+    subject_id: str,
+    session_id: str,
+    reference_modality: str,
+    order: list,
+    gates: Dict[str, Any],
+    attempts: list,
+    selected: Optional[str],
+    selected_flags: list,
+) -> None:
+    """Write one subject's cascade trace as JSON.
+
+    Research-only: this is where calibration statistics and paper tables come
+    from, so it records the numbers behind every decision rather than just the
+    winner. Never allowed to break a run — a patient losing their
+    preprocessing because instrumentation could not write would be absurd.
+    """
+    try:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "subject": subject_id,
+            "session": session_id,
+            "reference_modality": reference_modality,
+            "cascade": list(order),
+            "gates": dict(gates),
+            "attempts": attempts,
+            "selected": {"tool": selected, "review_flags": selected_flags},
+        }
+        dest = trace_dir / f"{subject_id}_{session_id}_cascade.json"
+        dest.write_text(json.dumps(payload, indent=2, ensure_ascii=False,
+                                   default=str), encoding="utf-8")
+        logger.info("Cascade trace written to %s", dest)
+    except Exception as e:
+        logger.warning("Could not write cascade trace to %s: %s", trace_dir, e)
 
 
 def process_subject_skull_stripping(
@@ -162,6 +203,12 @@ def process_subject_skull_stripping(
     reserve: Optional[tuple] = None
     retry_on_review = bool(vcfg.get("retry_on_review", True))
 
+    # Research instrumentation: a machine-readable record of what the cascade
+    # tried and why it chose what it chose. Off unless `validation.trace_dir`
+    # is set, so production runs keep writing only to the pipeline log.
+    trace_dir = vcfg.pop("trace_dir", None)
+    trace_attempts: list = []
+
     # Stage 05 hands us the SAME directory as subject_dir and output_dir
     # (05_preprocessing.py: registered_anat == output_dir/sub/ses/anat), so
     # writing a candidate straight to ref_output would overwrite the very
@@ -242,6 +289,13 @@ def process_subject_skull_stripping(
         used = cand.name
 
         if not strip_result.get("success"):
+            trace_attempts.append({
+                "order": i,
+                "tool": name,
+                "strip_success": False,
+                "error": strip_result.get("error"),
+                "decision": "rejected_strip_failed",
+            })
             logger.info(
                 "%s",
                 cascade_decision_message(
@@ -272,6 +326,22 @@ def process_subject_skull_stripping(
         # input survives every attempt and the leakage check can read it.
         check = validate_mask(cand_mask, image_path=ref_file, **vcfg)
         strip_result["mask_validation"] = check
+
+        def _record(decision: str) -> None:
+            trace_attempts.append({
+                "order": i,
+                "tool": name,
+                "strip_success": True,
+                "processing_time": strip_result.get("processing_time"),
+                "valid": check.get("valid"),
+                "reason": check.get("reason"),
+                "review_flags": list(check.get("review_flags") or []),
+                "metrics": {
+                    k: v for k, v in check.items()
+                    if k not in ("review_flags", "valid", "reason")
+                },
+                "decision": decision,
+            })
         logger.info("Cascade %r mask metrics: %s", name, format_mask_check_line(check))
         if check["valid"]:
             flags = check.get("review_flags") or []
@@ -283,6 +353,7 @@ def process_subject_skull_stripping(
             if flags and retry_on_review and has_more:
                 if reserve is None:
                     reserve = (strip_result, cand_output, cand_mask, name)
+                _record("rejected_review")
                 logger.info(
                     "%s",
                     cascade_decision_message(
@@ -319,9 +390,11 @@ def process_subject_skull_stripping(
                     validation_enabled=True,
                 ),
             )
+            _record("accepted")
             _promote(strip_result, cand_output, cand_mask)
             accepted = True
             break
+        _record("rejected_hard")
         logger.info(
             "%s",
             cascade_decision_message(
@@ -367,6 +440,21 @@ def process_subject_skull_stripping(
 
     logger.info("Skull stripper used: %s (cascade %s)", used, order)
     results[reference_modality] = strip_result
+
+    if trace_dir:
+        _write_trace(
+            trace_dir=Path(trace_dir),
+            subject_id=subject_id,
+            session_id=session_id,
+            reference_modality=reference_modality,
+            order=order,
+            gates=effective_gates(vcfg),
+            attempts=trace_attempts,
+            selected=used,
+            selected_flags=list(
+                (strip_result.get("mask_validation") or {}).get("review_flags") or []
+            ),
+        )
 
     # Step 2: Apply mask to other modalities
     logger.info("Step 2: Applying brain mask to other modalities")
