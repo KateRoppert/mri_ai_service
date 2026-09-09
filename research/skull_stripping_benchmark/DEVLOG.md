@@ -13,6 +13,27 @@ Tracks actual vs estimated timeline (estimate: 6–8 weeks part-time).
 - **Blockers:** none.
 - **Next step:** after Kate's check → commit Task D, then C/E (timeboxed BrainMaGe/SAM/DeepBET) or F (`prepare_data.py`).
 
+## 2026-09-09 (environment)
+
+- **Broke:** host `venv` stopped working — Ubuntu upgraded to 26.04, which ships
+  Python 3.14 as the system interpreter and removed 3.12. The venv's packages
+  were intact on disk but its interpreter (`/usr/bin/python3.12`) was gone.
+- **Fixed:** installed `uv` (userspace, `~/.local/bin`, no sudo), pulled a
+  standalone CPython 3.12.14, recreated the venv against it, reinstalled from
+  `requirements.txt`. Kept the old tree as `venv_broken_py312` until the new
+  one was verified, then removed it.
+- **Why 3.12 rather than migrating to 3.14:** `antspyx` (ANTs bindings used by
+  Stage 05 registration) is a compiled extension and the one most likely to
+  lack wheels for a brand-new interpreter. It installed cleanly on 3.12.14.
+  Also keeps the host in step with the containers (3.12.11).
+- **Verified:** 254 tests pass (59 skull-stripping, 35 preprocessing, 160
+  backend). The single failure, `test_dataset_mapping`, is the pre-existing
+  stale-expectation one that also fails on clean `main`.
+- **Trap recorded in CLAUDE.md:** recreating the venv with `python3 -m venv`
+  now silently builds it on 3.14 and antspyx will not install. Use
+  `uv venv --python 3.12`.
+- **Next step:** Phase F (`prepare_data.py`) — unblocked.
+
 ## 2026-09-07 (Task A follow-up — validation made to steer)
 
 - **Reported:** cascade never switched tools. Two defect classes seen on real

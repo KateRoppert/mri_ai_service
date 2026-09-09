@@ -97,5 +97,6 @@ UI в `backend/config.py` нумерует этапы 1–7, пропуская 
 - Stage 02 на анонимизированных BIDS ломает смысл — теги уже сняты.
 - `skip_existing` + requeue шарят один `output_path`.
 - Не коммитить: `data/` (клинические DICOM), веса (`*.pth`, `nnUNet*_data/`, `nnUNet_results/`), `*.db`, `.env`, `demo_workspace/`, `venv/`.
+- `venv` живёт на Python 3.12 (`uv`-сборка в `~/.local/share/uv/python/`), а системный python3 на Ubuntu 26.04 — уже 3.14. Пересоздавать venv только так: `uv venv --python 3.12 venv && uv pip install -r requirements.txt`. Через `python3 -m venv` окружение соберётся на 3.14, и `antspyx` (нужен этапу 05) не встанет.
 - Новую inference-модель: манифест + наследник `ServiceBase` + запись в `configs/services.yaml` + `lesion_types.yaml`. Контракт — JSON с путями, не multipart.
 - Параллелизм этапов разный; простой GPU vs перегруз CPU — смотреть `scripts/performance_monitor.py` и `KNOWN_ISSUES.md`.
