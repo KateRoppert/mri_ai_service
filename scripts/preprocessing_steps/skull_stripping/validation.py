@@ -55,6 +55,24 @@ DEFAULT_REVIEW_MAX_EDGE_TOUCH = 0.05
 DEFAULT_MAX_HOLE_ML = 2.0
 DEFAULT_REVIEW_MAX_HOLE_ML = 0.5
 
+# Leakage: fraction of the mask sitting in the brightest tissue of the head.
+# The brightest voxels on a T1 head are fat — scalp and orbital — and brain
+# has essentially none, so a mask that swallows skull, scalp or eyes picks
+# them up. Measured on real runs (2026-09-09, sub-024/sub-021): correct masks
+# 0.00-0.01 %, masks containing the eyes 0.19 % and 0.63 %. Threshold sits in
+# that gap but on only two defective examples, so this is a REVIEW flag (try
+# the next tool) rather than a hard gate.
+DEFAULT_LEAK_PERCENTILE = 99.0
+DEFAULT_REVIEW_MAX_LEAK_FRACTION = 0.0005      # 0.05 %
+
+# Asymmetry: |left-right| / total in atlas space. A one-sided cut is the
+# over-stripping case volume cannot see — half a brain removed can still land
+# inside the volume window. Correct masks measured 0.2-2.7 %; a quarter
+# removed gives 7.9 %, a hemisphere 100 %. Symmetric over-stripping (uniform
+# erosion) is NOT caught here — only the volume window sees that, and only
+# when severe.
+DEFAULT_REVIEW_MAX_ASYMMETRY = 0.05
+
 PathLike = Union[str, Path]
 
 
@@ -75,6 +93,9 @@ def _empty_metrics() -> Dict[str, Any]:
         "n_components_kept": 0,
         "hole_volume_ml": 0.0,
         "n_holes": 0,
+        "asymmetry": 0.0,
+        "leak_fraction": None,
+        "leak_ml": None,
     }
 
 
@@ -105,14 +126,63 @@ def _enclosed_holes(data: np.ndarray, voxel_ml: float) -> tuple[float, int]:
     return hole_ml, n_holes
 
 
+
+def _leakage(
+    mask: np.ndarray,
+    image_path: Optional[PathLike],
+    percentile: float,
+) -> tuple[Optional[float], Optional[float]]:
+    """Share of the mask sitting in the head's brightest tissue.
+
+    Returns (None, None) when no image is supplied — callers that only have a
+    mask keep working. Brightness is judged against the whole head rather than
+    an absolute number, so it survives the intensity scaling differences
+    between scanners and sequences.
+    """
+    if image_path is None:
+        return None, None
+    try:
+        img = nib.load(str(image_path))
+        data = np.asanyarray(img.dataobj).astype(np.float32)
+    except Exception as e:
+        logger.warning("Cannot read image for leakage check (%s): %s", image_path, e)
+        return None, None
+
+    if data.shape != mask.shape:
+        logger.warning(
+            "Image %s and mask differ in shape (%s vs %s) — skipping leakage",
+            image_path, data.shape, mask.shape,
+        )
+        return None, None
+
+    head = data[data > 0]
+    if head.size == 0:
+        return None, None
+    threshold = float(np.percentile(head, percentile))
+
+    inside = data[mask]
+    inside = inside[inside > 0]
+    if inside.size == 0:
+        return 0.0, 0.0
+    return float((inside > threshold).mean()), None
+
+
 def mask_metrics(
     mask_path: PathLike,
     speckle_ml: float = DEFAULT_SPECKLE_ML,
+    image_path: Optional[PathLike] = None,
+    leak_percentile: float = DEFAULT_LEAK_PERCENTILE,
 ) -> Dict[str, Any]:
     """Morphology of a brain mask (volume, LCC after speckles, FOV edge).
 
     ``lcc_ratio`` / ``dominant_fraction`` ignore connected components smaller
     than ``speckle_ml`` so HD-BET islands do not look like fragmentation.
+
+    Pass ``image_path`` (the skull-on volume the mask was made from) to also
+    get leakage: without the image every metric here is pure geometry and
+    cannot tell brain from skull — they are just voxels. That blind spot is
+    why masks containing the patient's eyes passed validation until
+    2026-09-09.
     """
     path = Path(mask_path)
     if not path.is_file():
@@ -148,6 +218,14 @@ def mask_metrics(
     bbox_fill_ratio = float(voxels / max(int(np.prod(mx - mn)), 1))
     hole_volume_ml, n_holes = _enclosed_holes(data, voxel_ml)
 
+    # Left/right balance about the mid-sagittal plane. Inputs are in atlas
+    # space, so the halves are comparable without registering anything.
+    mid = data.shape[0] // 2
+    left, right = float(data[:mid].sum()), float(data[mid:].sum())
+    asymmetry = abs(left - right) / max(left + right, 1.0)
+
+    leak_fraction, leak_ml = _leakage(data, image_path, leak_percentile)
+
     return {
         "mask_exists": True,
         "mask_voxels": voxels,
@@ -160,6 +238,9 @@ def mask_metrics(
         "n_components_kept": int(kept.size),
         "hole_volume_ml": hole_volume_ml,
         "n_holes": n_holes,
+        "asymmetry": asymmetry,
+        "leak_fraction": leak_fraction,
+        "leak_ml": None if leak_fraction is None else leak_fraction * volume_ml,
     }
 
 
@@ -176,6 +257,9 @@ def validate_mask(
     review_max_edge_touch_ratio: Optional[float] = DEFAULT_REVIEW_MAX_EDGE_TOUCH,
     max_hole_ml: float = DEFAULT_MAX_HOLE_ML,
     review_max_hole_ml: float = DEFAULT_REVIEW_MAX_HOLE_ML,
+    image_path: Optional[PathLike] = None,
+    max_leak_fraction: float = DEFAULT_REVIEW_MAX_LEAK_FRACTION,
+    review_max_asymmetry: float = DEFAULT_REVIEW_MAX_ASYMMETRY,
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Return validity, reason, metrics, and review flags.
@@ -186,7 +270,7 @@ def validate_mask(
     them). Extra kwargs are ignored so ``params["validation"]`` can be
     splatted in.
     """
-    metrics = mask_metrics(mask_path, speckle_ml=speckle_ml)
+    metrics = mask_metrics(mask_path, speckle_ml=speckle_ml, image_path=image_path)
     volume_ml = float(metrics["mask_volume_ml"])
     dominant_fraction = float(metrics["dominant_fraction"])
     hole_volume_ml = float(metrics.get("hole_volume_ml") or 0.0)
@@ -265,6 +349,17 @@ def validate_mask(
     if hole_volume_ml > review_max_hole_ml and "MASK_HOLES" not in review_flags:
         review_flags.append("MASK_HOLES")
 
+    # Leakage — only available when the caller passed the skull-on image.
+    leak_fraction = metrics.get("leak_fraction")
+    if leak_fraction is not None and leak_fraction > max_leak_fraction:
+        review_flags.append("MASK_LEAKAGE")
+
+    # One-sided over-stripping. Deliberately a review flag: with only a
+    # handful of measured examples a hard gate would be guesswork, and the
+    # cascade already treats review flags as "try the next tool".
+    if float(metrics.get("asymmetry") or 0.0) > review_max_asymmetry:
+        review_flags.append("MASK_ASYMMETRIC")
+
     if review_flags:
         logger.debug(
             "Skull-strip mask review flags for %s: %s (volume=%.1f ml, "
@@ -289,9 +384,12 @@ def format_mask_check_line(check: Dict[str, Any]) -> str:
     n_kept = int(check.get("n_components_kept") or 0)
     hole_ml = float(check.get("hole_volume_ml") or 0.0)
     n_holes = int(check.get("n_holes") or 0)
+    asym = float(check.get("asymmetry") or 0.0)
+    leak = check.get("leak_fraction")
+    leak_s = "n/a" if leak is None else f"{leak * 100:.2f}%"
     return (
         f"volume={volume:.1f} ml, LCC={lcc:.3f}, edge_touch={edge:.3f}, "
-        f"holes={hole_ml:.1f} ml (n={n_holes}), "
+        f"holes={hole_ml:.1f} ml (n={n_holes}), asym={asym:.3f}, leak={leak_s}, "
         f"components={n_comp} (kept={n_kept}), valid={check.get('valid')}, "
         f"reason={check.get('reason', '')}, review_flags={flag_s}"
     )

@@ -268,7 +268,9 @@ def process_subject_skull_stripping(
             accepted = True
             break
 
-        check = validate_mask(cand_mask, **vcfg)
+        # ref_file is the skull-on volume: candidates write to scratch, so the
+        # input survives every attempt and the leakage check can read it.
+        check = validate_mask(cand_mask, image_path=ref_file, **vcfg)
         strip_result["mask_validation"] = check
         logger.info("Cascade %r mask metrics: %s", name, format_mask_check_line(check))
         if check["valid"]:

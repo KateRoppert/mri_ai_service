@@ -230,3 +230,136 @@ def test_hole_gate_rejects_swiss_cheese_seen_in_production(tmp_path):
     assert check["hole_volume_ml"] > 0
     assert check["valid"] is False, "an enclosed cavity must fail the hard gate"
     assert "holes" in check["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Intensity-based leakage (needs the skull-on image, not just the mask)
+# ---------------------------------------------------------------------------
+
+def _skull_on_phantom(tmp_path, with_fat_blob: bool):
+    """A crude head: dim background, mid-intensity 'brain', bright 'fat' rim.
+
+    Mirrors what separates the classes on real data — the brightest voxels in
+    a head T1 are fat (scalp, orbital), and brain has essentially none.
+    """
+    import numpy as np
+    import nibabel as nib
+
+    img = np.zeros((40, 40, 40), dtype=np.float32)
+    img[5:35, 5:35, 5:35] = 100.0          # head/tissue
+    img[12:28, 12:28, 12:28] = 300.0       # brain
+    if with_fat_blob:
+        img[8:11, 8:11, 8:11] = 3000.0     # fat blob (orbit/scalp)
+    path = tmp_path / "head.nii.gz"
+    head = nib.Nifti1Image(img, np.eye(4))
+    head.header.set_zooms((5.0, 5.0, 5.0))
+    nib.save(head, str(path))
+    return path
+
+
+def _mask_file(tmp_path, arr, name="mask.nii.gz"):
+    """Write a mask with 5 mm voxels so its volume lands inside the hard gates.
+
+    At 1 mm these phantoms are a few ml and fail the volume catastrophe check,
+    which returns before any review flag is computed.
+    """
+    import nibabel as nib
+    p = tmp_path / name
+    img = nib.Nifti1Image(arr.astype("uint8"), np.eye(4))
+    img.header.set_zooms((5.0, 5.0, 5.0))
+    nib.save(img, str(p))
+    return p
+
+
+def test_leak_fraction_zero_for_a_brain_only_mask(tmp_path):
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import mask_metrics
+
+    img = _skull_on_phantom(tmp_path, with_fat_blob=True)
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[12:28, 12:28, 12:28] = 1           # exactly the brain
+    m = mask_metrics(_mask_file(tmp_path, arr), image_path=img)
+
+    assert m["leak_fraction"] == 0.0
+
+
+def test_leak_fraction_fires_when_the_mask_swallows_fat(tmp_path):
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import mask_metrics
+
+    img = _skull_on_phantom(tmp_path, with_fat_blob=True)
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[12:28, 12:28, 12:28] = 1
+    arr[8:11, 8:11, 8:11] = 1              # the fat blob too
+    m = mask_metrics(_mask_file(tmp_path, arr), image_path=img)
+
+    assert m["leak_fraction"] > 0
+    assert m["leak_ml"] > 0
+
+
+def test_leak_metrics_absent_without_an_image(tmp_path):
+    """Geometry-only callers must keep working — the image is optional."""
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import mask_metrics
+
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[12:28, 12:28, 12:28] = 1
+    m = mask_metrics(_mask_file(tmp_path, arr))
+
+    assert m["leak_fraction"] is None
+
+
+def test_leak_flag_raised_in_validation(tmp_path):
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import validate_mask
+
+    img = _skull_on_phantom(tmp_path, with_fat_blob=True)
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[12:28, 12:28, 12:28] = 1
+    arr[8:11, 8:11, 8:11] = 1
+    check = validate_mask(_mask_file(tmp_path, arr), image_path=img,
+                          max_leak_fraction=0.001)
+
+    assert "MASK_LEAKAGE" in check["review_flags"]
+
+
+# ---------------------------------------------------------------------------
+# Asymmetry (geometry only — catches a one-sided cut)
+# ---------------------------------------------------------------------------
+
+def test_symmetric_mask_has_low_asymmetry(tmp_path):
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import mask_metrics
+
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[10:30, 10:30, 10:30] = 1
+    m = mask_metrics(_mask_file(tmp_path, arr))
+
+    assert m["asymmetry"] < 0.05
+
+
+def test_one_sided_cut_shows_up_as_asymmetry(tmp_path):
+    """The failure mode volume cannot see: half the brain removed.
+
+    A one-sided cut can leave the volume inside its window while losing a
+    hemisphere, so only left/right balance catches it.
+    """
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import mask_metrics
+
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[20:30, 10:30, 10:30] = 1           # right side only
+    m = mask_metrics(_mask_file(tmp_path, arr))
+
+    assert m["asymmetry"] > 0.5
+
+
+def test_asymmetry_flag_raised_in_validation(tmp_path):
+    import numpy as np
+    from preprocessing_steps.skull_stripping.validation import validate_mask
+
+    arr = np.zeros((40, 40, 40), dtype=np.uint8)
+    arr[20:30, 10:30, 10:30] = 1
+    check = validate_mask(_mask_file(tmp_path, arr))
+
+    assert "MASK_ASYMMETRIC" in check["review_flags"]
