@@ -107,7 +107,10 @@ def build_pipeline_config(input_dir: Path, output_dir: Path,
         if script and not Path(script).is_absolute():
             stage["script"] = str((PROJECT_ROOT / script).resolve())
         if number == "05":
-            stage.setdefault("params", {})["config"] = str(preprocessing_cfg)
+            # The orchestrator builds the command line from `args`; `params`
+            # is not read, so writing there silently left Stage 05 running on
+            # the production config — no cascade override, no tracing.
+            stage.setdefault("args", {})["config"] = str(preprocessing_cfg)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),

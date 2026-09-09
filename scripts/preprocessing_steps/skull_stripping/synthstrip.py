@@ -21,6 +21,20 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SEC = 900
 
 
+
+def _tail(text: str, limit: int = 1500) -> str:
+    """Keep the END of a failing tool's output, not the start.
+
+    A Python traceback states the actual cause on its last line; truncating
+    from the front threw exactly that away and left only the import chain —
+    which is how an HD-BET failure across a whole batch stayed unexplained.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return "...(truncated)... " + text[-limit:]
+
+
 class SynthStripStripper(SkullStripperBase):
     """SynthStrip — synthetic-data, modality-agnostic brain extraction."""
 
@@ -90,7 +104,7 @@ class SynthStripStripper(SkullStripperBase):
             if result.returncode != 0:
                 raise RuntimeError(
                     f"SynthStrip failed with return code {result.returncode}: "
-                    f"{(result.stderr or result.stdout or '')[:500]}"
+                    f"{_tail(result.stderr or result.stdout or '')}"
                 )
             if not output_path.exists():
                 raise RuntimeError(

@@ -56,6 +56,15 @@ services:
     # memswap_limit == mem_limit disables container swap (no swap thrash).
     mem_limit: 20g
     memswap_limit: 20g
+    # HD-BET (Stage 05 skull stripping) runs nnUNet, which passes volumes
+    # between its worker processes through shared memory. Docker's default
+    # /dev/shm is 64m — enough for one job, exhausted the moment Stage 05 runs
+    # its workers in parallel, which production does (mode: parallel,
+    # workers: 4). The failure surfaces as "unable to allocate shared memory"
+    # and HD-BET dies for every subject while the cascade quietly falls back
+    # to SynthStrip, so the run still reports success. Same fix, and same
+    # reason, as the segmentation services below.
+    shm_size: 4g
     profiles: ["full"]
 
   # GBM segmentation service (nnUNet v1, Task115)
