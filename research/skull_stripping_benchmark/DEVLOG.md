@@ -13,6 +13,39 @@ Tracks actual vs estimated timeline (estimate: 6–8 weeks part-time).
 - **Blockers:** none.
 - **Next step:** after Kate's check → commit Task D, then C/E (timeboxed BrainMaGe/SAM/DeepBET) or F (`prepare_data.py`).
 
+## 2026-09-09 (Phase F — prepare_data.py)
+
+- **Done:** `research/skull_stripping_benchmark/prepare_data.py` + 13 tests.
+  Runs production Stage 05 with skull stripping off, keeps the
+  registration-space output as the benchmark input. Config derived from the
+  live `preprocessing_config.yaml` (not hand-written, so it cannot drift from
+  the pipeline it characterises); skip-existing via `is_complete_nifti`.
+- **June draft was stale in three places**, all caught by running it: Stage 05
+  takes input/output *positionally* (draft used `--input-dir/--output-dir`);
+  modalities come from `--lesion-type` via `lesion_types.yaml`, not the
+  config's `modalities` key; there is no `--transform-dir` (derived as
+  `output_dir.parent/transformations`).
+- **Two more found only by the smoke run:** paths must be absolute and the
+  subprocess must run from the project root, as production does — otherwise
+  relative paths resolve against `scripts/` and ANTs cannot open the atlas.
+- **Production fix (small, tested):** Stage 05 checked for FSL unconditionally,
+  before looking at whether anything needed it. FSL serves exactly one step
+  (BET); reorient is nibabel, bias correction and registration are ANTs. A run
+  with skull stripping disabled was blocked by a dependency it never uses. Now
+  conditional — an enabled step still requires FSL, since BET is the cascade's
+  universal fallback. `requires_fsl()` + 3 tests.
+- **Smoke:** sub-024 from `KA126_4/nifti`, 4 modalities, 147 s. Output
+  182x218x182 (atlas geometry) with 6173 ml of non-zero tissue vs ~1400 ml for
+  a brain-only mask — skull present. Verified visually as well.
+- **Note for Phase G:** these skull-on volumes are exactly what was missing
+  when the intensity-based leakage metric was prototyped on 2026-09-07 (every
+  file under `preprocessed/` is already masked). If that metric is revisited,
+  calibrate it here.
+- **Blockers:** none.
+- **Next step:** Phase G — metrics. Open question from 2026-09-07 still stands:
+  DSC against MNI152 inverts the ranking, so the reference needs deciding
+  before the four-dataset run.
+
 ## 2026-09-09 (environment)
 
 - **Broke:** host `venv` stopped working — Ubuntu upgraded to 26.04, which ships

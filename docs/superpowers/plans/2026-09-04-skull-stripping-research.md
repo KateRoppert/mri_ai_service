@@ -280,7 +280,7 @@ Registration-space NIfTI, **skull stripping disabled**, MNI152 override for the 
 - `bias_correction.use_for_registration_only` is already true — still write the **registration-space** volume as the benchmark input (June note still stands).
 - Do not point production `pipeline_config.yaml` at research outputs.
 
-- [ ] Failing config-builder test, implement, unit tests, optional smoke on one local MS subject (BIDS id only in logs), commit.
+- [x] Done 2026-09-09 (c5bdd19). 13 unit tests; smoke on sub-024 (4 modalities, 147 s, atlas geometry, skull on). Corrections vs the June draft recorded in the commit and DEVLOG; Stage 05's unconditional FSL check made conditional.
 
 Long sample: June plan Task 5.1.
 
