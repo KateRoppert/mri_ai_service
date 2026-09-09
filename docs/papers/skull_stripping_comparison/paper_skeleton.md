@@ -81,7 +81,7 @@ a Stage 05 gate — atlas ≠ GT under mass effect.
 | Layer | Checks | Effect |
 |---|---|---|
 | Catastrophe | volume 300–2500 ml; dominant component ≥ 0.70 after dropping islands `< 1 ml`; enclosed hole volume `> 2` ml; empty/missing file | `valid=False` → try next stripper |
-| Review | volume 1000–1800 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05`; enclosed holes `> 0.5` ml; left/right `asymmetry` `> 0.05`; intensity `leak_fraction` `> 0.05 %` | try the next tool if one is untried; otherwise keep the mask and log `review_flags` |
+| Review | volume 900–2000 ml; LCC ≥ 0.95; FOV `edge_touch_ratio` `> 0.05`; enclosed holes `> 0.5` ml; left/right `asymmetry` `> 0.05`; intensity `leak_fraction` `> 0.05 %` | try the next tool if one is untried; otherwise keep the mask and log `review_flags` |
 | Atlas (later) | MNI loose / very-loose outside-ratio | benchmark QA, not runtime retry |
 
 **Revision after the first production runs (2026-09-07).** As first written, review flags
@@ -137,7 +137,9 @@ The value of the sample is the distance between correct masks and the gates:
 
 Holes, edge touch and leakage are far from firing on a correct mask, which is what a gate
 should look like. The volume band and the asymmetry gate are not: on twelve subjects from
-a single site one mask already sits within 7 % of a threshold. Because review flags now
+a single site one mask already sits within 7 % of a threshold. (The volume band was
+widened to 900–2000 ml on 2026-09-09 once the tool matrix supplied the other side of the
+measurement — see below.) Because review flags now
 advance the cascade, a false alarm is no longer free — it discards a correct HD-BET mask
 in favour of whatever comes next. Both are inherited defaults rather than measured values,
 and both need widening: a removed hemisphere scores 0.3–0.5 on asymmetry, so a gate at

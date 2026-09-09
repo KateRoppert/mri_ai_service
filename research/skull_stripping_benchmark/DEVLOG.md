@@ -3,6 +3,28 @@
 Updated at the end of each working session: date · done · blockers · next step.
 Tracks actual vs estimated timeline (estimate: 6–8 weeks part-time).
 
+## 2026-09-09 (volume review band widened — Kate approved)
+
+- **Done:** `DEFAULT_REVIEW_MIN_ML` 1000 → 900, `DEFAULT_REVIEW_MAX_ML`
+  1800 → 2000. Config comment, paper 3.6 (EN+RU) and two regression tests
+  updated. Asymmetry left at 0.05 — it caught BET on sub-049 (0.063), so it
+  is earning its place.
+- **Verified on the 48 real masks, not in theory.** Re-validating the whole
+  tool matrix with the new defaults reproduces every previous verdict:
+  hdbet 12/12 clean, synthstrip 11 clean + 1 true-positive leak, bet 3
+  rejected + 1 asymmetry flag, mni_mask 12/12 flagged. The only change is
+  that `mni_mask` now reports `MASK_LEAKAGE` alone instead of
+  `MASK_VOLUME_TOO_LARGE;MASK_LEAKAGE` — detection is unchanged, one
+  uninformative flag is gone.
+- **Why it was worth doing:** the old ceiling sat 58 ml below the worst
+  known-bad mask, so it separated nothing while standing ready to fire on a
+  large head or a tumour with oedema — and since 2026-09-07 a review flag
+  discards a correct mask in favour of the next tool.
+- **Blockers:** none.
+- **Next step:** decide whether the paper needs DSC at all. Consensus (and
+  therefore Phase C) exists only to make a DSC ranking possible; failure
+  rate, runtime and the reference-free metrics need no reference.
+
 ## 2026-09-09 (tool matrix — 12 subjects x 4 tools)
 
 - **Done:** `run_tool_matrix.py` runs every stripper over identical input and

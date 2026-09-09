@@ -39,10 +39,24 @@ DEFAULT_MAX_ML = 2500.0
 DEFAULT_MIN_DOMINANT_FRACTION = 0.70
 DEFAULT_SPECKLE_ML = 1.0
 
-# Review-only windows (log, do not retry). Inspired by the private337 QA
-# pipeline (review 1000–1800 ml, morphology / edge-touch as warnings).
-DEFAULT_REVIEW_MIN_ML = 1000.0
-DEFAULT_REVIEW_MAX_ML = 1800.0
+# Review windows. Widened 2026-09-09 from the inherited 1000–1800 ml (private337
+# QA pipeline) after measuring both sides on dropbox_33 (12 subjects x 4 tools).
+#
+# The old band had almost no discriminating power where it mattered: the best
+# correct mask in the sample was 1780 ml (SynthStrip) and the worst known-bad
+# one 1838 ml (mni_mask, the atlas envelope) — 58 ml apart, with the 1800 ml
+# gate landing between them by luck rather than design. It flagged nothing that
+# leakage did not already flag, while a large head or a tumour with oedema
+# would trip it for no reason. That stopped being free on 2026-09-07, when
+# review flags began advancing the cascade: a false alarm now discards a
+# correct mask in favour of the next tool.
+#
+# So the band is deliberately loose — it is a sanity check against a wildly
+# implausible brain volume, not a quality judgement. Leakage (below) is the
+# metric that actually separates correct masks from skull-on ones: 0.007 % at
+# worst for correct HD-BET, 0.058 % at best for the known-bad atlas mask.
+DEFAULT_REVIEW_MIN_ML = 900.0
+DEFAULT_REVIEW_MAX_ML = 2000.0
 DEFAULT_REVIEW_MIN_DOMINANT_FRACTION = 0.95
 DEFAULT_REVIEW_MAX_EDGE_TOUCH = 0.05
 # Enclosed background cavities (mask==0 completely surrounded by brain).

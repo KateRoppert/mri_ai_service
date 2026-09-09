@@ -363,3 +363,42 @@ def test_asymmetry_flag_raised_in_validation(tmp_path):
     check = validate_mask(_mask_file(tmp_path, arr))
 
     assert "MASK_ASYMMETRIC" in check["review_flags"]
+
+
+# ---------------------------------------------------------------------------
+# Review volume band — calibrated 2026-09-09 on dropbox_33 (12 subjects x 4 tools)
+# ---------------------------------------------------------------------------
+
+def _mask_of_ml(tmp, millilitres, zooms=(5.0, 5.0, 5.0)):
+    """A solid cube of a given volume. 5 mm isotropic keeps the array small
+    while still reaching brain-sized volumes."""
+    voxel_ml = float(np.prod(zooms)) / 1000.0
+    side = int(round((millilitres / voxel_ml) ** (1 / 3)))
+    arr = np.zeros((side + 4, side + 4, side + 4))
+    arr[2:2 + side, 2:2 + side, 2:2 + side] = 1
+    return _write_mask(tmp, arr, zooms)
+
+
+def test_large_but_plausible_brain_is_not_flagged(tmp_path):
+    """A 1900 ml mask must pass the default band.
+
+    The old 1800 ml ceiling sat 58 ml below the worst known-bad mask in the
+    calibration sample, so it separated nothing while flagging large heads.
+    Since review flags advance the cascade, such a false alarm costs a correct
+    mask — this test is the guard against quietly narrowing the band again.
+    """
+    res = validate_mask(_mask_of_ml(tmp_path, 1900))
+
+    assert res["valid"] is True
+    assert "MASK_VOLUME_TOO_LARGE" not in res["review_flags"]
+
+
+def test_implausible_volumes_still_flagged(tmp_path):
+    """The band is loose, not absent: it still catches frank nonsense."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    small = validate_mask(_mask_of_ml(tmp_path / "a", 700))
+    large = validate_mask(_mask_of_ml(tmp_path / "b", 2300))
+
+    assert "MASK_VOLUME_TOO_SMALL" in small["review_flags"]
+    assert "MASK_VOLUME_TOO_LARGE" in large["review_flags"]
