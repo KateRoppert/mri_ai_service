@@ -18,6 +18,11 @@ services:
       - /home:/home:rw
       - ./demo_workspace:/workspace:rw
       - ./scripts:/app/scripts:ro
+      # utils/ is a live mount too: stage scripts (mounted above) import
+      # utils.* (e.g. utils.nifti_integrity). Without this, a new util module
+      # added to the repo is missing from the baked image and the mounted
+      # script fails at import (ModuleNotFoundError) until a rebuild.
+      - ./utils:/app/utils:ro
       - ./configs:/app/configs:rw
       - ./backend/data:/app/backend/data:rw
       # HD-BET downloads its weights (~123 MB) on first use and hardcodes
