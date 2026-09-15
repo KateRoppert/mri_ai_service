@@ -163,7 +163,11 @@ class KappaUploader:
                 f"Preprocessing: {self.preprocessing_id}"
             ),
             dataset_type=1,  # Image dataset
-            dataset_tags=f"mri,{self.lesion_type},segmentation",
+            # Kappa requires datasetTags to include at least one predefined ML
+            # tag. "Image Segmentation" is the applicable one (note: "Computer
+            # Vision" is the ML *task type*, a separate field, not a tag). The
+            # rest are descriptive free-form tags.
+            dataset_tags=f"Image Segmentation,mri,{self.lesion_type}",
         )
 
         if new_id is not None:
