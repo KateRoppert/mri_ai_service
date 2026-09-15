@@ -22,16 +22,18 @@ from .bet import BetStripper
 from .hdbet import HdBetStripper
 from .synthstrip import SynthStripStripper
 from .mni_mask import MniMaskStripper
+from .deepbet import DeepBetStripper
 
 logger = logging.getLogger(__name__)
 
-# Registry of implemented tools. Remaining research tools (BrainMaGe,
-# SAM, DeepBET) land here as they are implemented.
+# Registry of implemented tools. Remaining research tools (BrainMaGe, SAM)
+# land here as they are implemented.
 STRIPPERS = {
     "bet": BetStripper,
     "hdbet": HdBetStripper,
     "synthstrip": SynthStripStripper,
     "mni_mask": MniMaskStripper,
+    "deepbet": DeepBetStripper,
 }
 
 DEFAULT_METHOD = "bet"

@@ -47,6 +47,13 @@
 ### 3.2 Tools
 <<Table: tool, year, type, install, tuned params. From manifests.>>
 
+Implemented as of 2026-09-15: BET (FSL), HD-BET, SynthStrip, deepbet, MNI mask
+(strict and loose — a baseline rather than a competitor). Outstanding: BrainMaGe
+and SAM. Measured cost per volume in the project's own container on the
+dropbox_33 subjects: deepbet 2–3 s (CPU), SynthStrip 4 s (CPU), BET 5 s (CPU),
+HD-BET 15 s (GPU), MNI mask 0.5 s. deepbet is the only learned tool whose
+weights ship inside its wheel; the others download or mount them.
+
 ### 3.3 Metrics
 - Quality: DSC, HD95, over-stripping rate, leakage rate, brain volume (ml) vs MNI152
   pseudo-GT. Qualitative 1–3 visual scale on 5–10 subjects/dataset.

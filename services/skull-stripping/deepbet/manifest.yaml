@@ -1,0 +1,54 @@
+# deepbet — fast CPU brain extraction (Fisch et al. 2023).
+#
+# Metadata only: behaviour lives in
+# scripts/preprocessing_steps/skull_stripping/deepbet.py. The MAS
+# coordinator (Этап 7) will route on the fields below once skull strippers
+# become separate agents; until then they document the tool.
+
+name: deepbet
+version: "1.0.2"
+tool_type: skull_stripping
+
+compute:
+  requires_gpu: false
+  gpu_memory_gb: 2
+  ram_gb: 4
+  cpu_fallback: true
+
+lesion_type_preference:
+  glioblastoma: unknown       # trained on healthy/mixed T1, not tumour cohorts
+  multiple_sclerosis: unknown
+
+modality_support:
+  primary: [t1]               # the published model is T1; others untested here
+  apply_to: [t1, t1c, t2, t2fl]
+
+quality_notes: >
+  Measured 2.5 s per volume on CPU in the web image — the cheapest tool we
+  have by a wide margin (SynthStrip 4 s, HD-BET 15 s on a GPU). That makes it
+  attractive as a cascade fallback, but nothing is known yet about its
+  behaviour on gliomas with mass effect: the model was not trained on tumour
+  data. Ranking on our GBM+MS cohort is what the Этап 5.5 benchmark will
+  measure; keep it out of the production cascade until that evidence exists.
+
+install:
+  method: pip
+  package: deepbet
+  model_download: bundled     # weights ship in the wheel (site-packages/data/models)
+  notes: >
+    Adds only connected-components-3d, fill_voids, fastremap and
+    customtkinter; verified not to touch the pinned torch build. Console
+    scripts land in FSL's python prefix in the web image
+    (/usr/local/fsl/bin/deepbet-cli), which is on PATH.
+
+default_params:
+  # Mask probability threshold and dilate/erode layers. Tune on the
+  # validation split; omit to use the CLI defaults.
+  # threshold: 0.5
+  # n_dilate: 0
+  # use_gpu: false            # CLI `-g` means AVOID the gpu, not use it
+
+mas_metadata:
+  agent_type: skull_stripper
+  cascade_priority: 3
+  fallback_to: bet

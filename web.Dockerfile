@@ -57,6 +57,17 @@ RUN pip install --no-cache-dir \
     torch==2.11.0 torchvision \
     --index-url https://download.pytorch.org/whl/cu128
 
+# 6c. deepbet — быстрый CPU-скалстриппер для этапа 05 и бенчмарка Этапа 5.5.
+# Ставится ПОСЛЕ пина torch: сам он требует лишь torch>=1.11, так что 2.11
+# его устраивает и переустановки не будет (проверено в одноразовом
+# контейнере — версия torch до и после установки одна и та же). Тянет
+# только четыре мелких пакета: connected-components-3d, fill_voids,
+# fastremap, customtkinter. Веса лежат внутри колеса, поэтому, в отличие
+# от HD-BET, ни скачивания при первом запуске, ни тома под них не нужно.
+# CLI попадает в префикс питона FSL (/usr/local/fsl/bin/deepbet-cli) — он
+# в PATH, так что shutil.which его находит.
+RUN pip install --no-cache-dir deepbet==1.0.2
+
 # 7. Копируем ВАШ НОВЫЙ код бэкенда и оркестратора
 COPY backend/ ./backend/
 COPY configs/ ./configs/

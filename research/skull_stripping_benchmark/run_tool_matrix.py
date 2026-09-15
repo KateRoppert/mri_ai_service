@@ -110,19 +110,37 @@ def prepare_head(run_dir: Path, subject: str, session: str, modality: str,
 
 
 def run_one(tool: str, head_path: Path, out_dir: Path, tool_params: dict,
-            subject: str, session: str) -> dict:
+            subject: str, session: str, metrics_only: bool = False) -> dict:
     """One tool on one subject. Failures are recorded, not raised: a tool that
-    cannot run on a subject is itself a benchmark result."""
-    row = {"subject": subject, "session": session, "tool": tool}
-    stripper = STRIPPERS[tool]()
+    cannot run on a subject is itself a benchmark result.
 
+    ``metrics_only`` re-scores a mask already on disk instead of stripping
+    again — what you want after changing a metric or a threshold, since a
+    re-strip would also re-measure timing on a differently loaded machine.
+    """
+    row = {"subject": subject, "session": session, "tool": tool}
+    stripped = out_dir / tool / f"{subject}_{session}_stripped.nii.gz"
+    mask = out_dir / tool / f"{subject}_{session}_mask.nii.gz"
+
+    if metrics_only:
+        if not mask.exists():
+            row.update(success=False, error="no mask on disk", seconds=0.0)
+            return row
+        row.update(success=True, error="", seconds=None)
+        produced = mask
+        check = validate_mask(produced, image_path=head_path)
+        row.update({k: check.get(k) for k in METRIC_COLUMNS})
+        row["valid"] = check["valid"]
+        row["reason"] = check["reason"]
+        row["review_flags"] = ";".join(check["review_flags"])
+        return row
+
+    stripper = STRIPPERS[tool]()
     if not stripper.is_available():
         row.update(success=False, error="tool not available on this machine",
                    seconds=0.0)
         return row
 
-    stripped = out_dir / tool / f"{subject}_{session}_stripped.nii.gz"
-    mask = out_dir / tool / f"{subject}_{session}_mask.nii.gz"
     mask.parent.mkdir(parents=True, exist_ok=True)
 
     start = time.perf_counter()
@@ -156,6 +174,8 @@ def main():
     parser.add_argument("--tools", nargs="+", default=DEFAULT_TOOLS)
     parser.add_argument("--modality", default="t1")
     parser.add_argument("--atlas", type=Path, default=DEFAULT_ATLAS)
+    parser.add_argument("--metrics-only", action="store_true",
+                        help="Re-score masks already on disk instead of stripping again")
     parser.add_argument("--config", type=Path,
                         default=PROJECT_ROOT / "configs" / "preprocessing_config.yaml")
     args = parser.parse_args()
@@ -183,7 +203,8 @@ def main():
             continue
 
         for tool in args.tools:
-            row = run_one(tool, head, masks_dir, tool_params, subject, session)
+            row = run_one(tool, head, masks_dir, tool_params, subject, session,
+                          args.metrics_only)
             rows.append(row)
             if row.get("success"):
                 # A hard rejection carries no review flags, so printing only
@@ -191,23 +212,45 @@ def main():
                 verdict = row["review_flags"] or "ok"
                 if not row["valid"]:
                     verdict = f"REJECTED: {row['reason']}"
-                logger.info("%s %-10s %6.1f ml  holes %4.2f  leak %.3f %%  %5.1f s  %s",
+                seconds = ("      " if row["seconds"] is None
+                           else f"{row['seconds']:6.1f}")
+                logger.info("%s %-10s %6.1f ml  holes %4.2f  leak %.3f %%  %s s  %s",
                             subject, tool, row["mask_volume_ml"] or 0,
                             row["hole_volume_ml"] or 0,
-                            (row["leak_fraction"] or 0) * 100, row["seconds"],
-                            verdict)
+                            (row["leak_fraction"] or 0) * 100, seconds, verdict)
             else:
                 logger.warning("%s %-10s FAILED: %s", subject, tool, row["error"])
 
-    csv_path = args.out_dir / "tool_matrix.csv"
+    write_csv(args.out_dir / "tool_matrix.csv", rows)
+
+
+def write_csv(csv_path: Path, rows: list):
+    """Merge into the existing CSV, keyed by (subject, session, tool).
+
+    Overwriting instead would mean that running one tool silently destroys
+    every other tool's results — which is exactly what happened when deepbet
+    was added to an existing matrix, and the only reason it was recoverable
+    is that the masks themselves were still on disk.
+    """
     columns = (["subject", "session", "tool", "success", "error", "seconds"]
                + METRIC_COLUMNS + ["valid", "reason", "review_flags"])
+    merged = {}
+    if csv_path.exists():
+        with csv_path.open() as handle:
+            for row in csv.DictReader(handle):
+                merged[(row["subject"], row["session"], row["tool"])] = row
+    incoming = {(r["subject"], r["session"], r["tool"]) for r in rows}
+    carried = len(set(merged) - incoming)
+    for row in rows:
+        merged[(row["subject"], row["session"], row["tool"])] = row
+
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
-    logger.info("%d rows -> %s", len(rows), csv_path)
+        writer.writerows(merged[key] for key in sorted(merged))
+    logger.info("%d rows written (%d new/updated, %d carried over) -> %s",
+                len(merged), len(rows), carried, csv_path)
 
 
 if __name__ == "__main__":

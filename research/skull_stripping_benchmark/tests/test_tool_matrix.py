@@ -148,3 +148,43 @@ def test_axial_levels_survive_an_empty_mask():
     levels = make_contact_sheet.pick_axial_levels(np.zeros((10, 10, 10), bool))
 
     assert all(0 <= z < 10 for z in levels)
+
+
+# ---------------------------------------------------------------------------
+# CSV merge — one tool's run must not erase the others
+# ---------------------------------------------------------------------------
+
+def _row(subject, tool, volume):
+    return {"subject": subject, "session": "ses-001", "tool": tool,
+            "success": True, "error": "", "seconds": 1.0,
+            "mask_volume_ml": volume, "valid": True, "reason": "ok",
+            "review_flags": ""}
+
+
+def test_write_csv_keeps_rows_for_other_tools(tmp_path: Path):
+    """Adding a tool to an existing matrix must not clobber it. Overwriting
+    is how 48 rows were lost when deepbet was first appended."""
+    csv_path = tmp_path / "tool_matrix.csv"
+    run_tool_matrix.write_csv(csv_path, [_row("sub-001", "hdbet", 1400),
+                                         _row("sub-001", "bet", 1600)])
+    run_tool_matrix.write_csv(csv_path, [_row("sub-001", "deepbet", 1500)])
+
+    import csv as _csv
+    with csv_path.open() as handle:
+        tools = {r["tool"] for r in _csv.DictReader(handle)}
+
+    assert tools == {"hdbet", "bet", "deepbet"}
+
+
+def test_write_csv_replaces_a_rerun_of_the_same_cell(tmp_path: Path):
+    """Re-running one tool on one subject updates that cell, not duplicates it."""
+    csv_path = tmp_path / "tool_matrix.csv"
+    run_tool_matrix.write_csv(csv_path, [_row("sub-001", "hdbet", 1400)])
+    run_tool_matrix.write_csv(csv_path, [_row("sub-001", "hdbet", 1450)])
+
+    import csv as _csv
+    with csv_path.open() as handle:
+        rows = list(_csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["mask_volume_ml"] == "1450"

@@ -49,7 +49,7 @@ Branch `feat/skull-stripping-research-v2` = `origin/main` + research docs (spec,
 | 3.2 SynthStrip | **done on v2** (wrapper + manifest; CLI in web image via FreeSurfer) | Task B |
 | 3.3 BrainMaGe | **not done** | Task C |
 | 4.1 MNI strict/loose | **done on v2** (2026-09-04; prod atlas already MNI152_FSL) | Task D |
-| 4.2 SAM + DeepBET stubs | **not done** | Task E |
+| 4.2 SAM + DeepBET stubs | **deepbet done 2026-09-15; SAM open** | Task E |
 | 5–10 Benchmark + paper fill | **not done** (scaffold only) | Tasks F–K; long samples in the June plan |
 
 ### Carried forward from the 2026-09-07 hardening
@@ -266,7 +266,8 @@ June Task 4.1 samples apply with registry-name overlay.
 
 Best-effort, ≤2h install each. Fail closed via `is_available()`. Register `"sam"` and `"deepbet"`.
 
-- [ ] Tests that unavailable tools are skipped, stubs, manifests, DEVLOG of install outcome, commit.
+- [x] **deepbet done 2026-09-15.** Not a stub — it installs cleanly (`pip install deepbet==1.0.2`, four small packages, pinned torch untouched, weights bundled in the wheel) and is the fastest tool in the set at 2–3 s per volume on CPU. 12/12 accepted on the calibration sample, no flags, visually clean. Wrapper + manifest + 10 tests + `web.Dockerfile` line.
+- [ ] **SAM still open, and not a wrapper job.** `segment-anything` installs trivially on the torch already present, but SAM is a 2D promptable model for natural images: producing a brain mask needs a per-slice prompting strategy and 3D reassembly with no consistency guarantee. That is days of research, not a plugin. Decide whether to drop it and call the paper seven tools rather than eight.
 
 ---
 

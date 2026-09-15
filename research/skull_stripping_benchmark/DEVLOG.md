@@ -3,6 +3,49 @@
 Updated at the end of each working session: date · done · blockers · next step.
 Tracks actual vs estimated timeline (estimate: 6–8 weeks part-time).
 
+## 2026-09-15 (Phase E part 1 — deepbet)
+
+- **Done:** `deepbet.py` wrapper, `STRIPPERS["deepbet"]`, manifest, 10 unit
+  tests, one line in `web.Dockerfile`. Smoke over all 12 calibration subjects
+  through the wrapper, not just the CLI.
+- **Install is cheap and safe.** `pip install deepbet==1.0.2` adds only
+  connected-components-3d, fill_voids, fastremap and customtkinter, and
+  **does not touch the pinned torch** — verified explicitly in a throwaway
+  container (2.11.0+cu128 before and after). Weights ship inside the wheel,
+  so unlike HD-BET there is nothing to download at first run and no volume to
+  mount.
+- **Results: 12/12 accepted, no flags, leak 0.000–0.001 %, volumes
+  1261–1686 ml, 2–3 s per volume on CPU.** That is the fastest tool we have —
+  SynthStrip 4 s, BET 5 s, HD-BET 15 s on a GPU. Visual review over the
+  skull-on volumes: all twelve clean, orbits excluded, cerebellum and
+  brainstem retained. On sub-042 it correctly excludes the bright frontal
+  blob that SynthStrip included (the one true-positive leak flag).
+- **Two container facts worth keeping.** `python3` inside `web` is FSL's
+  python, so pip installs land in `/usr/local/fsl/lib/python3.12` and console
+  scripts in `/usr/local/fsl/bin` — on PATH, so `shutil.which` finds them,
+  but it means every pip install mixes into FSL's environment. And the image
+  has its own ENTRYPOINT: probing it needs
+  `docker run --entrypoint bash ... -c`, otherwise the command is swallowed
+  and the web app starts instead (cost three timed-out probes to notice).
+- **Runner bug found and fixed.** `run_tool_matrix.py` wrote the CSV instead
+  of merging it, so running one tool erased the other four — 48 rows lost the
+  moment deepbet was appended. Recovered from the masks on disk via a new
+  `--metrics-only` mode, which re-scores existing masks without stripping
+  again (also what you want after changing a metric). Merge is keyed by
+  (subject, session, tool) and covered by two tests.
+- **Consensus with a fifth rater is measurably less biased.** HD-BET's
+  leave-one-out reference was +225 ml against its own masks at four tools;
+  at five it is +148 ml. Ranking: deepbet 0.962, synthstrip 0.949, hdbet
+  0.947, bet 0.908, mni_mask 0.856. Pairwise agreement now puts
+  deepbet–hdbet at 0.970, the highest pair in the matrix, with the three
+  modern DL tools clustered above 0.94 and bet/mni_mask apart. The size bias
+  is smaller but not gone — the direction of the fix is confirmed, the
+  conclusion from 2026-09-09 stands.
+- **Blockers:** none. Rebuild of `web` still pending for production use of
+  deepbet; the benchmark runs it via pip in a throwaway container.
+- **Next step:** BrainMaGe probe (`--no-deps`, 30 min) to find out whether it
+  needs a separate microservice; SAM decision after that.
+
 ## 2026-09-09 (volume review band widened — Kate approved)
 
 - **Done:** `DEFAULT_REVIEW_MIN_ML` 1000 → 900, `DEFAULT_REVIEW_MAX_ML`
