@@ -1603,12 +1603,18 @@ async def get_lobar_atlas(
 # ============================================
 
 from kappa_dataset_mapping import get_lesion_types
+from kappa_auth import get_session
 
 
 @app.get("/api/kappa/lesion-types")
-async def get_lesion_types_endpoint():
-    """Список доступных типов поражений"""
-    return get_lesion_types()
+async def get_lesion_types_endpoint(kappa_session_id: Optional[str] = None):
+    """Типы поражений с dataset_id, привязанными к текущему пользователю Каппы."""
+    user_id = None
+    if kappa_session_id:
+        session = get_session(kappa_session_id)
+        if session:
+            user_id = session["user_id"]
+    return get_lesion_types(user_id)
 
 
 @app.get("/api/segmentation/active-model")

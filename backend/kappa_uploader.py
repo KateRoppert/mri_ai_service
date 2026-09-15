@@ -131,7 +131,7 @@ class KappaUploader:
 
     async def _resolve_dataset_id(self) -> Optional[int]:
         """Получить dataset_id из маппинга или создать новый."""
-        dataset_id = get_dataset_id(self.lesion_type, self.preprocessing_id)
+        dataset_id = get_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id)
 
         if dataset_id is not None:
             logger.info(
@@ -163,11 +163,15 @@ class KappaUploader:
                 f"Preprocessing: {self.preprocessing_id}"
             ),
             dataset_type=1,  # Image dataset
-            dataset_tags=f"mri,{self.lesion_type},segmentation",
+            # Kappa requires datasetTags to include at least one predefined ML
+            # tag. "Image Segmentation" is the applicable one (note: "Computer
+            # Vision" is the ML *task type*, a separate field, not a tag). The
+            # rest are descriptive free-form tags.
+            dataset_tags=f"Image Segmentation,mri,{self.lesion_type}",
         )
 
         if new_id is not None:
-            set_dataset_id(self.lesion_type, self.preprocessing_id, new_id)
+            set_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id, new_id)
             logger.info("New dataset created: id=%d", new_id)
 
         return new_id

@@ -144,7 +144,7 @@ def test_register_and_retrieve_version():
 
 
 def test_dataset_mapping():
-    """Маппинг lesion_type + preprocessing_id → dataset_id."""
+    """Маппинг (user_id + lesion_type + preprocessing_id) → dataset_id."""
     from kappa_dataset_mapping import (
         get_dataset_id,
         set_dataset_id,
@@ -152,29 +152,22 @@ def test_dataset_mapping():
         MAPPING_FILE,
     )
 
-    # Тест чтения существующего маппинга
-    lesion_types = get_lesion_types()
-    print(f"Lesion types: {lesion_types}")
+    # smoke: не падает для пользователя без датасетов
+    get_lesion_types(user_id=1)
 
-    # Тест получения dataset_id для glioblastoma:current
-    ds_id = get_dataset_id("glioblastoma", "any_hash")
-    print(f"glioblastoma:any_hash → {ds_id} (should be 133 via current fallback)")
-    assert ds_id == 133, f"Expected 133, got {ds_id}"
-
-    # Тест установки конкретного маппинга
     original = MAPPING_FILE.read_text() if MAPPING_FILE.exists() else None
-
     try:
-        set_dataset_id("glioblastoma", "abc12345", 999)
-        ds_id_exact = get_dataset_id("glioblastoma", "abc12345")
-        assert ds_id_exact == 999, f"Expected 999, got {ds_id_exact}"
-
-        print(f"OK: glioblastoma:abc12345 → {ds_id_exact}")
-
+        set_dataset_id(1, "glioblastoma", "abc12345", 999)
+        assert get_dataset_id(1, "glioblastoma", "abc12345") == 999
+        assert get_dataset_id(1, "glioblastoma", "other") == 999   # :current fallback
+        assert get_dataset_id(2, "glioblastoma", "abc12345") is None  # user isolation
+        print("OK: user-scoped mapping round-trips")
     finally:
         # Восстанавливаем
         if original is not None:
             MAPPING_FILE.write_text(original)
+        elif MAPPING_FILE.exists():
+            MAPPING_FILE.unlink()
 
 
 def test_real_config():

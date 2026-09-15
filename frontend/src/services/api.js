@@ -141,7 +141,10 @@ export const getLobarAtlasUrl = (runId) => {
  * Получить список типов поражений
  */
 export const getLesionTypes = async () => {
-  const response = await apiClient.get('/kappa/lesion-types');
+  const kappaSessionId = localStorage.getItem('kappa_session_id');
+  const response = await apiClient.get('/kappa/lesion-types', {
+    params: { kappa_session_id: kappaSessionId },
+  });
   return response.data;
 };
 
