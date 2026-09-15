@@ -131,7 +131,7 @@ class KappaUploader:
 
     async def _resolve_dataset_id(self) -> Optional[int]:
         """Получить dataset_id из маппинга или создать новый."""
-        dataset_id = get_dataset_id(self.lesion_type, self.preprocessing_id)
+        dataset_id = get_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id)
 
         if dataset_id is not None:
             logger.info(
@@ -167,7 +167,7 @@ class KappaUploader:
         )
 
         if new_id is not None:
-            set_dataset_id(self.lesion_type, self.preprocessing_id, new_id)
+            set_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id, new_id)
             logger.info("New dataset created: id=%d", new_id)
 
         return new_id
