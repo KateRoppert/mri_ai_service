@@ -24,6 +24,9 @@ services:
       # script fails at import (ModuleNotFoundError) until a rebuild.
       - ./utils:/app/utils:ro
       - ./configs:/app/configs:rw
+      # Service log (daily-rotated, 14-day retention) — persisted on the host so
+      # it is viewable any time at ./logs/service.log without `docker logs`.
+      - ./logs:/app/logs:rw
       - ./backend/data:/app/backend/data:rw
       # HD-BET downloads its weights (~123 MB) on first use and hardcodes
       # the location to ~/hd-bet_params — it ignores env vars. Without this

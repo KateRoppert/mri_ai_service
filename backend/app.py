@@ -98,6 +98,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Зеркалируем консольный лог сервиса в файл с посуточной ротацией:
+#   logs/service.log            — сегодняшний день
+#   logs/service-YYYY-MM-DD.log — прошлые дни (хранится 14 последних)
+# Это журнал САМОГО сервиса (старт, API-запросы, активность Каппы, ошибки).
+# Детальные логи каждого прогона пишутся отдельно в папку прогона
+# (<output>/logs/pipeline_master.log + per-stage), здесь их не дублируем.
+from logging.handlers import TimedRotatingFileHandler  # noqa: E402
+
+_SERVICE_LOG_DIR = os.environ.get("SERVICE_LOG_DIR", "/app/logs")
+try:
+    os.makedirs(_SERVICE_LOG_DIR, exist_ok=True)
+    _svc_handler = TimedRotatingFileHandler(
+        os.path.join(_SERVICE_LOG_DIR, "service.log"),
+        when="midnight", backupCount=14, encoding="utf-8",
+    )
+    # Rotated files become service-YYYY-MM-DD.log instead of service.log.YYYY-MM-DD.
+    _svc_handler.suffix = "%Y-%m-%d"
+    _svc_handler.namer = lambda path: path.replace(".log.", "-") + ".log"
+    _svc_handler.setFormatter(logging.Formatter(
+        fmt='%(asctime)s | %(levelname)-7s | %(name)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
+    logging.getLogger().addHandler(_svc_handler)  # root: app + library loggers propagate here
+    logger.info(
+        "Service log file: %s/service.log (daily rotation, 14-day retention)",
+        _SERVICE_LOG_DIR,
+    )
+except Exception as _svc_log_err:
+    logger.warning(
+        "Could not set up service log file in %s: %s", _SERVICE_LOG_DIR, _svc_log_err
+    )
+
 
 # Lifespan context manager для инициализации/завершения
 @asynccontextmanager
