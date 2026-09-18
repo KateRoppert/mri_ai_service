@@ -1,7 +1,7 @@
 /**
  * Компонент для 3D визуализации NIfTI файлов с niivue
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Select, Spin, Alert, Space, Button, Slider, Row, Col, Popover, Radio, message } from 'antd';
 import { 
   EyeOutlined, 
@@ -134,60 +134,65 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
     }
   }, [visible, runId, customFiles]);
 
-  /**
-   * Инициализируем niivue при монтировании
-   */
-  useEffect(() => {
-    // Небольшая задержка чтобы canvas точно был готов
-    const timer = setTimeout(() => {
-      if (canvasRef.current && !nvRef.current) {
-        try {
-          console.log('Инициализация Niivue...');
-          
-          // Создаём экземпляр Niivue
-          const nv = new Niivue({
-            backColor: [0, 0, 0, 1],
-            show3Dcrosshair: true,
-            crosshairWidth: 1,
-            logging: false,  // ← Убрать warnings
-          });
-          
-          nvRef.current = nv;
+  // The canvas mounts only after the file list arrives (~150 ms), so NiiVue is
+  // created from the canvas ref rather than a one-shot timer. Idempotent per canvas.
+  const ensureNiivue = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (nvRef.current && nvRef.current.canvas === canvas) return;
+    try {
+      console.log('Инициализация Niivue...');
 
-          // Per-lesion hover tooltip: read the labeled voxel under the cursor
-          // and look up its volume in the per-session map.
-          nv.onLocationChange = (location) => {
-            const file = selectedFileRef.current;
-            const byLabel = file?.lesion_volumes_by_label;
-            // Only valid when the labeled mask is the one on screen.
-            if (!labeledMaskActiveRef.current || !byLabel) {
-              setHoverVolume(null);
-              return;
-            }
-            // Read the MASK volume's value by name (robust to an atlas overlay
-            // being added as a third volume, which would shift "last").
-            const values = location?.values || [];
-            const maskVal = values.find((v) => v.name === file.mask_filename);
-            const labelVal = maskVal ? Math.round(maskVal.value) : 0;
-            if (labelVal > 0 && byLabel[String(labelVal)] != null) {
-              setHoverVolume({ cm3: byLabel[String(labelVal)] });
-            } else {
-              setHoverVolume(null);
-            }
-          };
+      // Создаём экземпляр Niivue
+      const nv = new Niivue({
+        backColor: [0, 0, 0, 1],
+        show3Dcrosshair: true,
+        crosshairWidth: 1,
+        logging: false,  // ← Убрать warnings
+      });
+      
+      nvRef.current = nv;
 
-          nv.attachToCanvas(canvasRef.current);
-          
-          console.log('Niivue инициализирован успешно');
-        } catch (err) {
-          console.error('Ошибка инициализации Niivue:', err);
-          setError(`Ошибка инициализации 3D визуализации: ${err.message}`);
+      // Per-lesion hover tooltip: read the labeled voxel under the cursor
+      // and look up its volume in the per-session map.
+      nv.onLocationChange = (location) => {
+        const file = selectedFileRef.current;
+        const byLabel = file?.lesion_volumes_by_label;
+        // Only valid when the labeled mask is the one on screen.
+        if (!labeledMaskActiveRef.current || !byLabel) {
+          setHoverVolume(null);
+          return;
         }
-      }
-    }, 100);
+        // Read the MASK volume's value by name (robust to an atlas overlay
+        // being added as a third volume, which would shift "last").
+        const values = location?.values || [];
+        const maskVal = values.find((v) => v.name === file.mask_filename);
+        const labelVal = maskVal ? Math.round(maskVal.value) : 0;
+        if (labelVal > 0 && byLabel[String(labelVal)] != null) {
+          setHoverVolume({ cm3: byLabel[String(labelVal)] });
+        } else {
+          setHoverVolume(null);
+        }
+      };
 
-    return () => clearTimeout(timer);
-  }, [visible]);  // Зависимость от visible - переинициализируем при открытии
+      nv.attachToCanvas(canvas);
+
+      console.log('Niivue инициализирован успешно');
+    } catch (err) {
+      console.error('Ошибка инициализации Niivue:', err);
+      setError(`Ошибка инициализации 3D визуализации: ${err.message}`);
+    }
+  }, []);
+
+  const setCanvas = useCallback((node) => {
+    canvasRef.current = node;
+    ensureNiivue();
+  }, [ensureNiivue]);
+
+  // ValidationActions destroys NiiVue on close while the canvas stays mounted.
+  useEffect(() => {
+    if (visible) ensureNiivue();
+  }, [visible, ensureNiivue]);
 
   /**
    * Загружаем список доступных файлов
@@ -670,7 +675,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
             height: '85vh',
           }}>
             <canvas
-              ref={canvasRef}
+              ref={setCanvas}
               style={{
                 width: '100%',
                 height: '100%',  // 100% от родительского div
