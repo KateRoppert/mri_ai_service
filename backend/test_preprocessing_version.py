@@ -97,120 +97,88 @@ def test_compute_id_changes_on_param_change():
     print(f"OK: different params → different hash ({id1} vs {id2})")
 
 
-def test_register_and_retrieve_version():
+# The versions registry and the Kappa mapping live in configs/, which is
+# bind-mounted into the running web container. Tests used to overwrite the real
+# files and restore them afterwards — while the stack was up, the service could
+# read a test's temporary mapping in that window, and test_real_config never
+# restored at all, leaving a stray version in a tracked file. Every test below
+# points the module at a temp file instead.
+
+
+def test_register_and_retrieve_version(tmp_path, monkeypatch):
     """Регистрация версии и получение конфига по ID."""
-    from preprocessing_version import (
-        register_version,
-        get_version_config,
-        VERSIONS_FILE,
-    )
+    import preprocessing_version
+    from preprocessing_version import register_version, get_version_config
+
+    monkeypatch.setattr(preprocessing_version, "VERSIONS_FILE",
+                        tmp_path / "preprocessing_versions.json")
 
     config = {
         "atlas": {"name": "TestAtlas", "filename": "test.nii.gz"},
         "steps": [{"name": "test_step", "enabled": True, "params": {"value": 42}}],
         "modalities": ["t1"],
     }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        yaml.dump(config, f)
-        config_path = f.name
+    prep_id = register_version(str(config_path))
+    assert len(prep_id) == 8
 
-    # Сохраняем текущий файл версий
-    original_versions = None
-    if VERSIONS_FILE.exists():
-        original_versions = VERSIONS_FILE.read_text()
+    retrieved = get_version_config(prep_id)
+    assert retrieved is not None
+    assert retrieved["steps"][0]["params"]["value"] == 42
 
-    try:
-        prep_id = register_version(config_path)
-        assert len(prep_id) == 8
-
-        retrieved = get_version_config(prep_id)
-        assert retrieved is not None
-        assert retrieved["steps"][0]["params"]["value"] == 42
-
-        # Повторная регистрация не должна ломать
-        prep_id2 = register_version(config_path)
-        assert prep_id == prep_id2
-
-        print(f"OK: registered and retrieved version {prep_id}")
-
-    finally:
-        Path(config_path).unlink()
-        # Восстанавливаем
-        if original_versions is not None:
-            VERSIONS_FILE.write_text(original_versions)
-        elif VERSIONS_FILE.exists():
-            VERSIONS_FILE.unlink()
+    # Повторная регистрация не должна ломать
+    assert register_version(str(config_path)) == prep_id
 
 
-def test_dataset_mapping():
+def test_dataset_mapping(tmp_path, monkeypatch):
     """Маппинг (user_id + lesion_type + preprocessing_id) → dataset_id."""
-    from kappa_dataset_mapping import (
-        get_dataset_id,
-        set_dataset_id,
-        get_lesion_types,
-        MAPPING_FILE,
-    )
+    import kappa_dataset_mapping
+    from kappa_dataset_mapping import get_dataset_id, set_dataset_id, get_lesion_types
+
+    monkeypatch.setattr(kappa_dataset_mapping, "MAPPING_FILE",
+                        tmp_path / "kappa_datasets.yaml")
 
     # smoke: не падает для пользователя без датасетов
     get_lesion_types(user_id=1)
 
-    original = MAPPING_FILE.read_text() if MAPPING_FILE.exists() else None
-    try:
-        set_dataset_id(1, "glioblastoma", "abc12345", 999)
-        assert get_dataset_id(1, "glioblastoma", "abc12345") == 999
-        assert get_dataset_id(1, "glioblastoma", "other") == 999   # :current fallback
-        assert get_dataset_id(2, "glioblastoma", "abc12345") is None  # user isolation
-        print("OK: user-scoped mapping round-trips")
-    finally:
-        # Восстанавливаем
-        if original is not None:
-            MAPPING_FILE.write_text(original)
-        elif MAPPING_FILE.exists():
-            MAPPING_FILE.unlink()
+    set_dataset_id(1, "glioblastoma", "abc12345", 999)
+    assert get_dataset_id(1, "glioblastoma", "abc12345") == 999
+    assert get_dataset_id(1, "glioblastoma", "other") == 999   # :current fallback
+    assert get_dataset_id(2, "glioblastoma", "abc12345") is None  # user isolation
 
 
-def test_real_config():
-    """Тест с реальным конфигом проекта."""
+def test_real_config(tmp_path, monkeypatch):
+    """The project's real config gets an id, and the real mapping resolves it.
+
+    The mapping half is the guard that matters: on 2026-09-18 an image built
+    before the per-user key format met a kappa_datasets.yaml written after it,
+    every lookup returned None, and the validation tab went silently empty for
+    every account. Reading the real file with the current code catches a format
+    drift like that at test time.
+    """
+    import preprocessing_version
     from preprocessing_version import compute_preprocessing_id, register_version
+    from kappa_dataset_mapping import get_dataset_id
 
     config_path = Path(__file__).parent.parent / "configs" / "preprocessing_config.yaml"
-    if not config_path.exists():
-        print(f"SKIP: config not found at {config_path}")
-        return
+    assert config_path.exists(), f"config not found at {config_path}"
+
+    monkeypatch.setattr(preprocessing_version, "VERSIONS_FILE",
+                        tmp_path / "preprocessing_versions.json")
 
     prep_id = compute_preprocessing_id(str(config_path))
-    print(f"Current preprocessing_id: {prep_id}")
+    assert register_version(str(config_path)) == prep_id
 
-    # Регистрируем
-    registered_id = register_version(str(config_path))
-    assert prep_id == registered_id
-
-    # Проверяем маппинг
-    from kappa_dataset_mapping import get_dataset_id
-    ds_id = get_dataset_id("glioblastoma", prep_id)
-    print(f"Dataset ID for glioblastoma:{prep_id} → {ds_id}")
-
-    print("OK: real config test passed")
+    # Read-only against the real mapping: the owner account must resolve.
+    assert get_dataset_id(26, "glioblastoma", prep_id) is not None
+    assert get_dataset_id(26, "multiple_sclerosis", prep_id) is not None
 
 
 if __name__ == "__main__":
-    print("=== test_compute_id_stability ===")
-    test_compute_id_stability()
-
-    print("\n=== test_compute_id_ignores_paths ===")
-    test_compute_id_ignores_paths()
-
-    print("\n=== test_compute_id_changes_on_param_change ===")
-    test_compute_id_changes_on_param_change()
-
-    print("\n=== test_register_and_retrieve_version ===")
-    test_register_and_retrieve_version()
-
-    print("\n=== test_dataset_mapping ===")
-    test_dataset_mapping()
-
-    print("\n=== test_real_config ===")
-    test_real_config()
-
-    print("\n=== Все тесты пройдены ===")
+    # The tests take pytest fixtures (tmp_path, monkeypatch), so run them
+    # through pytest rather than calling them by hand.
+    import sys
+    import pytest
+    sys.exit(pytest.main([__file__, "-v"]))

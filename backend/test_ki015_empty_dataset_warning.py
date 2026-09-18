@@ -36,7 +36,11 @@ def _make_uploader(lesion_type: str = "glioblastoma"):
 
 class TestWarnIfEmptyDatasetExists:
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        # asyncio.run owns a fresh loop. get_event_loop() borrowed whatever
+        # the previous test left behind and raised "no current event loop"
+        # once an earlier test had closed it — these passed alone and failed
+        # in the full backend run.
+        return asyncio.run(coro)
 
     def test_warning_logged_when_empty_dataset_with_same_lesion_type(self, caplog):
         uploader = _make_uploader("glioblastoma")
