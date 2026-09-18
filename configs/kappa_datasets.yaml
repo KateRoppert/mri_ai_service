@@ -1,7 +1,7 @@
 datasets:
-  26:glioblastoma:current: 249
+  26:glioblastoma:current: 337
   26:glioblastoma:3a183dc7: 249
-  26:multiple_sclerosis:current: 158
+  26:multiple_sclerosis:current: 338
   26:multiple_sclerosis:1e2b93ad: 158
 lesion_types:
 - id: glioblastoma
