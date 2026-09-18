@@ -169,19 +169,26 @@ function App() {
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
+      {/* The title is long enough to wrap on ~1366px laptops once the user
+          name sits beside it. antd's Header is a fixed 64px with a 64px line
+          height, so wrapped text spilled out of the bar; let it grow instead. */}
       <Layout.Header style={{
         background: '#1890ff',
-        padding: '0 24px',
+        padding: '8px 24px',
+        height: 'auto',
+        minHeight: 64,
+        lineHeight: 1.3,
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
+        gap: 16,
       }}>
-        <Typography.Title level={3} style={{ color: 'white', margin: 0 }}>
-          🧠 Система распознавания поражений головного мозга
+        <Typography.Title level={4} style={{ color: 'white', margin: 0 }}>
+          🧠 ИИ-система дистанционной диагностики и мониторинга социально значимых заболеваний
         </Typography.Title>
         {kappaSession && (
-          <Space>
-            <Text style={{ color: 'white' }}>
+          <Space style={{ flexShrink: 0 }}>
+            <Text style={{ color: 'white', whiteSpace: 'nowrap' }}>
               {kappaSession.first_name} {kappaSession.last_name}
             </Text>
             <Button
