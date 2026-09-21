@@ -1366,21 +1366,40 @@ async def get_run_patient_map(run_id: str, db: Session = Depends(get_db)):
     return {"run_id": run_id, "patient_map": pipeline_manager.get_patient_map(run.output_path)}
 
 
-@app.get("/api/longitudinal/{patient_id}", response_model=LongitudinalResponse)
-async def get_longitudinal(
-    patient_id: str,
-    lesion_type: str = "multiple_sclerosis",
-    db: Session = Depends(get_db)
-):
-    """
-    Лонгитюдный анализ: все сессии пациента по данному lesion_type.
+def _dataset_owner(dataset_id: int) -> Optional[int]:
+    """Which Kappa user owns a dataset, per configs/kappa_datasets.yaml.
+    None if the dataset id is not in the mapping at all."""
+    from kappa_dataset_mapping import _load_mapping
+    for key, value in (_load_mapping().get("datasets") or {}).items():
+        if int(value) == int(dataset_id):
+            return int(str(key).split(":", 1)[0])
+    return None
 
-    patient_id — original_patient_id (напр. "P000915").
-    Матчинг: bids_id в registry == patient_id в stats файле (оба "sub-P000915").
+
+def _resolve_longitudinal_records(
+    patient_id: str, lesion_type: str, run_id: Optional[str], db: Session
+) -> List[Dict[str, Any]]:
+    """Every registry record for a patient, scoped to one Kappa account when
+    `run_id` gives us one.
+
+    A BIDS subject like "sub-001" is only unique WITHIN a dataset now (see
+    docs/superpowers/specs/2026-09-21-bids-numbering-per-dataset-design.md),
+    so without a dataset to search inside first, "sub-001" could resolve to
+    the wrong person entirely. With no run_id (old links, or a caller with no
+    run context) this keeps the previous unscoped behaviour.
     """
-    from patient_registry import (
-        find_by_patient_id, find_by_bids_id, find_by_bids_subject,
-    )
+    # find_by_patient_id / find_by_bids_id / find_by_bids_subject are the
+    # module-level names imported at the top of this file (not re-imported
+    # here) — tests patch "app.find_by_patient_id" etc., which only takes
+    # effect on names resolved from this module's globals at call time.
+    from kappa_dataset_mapping import datasets_of_user
+
+    dataset_ids = None
+    if run_id:
+        run = get_pipeline_run(db, run_id)
+        if run and run.kappa_dataset_id:
+            owner = _dataset_owner(run.kappa_dataset_id)
+            dataset_ids = datasets_of_user(owner) if owner else {run.kappa_dataset_id}
 
     # The frontend passes the BIDS subject ("sub-001"). The registry stores
     # original_patient_id ("P000915") and a per-session bids_id ("sub-001_ses-002").
@@ -1388,11 +1407,44 @@ async def get_longitudinal(
     # (the last one is what actually matches "sub-001" → its ses-* records).
     all_records = find_by_patient_id(patient_id)
     if not all_records:
-        all_records = find_by_bids_id(patient_id)
+        all_records = find_by_bids_id(patient_id, dataset_ids)
     if not all_records:
-        all_records = find_by_bids_subject(patient_id)
+        all_records = find_by_bids_subject(patient_id, dataset_ids)
 
-    records = [r for r in all_records if r.get("lesion_type") == lesion_type]
+    if dataset_ids is not None and all_records:
+        # Found the real person within the given dataset(s) — now widen to
+        # every session of theirs across the whole account (this is what
+        # keeps a timeline whole when `current` moves, e.g. 158 -> 338), while
+        # still excluding any other account's records even if a DICOM
+        # PatientID happened to collide across accounts.
+        original = all_records[0].get("original_patient_id")
+        if original:
+            widened = find_by_patient_id(original)
+            all_records = [
+                r for r in widened
+                if r.get("kappa_dataset_id") in dataset_ids
+                or r.get("kappa_dataset_id") is None
+            ]
+
+    return [r for r in all_records if r.get("lesion_type") == lesion_type]
+
+
+@app.get("/api/longitudinal/{patient_id}", response_model=LongitudinalResponse)
+async def get_longitudinal(
+    patient_id: str,
+    lesion_type: str = "multiple_sclerosis",
+    run_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Лонгитюдный анализ: все сессии пациента по данному lesion_type.
+
+    patient_id — original_patient_id (напр. "P000915").
+    Матчинг: bids_id в registry == patient_id в stats файле (оба "sub-P000915").
+    run_id (опционально) — даёт датасет запуска, чтобы "sub-001" резолвился
+    внутри правильного аккаунта, а не по всей базе.
+    """
+    records = _resolve_longitudinal_records(patient_id, lesion_type, run_id, db)
 
     if not records:
         raise HTTPException(status_code=404, detail="No sessions found for this patient/lesion_type")
@@ -1460,20 +1512,16 @@ def _split_bids_id(bids_id: str) -> tuple:
 async def get_longitudinal_diff(
     patient_id: str,
     lesion_type: str = "multiple_sclerosis",
+    run_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
     Детекция новых/растущих/разрешившихся очагов между каждой парой соседних
     по времени сессий пациента (МС). Не использует ту же фильтрацию по
     pipeline_run_id, что get_longitudinal — резолвит output_path на лету.
+    run_id (опционально) — см. _resolve_longitudinal_records().
     """
-    all_records = find_by_patient_id(patient_id)
-    if not all_records:
-        all_records = find_by_bids_id(patient_id)
-    if not all_records:
-        all_records = find_by_bids_subject(patient_id)
-
-    records = [r for r in all_records if r.get("lesion_type") == lesion_type]
+    records = _resolve_longitudinal_records(patient_id, lesion_type, run_id, db)
     if not records:
         raise HTTPException(status_code=404, detail="No sessions found for this patient/lesion_type")
 

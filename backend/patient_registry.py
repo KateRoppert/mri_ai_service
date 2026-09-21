@@ -194,31 +194,59 @@ def find_by_patient_id(original_patient_id: str) -> List[Dict[str, Any]]:
         db.close()
 
 
-def find_by_bids_id(bids_id: str) -> List[Dict[str, Any]]:
-    """Найти все записи по BIDS-идентификатору пациента (sub-XXX)."""
+def find_by_bids_id(
+    bids_id: str, dataset_ids: Optional[set] = None
+) -> List[Dict[str, Any]]:
+    """Найти все записи по BIDS-идентификатору пациента (sub-XXX).
+
+    ``dataset_ids`` narrows the search to those Kappa datasets — required now
+    that sub-NNN is only unique WITHIN a dataset (see
+    docs/superpowers/specs/2026-09-21-bids-numbering-per-dataset-design.md):
+    two different people can share the same bids_id across different
+    datasets. None (the default) keeps the old unscoped behaviour, so callers
+    that only have a bare BIDS id and no run/dataset context still work.
+    A record with no kappa_dataset_id (never uploaded) is always included —
+    it exists only on the machine that produced it, so there is nothing to
+    disambiguate it from.
+    """
     db = SessionLocal()
     try:
-        records = db.query(PatientRegistry).filter(
-            PatientRegistry.bids_id == bids_id
-        ).all()
-        return [_to_dict(r) for r in records]
+        query = db.query(PatientRegistry).filter(PatientRegistry.bids_id == bids_id)
+        if dataset_ids is not None:
+            query = query.filter(
+                (PatientRegistry.kappa_dataset_id.in_(dataset_ids))
+                | (PatientRegistry.kappa_dataset_id.is_(None))
+            )
+        return [_to_dict(r) for r in query.all()]
     finally:
         db.close()
 
 
-def find_by_bids_subject(subject: str) -> List[Dict[str, Any]]:
+def find_by_bids_subject(
+    subject: str, dataset_ids: Optional[set] = None
+) -> List[Dict[str, Any]]:
     """
     Найти все записи BIDS-субъекта (все его сессии).
 
     bids_id хранится как "sub-001_ses-002" (субъект + сессия). Лонгитюд
     оперирует субъектом "sub-001", поэтому матчим по префиксу "{subject}_".
     Реестр небольшой — фильтруем на стороне Python, без LIKE-экранирования.
+
+    ``dataset_ids`` — see find_by_bids_id(): required now that "sub-001" is
+    only unique within a dataset. A record with no kappa_dataset_id is always
+    included (see find_by_bids_id()'s docstring).
     """
     db = SessionLocal()
     try:
         records = db.query(PatientRegistry).all()
         prefix = f"{subject}_"
-        return [_to_dict(r) for r in records if (r.bids_id or "").startswith(prefix)]
+        matches = [r for r in records if (r.bids_id or "").startswith(prefix)]
+        if dataset_ids is not None:
+            matches = [
+                r for r in matches
+                if r.kappa_dataset_id is None or r.kappa_dataset_id in dataset_ids
+            ]
+        return [_to_dict(r) for r in matches]
     finally:
         db.close()
 
