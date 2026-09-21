@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Table, Spin, Alert, Tag, Space, Tooltip } from 'antd';
 import { getLongitudinalReport, getLongitudinalDiff } from '../services/api';
 
-const LongitudinalTimeline = ({ patientId, lesionType }) => {
+const LongitudinalTimeline = ({ patientId, lesionType, runId = null }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -13,8 +13,8 @@ const LongitudinalTimeline = ({ patientId, lesionType }) => {
     if (!patientId) return;
     setLoading(true);
     Promise.all([
-      getLongitudinalReport(patientId, lesionType),
-      getLongitudinalDiff(patientId, lesionType).catch(() => ({ pairs: [] })),
+      getLongitudinalReport(patientId, lesionType, runId),
+      getLongitudinalDiff(patientId, lesionType, runId).catch(() => ({ pairs: [] })),
     ])
       .then(([reportResp, diffResp]) => {
         setData(reportResp.points);
@@ -25,7 +25,7 @@ const LongitudinalTimeline = ({ patientId, lesionType }) => {
         else setError('Не удалось загрузить динамику');
       })
       .finally(() => setLoading(false));
-  }, [patientId, lesionType]);
+  }, [patientId, lesionType, runId]);
 
   if (loading) return <Spin size="small" />;
   if (error) return <Alert message={error} type="warning" showIcon />;

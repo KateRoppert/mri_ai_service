@@ -686,7 +686,7 @@ const ClinicalReportContent = ({ runId, autoLoad = false, lesionType = 'glioblas
             <Divider orientation="left" style={{ fontSize: 14 }}>
               <Space>📈 Динамика между сессиями</Space>
             </Divider>
-            <LongitudinalTimeline patientId={patientId} lesionType="multiple_sclerosis" />
+            <LongitudinalTimeline patientId={patientId} lesionType="multiple_sclerosis" runId={runId} />
           </div>
         ))}
       </>
