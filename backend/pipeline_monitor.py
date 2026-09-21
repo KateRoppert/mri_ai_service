@@ -133,6 +133,20 @@ class PipelineMonitor:
                 logger.error("Preprocessing config not found: %s", config_path)
                 return None
 
+            # The dataset was fixed at run start (backend/numbering.py) and
+            # recorded on the run — reuse it rather than resolving again, so
+            # upload cannot land in a different dataset than the one Stage 01
+            # numbered subjects for. None for runs started before this
+            # existed; KappaUploader falls back to resolving in that case.
+            from database import SessionLocal as _DBSessionLocal
+            from database import get_pipeline_run as _get_pipeline_run
+            db = _DBSessionLocal()
+            try:
+                run = _get_pipeline_run(db, run_id)
+                dataset_id = run.kappa_dataset_id if run else None
+            finally:
+                db.close()
+
             uploader = KappaUploader(
                 run_id=run_id,
                 output_path=output_path,
@@ -141,8 +155,10 @@ class PipelineMonitor:
                 user_type_id=session["user_type_id"],
                 lesion_type=lesion_type,
                 preprocessing_config_path=config_path,
+                dataset_id=dataset_id,
             )
-            logger.info("KappaUploader created for run %s", run_id)
+            logger.info("KappaUploader created for run %s (dataset_id=%s)",
+                        run_id, dataset_id)
             return uploader
 
         except Exception as e:
