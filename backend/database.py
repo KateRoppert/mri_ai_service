@@ -58,6 +58,12 @@ class PipelineRun(Base):
     # Тип поражения (glioblastoma / multiple_sclerosis)
     lesion_type = Column(String, nullable=True, default='glioblastoma')
 
+    # The Kappa dataset this run numbers its subjects in and uploads to. Fixed
+    # once at start (backend/numbering.py) so numbering and upload cannot
+    # target different datasets. NULL for CLI runs and runs with no Kappa
+    # session, and for runs started before this column existed.
+    kappa_dataset_id = Column(Integer, nullable=True)
+
     # Остановка оператором: на каком этапе прервали и кто нажал кнопку.
     stopped_at_stage = Column(Integer, nullable=True)
     stopped_by = Column(String, nullable=True)
@@ -103,6 +109,7 @@ def create_pipeline_run(
     output_path: str,
     lesion_type: str = 'glioblastoma',
     parent_run_id: Optional[str] = None,
+    kappa_dataset_id: Optional[int] = None,
 ) -> PipelineRun:
     """Создать новый запуск pipeline"""
     run_id = str(uuid.uuid4())
@@ -115,6 +122,7 @@ def create_pipeline_run(
         created_at=datetime.now(timezone.utc),
         lesion_type=lesion_type,
         parent_run_id=parent_run_id,
+        kappa_dataset_id=kappa_dataset_id,
     )
     
     db.add(run)
@@ -290,6 +298,7 @@ def init_db():
     _migrate_add_lesion_type()
     _migrate_add_parent_run_id()
     _migrate_add_stop_columns()
+    _migrate_add_kappa_dataset_id()
 
 
 def _migrate_add_lesion_type():
@@ -333,6 +342,19 @@ def _migrate_add_stop_columns():
                 "ALTER TABLE pipeline_runs ADD COLUMN stopped_by VARCHAR"
             ))
         conn.commit()
+
+
+def _migrate_add_kappa_dataset_id():
+    """Add kappa_dataset_id to pipeline_runs if it doesn't exist yet."""
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            __import__('sqlalchemy').text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'kappa_dataset_id' not in cols:
+            conn.execute(__import__('sqlalchemy').text(
+                "ALTER TABLE pipeline_runs ADD COLUMN kappa_dataset_id INTEGER"
+            ))
+            conn.commit()
 
 
 def reset_db():
