@@ -13,11 +13,12 @@ from app import app
 client = TestClient(app)
 
 
-def _fake_original_run(run_id="orig-run", input_path="/in", output_path="/out", lesion_type="glioblastoma", status="completed"):
+def _fake_original_run(run_id="orig-run", input_path="/in", output_path="/out", lesion_type="glioblastoma", status="completed", kappa_dataset_id=None):
     return SimpleNamespace(
         run_id=run_id,
         input_path=input_path,
         output_path=output_path,
+        kappa_dataset_id=kappa_dataset_id,
         lesion_type=lesion_type,
         status=status,
     )

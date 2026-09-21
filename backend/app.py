@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import uuid
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
@@ -88,6 +89,7 @@ from database import (
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
 from pipeline_manager import PipelineManager
+import numbering
 from fastapi.middleware.cors import CORSMiddleware
 
 # Настройка логирования
@@ -242,6 +244,7 @@ def run_pipeline_background(
     lesion_type: str = "glioblastoma",
     snapshot_runtime_config: Optional[Path] = None,
     preprocessing_snapshot: Optional[Path] = None,
+    numbering_scope: Optional[str] = None,
 ):
     """
     Фоновая задача для запуска pipeline
@@ -271,6 +274,7 @@ def run_pipeline_background(
         lesion_type=lesion_type,
         snapshot_runtime_config=snapshot_runtime_config,
         preprocessing_snapshot=preprocessing_snapshot,
+        numbering_scope=numbering_scope,
     )
     
     if not process:
@@ -449,13 +453,26 @@ async def start_pipeline(
             status_code=400,
             detail="Входная директория не существует или пуста"
         )
-    
+
+    # BIDS numbering scope: the Kappa dataset this run numbers subjects in
+    # and uploads to. Resolved (or created) here, before the run row exists,
+    # so a permissions error surfaces before GPU time is spent (KI-057) and
+    # so numbering and upload cannot target different datasets. A run must
+    # start even when Kappa is unreachable — see numbering.scope_for_run.
+    lesion_type = request.lesion_type or "glioblastoma"
+    run_id = str(uuid.uuid4())
+    numbering_scope, kappa_dataset_id, scope_warning = await numbering.scope_for_run(
+        run_id, lesion_type, request.kappa_session_id
+    )
+
     # Создаём запись в БД
     run = create_pipeline_run(
         db,
+        run_id=run_id,
         input_path=request.input_path,
         output_path=output_path,
-        lesion_type=(request.lesion_type or "glioblastoma"),
+        lesion_type=lesion_type,
+        kappa_dataset_id=kappa_dataset_id,
     )
     
     # Запускаем pipeline в фоновой задаче
@@ -465,7 +482,8 @@ async def start_pipeline(
         run.input_path,
         run.output_path,
         db,
-        lesion_type=(request.lesion_type or "glioblastoma"),
+        lesion_type=lesion_type,
+        numbering_scope=numbering_scope,
     )
 
     # Запускаем мониторинг (из асинхронного контекста)
@@ -478,7 +496,7 @@ async def start_pipeline(
     return PipelineStartResponse(
         run_id=run.run_id,
         status=PipelineStatus.PENDING,
-        message="Pipeline запущен и будет выполнен в фоновом режиме",
+        message=(scope_warning or "Pipeline запущен и будет выполнен в фоновом режиме"),
         created_at=run.created_at,
         lesion_type=run.lesion_type,
     )
@@ -666,12 +684,21 @@ async def requeue_pipeline_run(
         snapshot_runtime_config = retained
         preprocessing_snapshot = pre
 
+    # No Kappa call here — resume/requeue inherits the parent run's already-
+    # fixed dataset rather than resolving one, matching how the rest of this
+    # path (no kappa_session_id below) already avoids Kappa on resume.
+    resumed_lesion_type = original_run.lesion_type or "glioblastoma"
+    resumed_numbering_scope = numbering.scope_from_dataset_id(
+        original_run.kappa_dataset_id, resumed_lesion_type
+    )
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
         output_path=original_run.output_path,
-        lesion_type=original_run.lesion_type or "glioblastoma",
+        lesion_type=resumed_lesion_type,
         parent_run_id=run_id,
+        kappa_dataset_id=original_run.kappa_dataset_id,
     )
 
     background_tasks.add_task(
@@ -683,6 +710,7 @@ async def requeue_pipeline_run(
         lesion_type=run.lesion_type,
         snapshot_runtime_config=snapshot_runtime_config,
         preprocessing_snapshot=preprocessing_snapshot,
+        numbering_scope=resumed_numbering_scope,
     )
 
     asyncio.create_task(pipeline_monitor.start_monitoring(
