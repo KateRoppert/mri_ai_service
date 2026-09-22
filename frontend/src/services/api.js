@@ -326,10 +326,15 @@ export const mergeSessions = async (runId, patientId, primarySessionId, donorSes
 };
 
 /**
- * Перезапустить pipeline на тех же путях (skip_existing обработает только новое)
+ * Перезапустить pipeline на тех же путях (skip_existing обработает только новое).
+ *
+ * Сессия Kappa обязательна для выгрузки: без неё бэкенд не создаёт загрузчик,
+ * и прогон завершается, не попав в Kappa.
  */
 export const requeuePipelineRun = async (runId) => {
-  const response = await apiClient.post(`/pipeline-runs/${runId}/requeue`);
+  const response = await apiClient.post(`/pipeline-runs/${runId}/requeue`, {
+    kappa_session_id: localStorage.getItem('kappa_session_id'),
+  });
   return response.data;
 };
 
@@ -341,6 +346,7 @@ export const requeuePipelineRun = async (runId) => {
 export const resumePipelineRun = async (runId, useSnapshot = false) => {
   const response = await apiClient.post(`/pipeline-runs/${runId}/requeue`, {
     use_snapshot: useSnapshot,
+    kappa_session_id: localStorage.getItem('kappa_session_id'),
   });
   return response.data;
 };
