@@ -713,8 +713,11 @@ async def requeue_pipeline_run(
         numbering_scope=resumed_numbering_scope,
     )
 
+    # Pass the caller's Kappa session through: without it the monitor never
+    # builds an uploader, so a requeued/resumed run completes and silently
+    # never reaches Kappa (that was the behaviour until 2026-09-22).
     asyncio.create_task(pipeline_monitor.start_monitoring(
-        run.run_id, run.output_path, None, run.lesion_type
+        run.run_id, run.output_path, body.kappa_session_id, run.lesion_type
     ))
 
     logger.info(f"Requeue: новый run_id {run.run_id} на тех же путях, что и {run_id}")

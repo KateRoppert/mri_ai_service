@@ -144,3 +144,44 @@ def test_requeue_passes_parent_run_id_to_create_pipeline_run():
     assert response.status_code == 200
     _, kwargs = mock_create.call_args
     assert kwargs["parent_run_id"] == "orig-run"
+
+
+def test_requeue_passes_kappa_session_to_monitoring():
+    """Without a Kappa session the monitor never builds an uploader
+    (pipeline_monitor: `if kappa_session_id and lesion_type`), so a requeued
+    run completes and silently never reaches Kappa. Real case: KA03 was
+    completed manually after being incomplete, processed fine, and never
+    uploaded.
+    """
+    original = _fake_original_run(status="completed")
+    new_run = _fake_new_run()
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
+        response = client.post("/api/pipeline-runs/orig-run/requeue",
+                               json={"kappa_session_id": "session-42"})
+
+    assert response.status_code == 200
+    args = mock_monitor.call_args[0]
+    assert args[2] == "session-42", (
+        f"kappa_session_id must reach start_monitoring, got {args[2]!r}")
+
+
+def test_requeue_without_a_session_still_works():
+    """CLI-ish/legacy callers that send no session must keep working — the
+    run just has nothing to upload with, as before."""
+    original = _fake_original_run(status="completed")
+    new_run = _fake_new_run()
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 200
+    assert mock_monitor.call_args[0][2] is None
