@@ -94,11 +94,15 @@ export const getPatientMap = async (runId) => {
 };
 
 /**
- * Лонгитюдная динамика пациента по типу поражения
+ * Лонгитюдная динамика пациента по типу поражения.
+ *
+ * runId (опционально) — даёт бэкенду датасет запуска, чтобы "sub-001"
+ * резолвился внутри правильного аккаунта, а не по всей базе (см.
+ * docs/superpowers/specs/2026-09-21-bids-numbering-per-dataset-design.md).
  */
-export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sclerosis') => {
+export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sclerosis', runId = null) => {
   const response = await apiClient.get(`/longitudinal/${patientId}`, {
-    params: { lesion_type: lesionType },
+    params: { lesion_type: lesionType, ...(runId ? { run_id: runId } : {}) },
   });
   return response.data;
 };
@@ -106,9 +110,9 @@ export const getLongitudinalReport = async (patientId, lesionType = 'multiple_sc
 /**
  * Детекция новых/растущих/разрешившихся очагов между сессиями (МС)
  */
-export const getLongitudinalDiff = async (patientId, lesionType = 'multiple_sclerosis') => {
+export const getLongitudinalDiff = async (patientId, lesionType = 'multiple_sclerosis', runId = null) => {
   const response = await apiClient.get(`/longitudinal/${patientId}/diff`, {
-    params: { lesion_type: lesionType },
+    params: { lesion_type: lesionType, ...(runId ? { run_id: runId } : {}) },
   });
   return response.data;
 };

@@ -90,6 +90,7 @@ class PipelineManager:
         input_path: str,
         output_path: str,
         lesion_type: str = "glioblastoma",
+        numbering_scope: Optional[str] = None,
     ) -> Path:
         """
         Создаёт runtime конфигурацию для запуска pipeline
@@ -98,6 +99,10 @@ class PipelineManager:
             run_id: ID запуска
             input_path: Путь к входным данным
             output_path: Путь для сохранения результатов
+            numbering_scope: BIDS numbering space Stage 01 allocates within
+                (backend/numbering.py resolves it at run start); None for a
+                run with no Kappa session, which falls back to lesion_type-
+                scoped numbering
             
         Returns:
             Путь к созданному конфиг-файлу
@@ -119,6 +124,11 @@ class PipelineManager:
         # Пробрасываем lesion_type — для stages 06/07/08 (диспетчеризация сервиса +
         # подпапка выхода). Дефолт — glioblastoma для обратной совместимости.
         config['general']['lesion_type'] = lesion_type
+
+        # Numbering space for Stage 01 (utils.bids_allocator) — the Kappa
+        # dataset this run uploads to, fixed once here so numbering and
+        # upload cannot target different datasets.
+        config['general']['numbering_scope'] = numbering_scope
         
         # ВАЖНО: Преобразуем относительные пути к скриптам в абсолютные
         # Иначе они будут искаться относительно runtime_configs директории
@@ -160,6 +170,7 @@ class PipelineManager:
         snapshot_config_path: Path,
         lesion_type: str = "glioblastoma",
         preprocessing_snapshot: Optional[Path] = None,
+        numbering_scope: Optional[str] = None,
     ) -> Path:
         """
         Build a new run's runtime YAML from a stopped run's retained config.
@@ -185,6 +196,10 @@ class PipelineManager:
         config["general"]["root_input_dir"] = input_path
         config["general"]["root_output_dir"] = output_path
         config["general"]["lesion_type"] = lesion_type
+        # Overwritten even if the snapshot already had one — resume inherits
+        # the PARENT run's dataset (backend/numbering.scope_from_dataset_id),
+        # not whatever this stopped run itself last numbered into.
+        config["general"]["numbering_scope"] = numbering_scope
 
         for stage_name, stage_config in config.get("stages", {}).items():
             if not isinstance(stage_config, dict):
@@ -317,6 +332,7 @@ class PipelineManager:
         lesion_type: str = "glioblastoma",
         snapshot_runtime_config: Optional[Path] = None,
         preprocessing_snapshot: Optional[Path] = None,
+        numbering_scope: Optional[str] = None,
     ) -> Optional[subprocess.Popen]:
         """
         Запускает pipeline как subprocess
@@ -370,11 +386,13 @@ class PipelineManager:
                     snapshot_config_path=snap,
                     lesion_type=lesion_type,
                     preprocessing_snapshot=preprocessing_snapshot,
+                    numbering_scope=numbering_scope,
                 )
             else:
                 # Создаём runtime конфиг from the live template
                 config_path = self.create_runtime_config(
-                    run_id, input_path, output_path, lesion_type=lesion_type
+                    run_id, input_path, output_path, lesion_type=lesion_type,
+                    numbering_scope=numbering_scope,
                 )
             
             # Формируем команду запуска

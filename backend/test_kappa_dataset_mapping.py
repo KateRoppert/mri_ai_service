@@ -42,3 +42,16 @@ def test_get_lesion_types_attaches_per_user_dataset_id(mapping):
             assert lt["dataset_id"] is None
     # a fresh user sees no datasets yet
     assert all(lt["dataset_id"] is None for lt in mapping.get_lesion_types(52))
+
+
+def test_datasets_of_user(mapping):
+    """Every dataset id mapped to a user, across lesion types and
+    preprocessing keys — used to join one person's sessions across their
+    datasets without reaching into anyone else's."""
+    mapping.set_dataset_id(26, "glioblastoma", "3a183dc7", 249)
+    mapping.set_dataset_id(26, "multiple_sclerosis", "1e2b93ad", 158)
+    mapping.set_dataset_id(52, "glioblastoma", "1099b9cd", 349)
+
+    assert mapping.datasets_of_user(26) == {249, 158}
+    assert mapping.datasets_of_user(52) == {349}
+    assert mapping.datasets_of_user(99) == set()

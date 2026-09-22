@@ -24,6 +24,7 @@ def _stopped_run(run_id="run-1"):
         lesion_type="glioblastoma",
         config_path="/configs/config_run-1.yaml",
         current_stage=5,
+        kappa_dataset_id=None,
     )
 
 

@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from kappa_client import (
-    create_dataset,
     get_dataset_entities,
     list_user_datasets,
     update_entity_status,
     upload_entity,
 )
-from kappa_dataset_mapping import get_dataset_id, set_dataset_id
+from kappa_dataset_mapping import get_dataset_id
 from preprocessing_version import compute_preprocessing_id
 
 logger = logging.getLogger(__name__)
@@ -40,6 +39,7 @@ class KappaUploader:
         user_type_id: int,
         lesion_type: str,
         preprocessing_config_path: str,
+        dataset_id: Optional[int] = None,
     ):
         self.run_id = run_id
         self.output_path = Path(output_path)
@@ -48,6 +48,9 @@ class KappaUploader:
         self.user_type_id = user_type_id
         self.lesion_type = lesion_type
         self.preprocessing_config_path = preprocessing_config_path
+        # Fixed by backend/numbering.py at run start, when the run has a Kappa
+        # session. None for CLI runs, and for runs started before this existed.
+        self.dataset_id = dataset_id
 
         # Вычисляем preprocessing_id
         self.preprocessing_id = compute_preprocessing_id(preprocessing_config_path)
@@ -66,6 +69,11 @@ class KappaUploader:
         if dataset_id is None:
             return {"error": "Failed to resolve dataset_id"}
 
+        # Numbers issued while Kappa was unreachable (pending:<run_id>) belong
+        # to this dataset now that it exists — move them before anything else
+        # touches the dataset, so a name-clash check below sees the true state.
+        self._bind_pending_scope(dataset_id)
+
         # 2. Находим все сессии
         sessions = self._discover_sessions()
         if not sessions:
@@ -74,12 +82,34 @@ class KappaUploader:
 
         # 3. Проверяем дубликаты
         existing_hashes = await self._get_existing_study_hashes(dataset_id)
+        # Same sub-NNN, different study: two machines numbered into this
+        # dataset independently while both were offline. Cannot renumber —
+        # the id is already in the file names — so refuse loudly instead of
+        # silently pairing a number with the wrong patient's files.
+        existing_names = await self._get_existing_entity_names(dataset_id)
 
         # 4. Загружаем каждую сессию
         results = []
         for session_key, session_data in sessions.items():
             # Вычисляем study_hash для дедупликации
             study_hash = self._compute_study_hash(session_data)
+
+            if session_key in existing_names and study_hash not in existing_hashes:
+                logger.warning(
+                    "Name clash in dataset %d: %s already exists with a "
+                    "different study — numbers were issued twice for this "
+                    "dataset", dataset_id, session_key,
+                )
+                results.append({
+                    "session": session_key,
+                    "success": False,
+                    "error": "name_clash",
+                    "message": (
+                        f"В датасете уже есть {session_key} с другими данными "
+                        f"— номер выдан дважды, загрузка пропущена"
+                    ),
+                })
+                continue
 
             if study_hash and study_hash in existing_hashes:
                 logger.warning(
@@ -130,51 +160,32 @@ class KappaUploader:
         }
 
     async def _resolve_dataset_id(self) -> Optional[int]:
-        """Получить dataset_id из маппинга или создать новый."""
-        dataset_id = get_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id)
+        """Dataset this run uploads to.
 
-        if dataset_id is not None:
-            logger.info(
-                "Using existing dataset: lesion=%s, prep=%s, id=%d",
-                self.lesion_type, self.preprocessing_id, dataset_id,
-            )
-            return dataset_id
+        Prefers the one fixed at run start (backend/numbering.py) — resolving
+        again here could pick a different dataset if `current` moved in
+        configs/kappa_datasets.yaml while the run was in flight, splitting
+        numbering and upload across two datasets. Falls back to resolving now
+        for runs started before dataset_id existed, and for CLI/legacy paths.
+        """
+        if self.dataset_id is not None:
+            return self.dataset_id
 
         # Warn if Kappa already has an empty dataset for this lesion_type —
         # that usually means an operator created one manually and forgot to
         # register it in kappa_datasets.yaml (KI-015 operational footgun).
-        await self._warn_if_empty_dataset_exists()
+        # Only worth checking when we are about to create one ourselves.
+        if get_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id) is None:
+            await self._warn_if_empty_dataset_exists()
 
-        # Создаём новый датасет в Каппе
-        logger.info(
-            "Creating new dataset: lesion=%s, prep=%s",
-            self.lesion_type, self.preprocessing_id,
-        )
-        short_id = self.preprocessing_id[:8]
-        dataset_name = f"{self.lesion_type}_{short_id}"
-
-        new_id = await create_dataset(
+        from kappa_dataset_resolver import resolve_or_create
+        return await resolve_or_create(
             token=self.token,
             user_id=self.user_id,
             user_type_id=self.user_type_id,
-            dataset_name=dataset_name,
-            dataset_short_info=(
-                f"Lesion: {self.lesion_type}, "
-                f"Preprocessing: {self.preprocessing_id}"
-            ),
-            dataset_type=1,  # Image dataset
-            # Kappa requires datasetTags to include at least one predefined ML
-            # tag. "Image Segmentation" is the applicable one (note: "Computer
-            # Vision" is the ML *task type*, a separate field, not a tag). The
-            # rest are descriptive free-form tags.
-            dataset_tags=f"Image Segmentation,mri,{self.lesion_type}",
+            lesion_type=self.lesion_type,
+            preprocessing_id=self.preprocessing_id,
         )
-
-        if new_id is not None:
-            set_dataset_id(self.user_id, self.lesion_type, self.preprocessing_id, new_id)
-            logger.info("New dataset created: id=%d", new_id)
-
-        return new_id
 
     async def _warn_if_empty_dataset_exists(self) -> None:
         """
@@ -379,6 +390,39 @@ class KappaUploader:
                         continue
 
         return None
+
+    def _bind_pending_scope(self, dataset_id: int) -> None:
+        """Move numbers issued under pending:<run_id> onto the real dataset.
+
+        A pending scope exists only when Kappa was unreachable (or the
+        mapping had nothing) at run start (backend/numbering.py); this binds
+        those numbers to whichever dataset upload_results() resolves, which
+        for a pending scope is always a dataset CREATED for this run — never
+        merged into one that already holds numbers, which could collide with
+        them. A no-op when nothing was pending (the common case: the scope
+        was already a real dataset at run start).
+        """
+        from utils.bids_allocator import dataset_scope, pending_scope, rebind_scope
+        moved = rebind_scope(pending_scope(self.run_id), dataset_scope(dataset_id),
+                             getattr(self, "_allocation_db", None))
+        if moved:
+            logger.info("Bound %d pending allocations of run %s to dataset %d",
+                        moved, self.run_id, dataset_id)
+
+    async def _get_existing_entity_names(self, dataset_id: int) -> set:
+        """Entity names already in the dataset (e.g. "sub-001_ses-001").
+
+        Used for the name-clash check: two machines can each number into this
+        dataset while both are offline, and would otherwise silently upload
+        two different patients under the same sub-NNN.
+        """
+        from kappa_client import get_dataset_entities
+
+        entities = await get_dataset_entities(
+            token=self.token, user_id=self.user_id,
+            user_type_id=self.user_type_id, dataset_id=dataset_id,
+        )
+        return {e.get("dsEntityName") for e in (entities or []) if e.get("dsEntityName")}
 
     async def _get_existing_study_hashes(self, dataset_id: int) -> set:
         """Получить множество study_hash уже загруженных сущностей."""

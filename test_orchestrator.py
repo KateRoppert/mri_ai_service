@@ -303,3 +303,32 @@ def test_build_command_boolean_args():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+def test_numbering_scope_is_passed_to_stage_01():
+    config = create_test_config()
+    config["general"]["numbering_scope"] = "ds:337"
+
+    cmd = build_command("stage_01_reorganize", config, Path("/project"))
+
+    assert "--numbering-scope" in cmd
+    assert "ds:337" in cmd
+
+
+def test_numbering_scope_is_not_passed_to_other_stages():
+    """Only Stage 01 issues subject ids; the flag would be an unknown
+    argument to any other stage and would abort it."""
+    config = create_test_config()
+    config["general"]["numbering_scope"] = "ds:337"
+
+    cmd = build_command("stage_02_metadata", config, Path("/project"))
+
+    assert "--numbering-scope" not in cmd
+
+
+def test_stage_01_without_a_scope_is_unchanged():
+    """CLI runs have no scope; the command must stay exactly as it is today."""
+    config = create_test_config()
+
+    cmd = build_command("stage_01_reorganize", config, Path("/project"))
+
+    assert "--numbering-scope" not in cmd

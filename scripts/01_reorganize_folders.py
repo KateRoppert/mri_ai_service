@@ -537,19 +537,31 @@ class ModalityDetector:
 class IDMapper:
     """Maps original patient IDs to stable BIDS subject IDs.
 
-    When a ``lesion_type`` is given, allocation is delegated to the persistent,
-    concurrency-safe SQLite allocator (utils.bids_allocator), so the same patient
-    keeps the same sub-NNN across runs and new patients continue the numbering
-    (scoped per lesion_type = per Kappa dataset). Without a lesion_type it falls
-    back to the legacy in-memory counter — used only where no DB is available
-    (e.g. isolated unit tests).
+    ``scope`` is the numbering space: a Kappa dataset ("ds:337"), or a value
+    built with utils.bids_allocator.local_scope()/pending_scope(). When given,
+    allocation is delegated to the persistent, concurrency-safe SQLite
+    allocator (utils.bids_allocator), so the same patient keeps the same
+    sub-NNN across runs and new patients continue the numbering within that
+    scope. Numbering used to be scoped by lesion_type alone, on the assumption
+    that lesion_type maps 1:1 to a Kappa dataset — the per-user Kappa change
+    ended that (see docs/superpowers/specs/2026-09-21-bids-numbering-per-dataset-design.md).
+
+    ``lesion_type`` without ``scope`` is the CLI path (no Kappa session to
+    resolve a dataset from): it is turned into utils.bids_allocator.local_scope()
+    so it keeps its own numbering space, separate from any dataset's.
+
+    Neither given falls back to a legacy in-memory counter — no persistence,
+    no cross-run stability — used only where no DB is available (e.g. isolated
+    unit tests).
     """
 
-    def __init__(self, lesion_type: Optional[str] = None, db_path=None):
+    def __init__(self, lesion_type: Optional[str] = None, db_path=None,
+                 scope: Optional[str] = None):
         self._patient_counter = 0
         self._patient_map = {}  # original_id -> new_id (per-run cache)
         self._lesion_type = lesion_type
         self._db_path = db_path
+        self._scope = scope
 
     def get_patient_id(self, original_id: str) -> str:
         """
@@ -564,10 +576,15 @@ class IDMapper:
         if original_id in self._patient_map:
             return self._patient_map[original_id]
 
-        if self._lesion_type:
+        scope = self._scope
+        if scope is None and self._lesion_type:
+            from utils.bids_allocator import local_scope
+            scope = local_scope(self._lesion_type)
+
+        if scope:
             # Authoritative, cross-run, collision-proof allocation.
             from utils.bids_allocator import get_or_allocate
-            new_id = get_or_allocate(self._lesion_type, original_id, self._db_path)
+            new_id = get_or_allocate(scope, original_id, self._db_path)
         else:
             # Legacy in-memory fallback (no persistence, no cross-run stability).
             self._patient_counter += 1
@@ -2244,6 +2261,16 @@ def main():
         help='Lesion type — affects which modalities are considered required '
              '(glio: T1+T1c+T2+FLAIR; MS: T1+T2+FLAIR).'
     )
+    parser.add_argument(
+        '--numbering-scope',
+        type=str,
+        default=None,
+        help='BIDS numbering space (utils.bids_allocator): "ds:<id>" for a '
+             'Kappa dataset, "local:<lesion_type>"/"pending:<run_id>" '
+             'otherwise. Set by the web backend (backend/numbering.py) at '
+             'run start. Omitted for a bare CLI run, which falls back to '
+             'lesion_type-scoped numbering.'
+    )
 
     args = parser.parse_args()
 
@@ -2314,11 +2341,12 @@ def main():
     # = per Kappa dataset). The legacy per-run json restore is bypassed in this
     # mode — restoring it would re-seed the in-memory cache and shadow the DB.
     if args.lesion_type:
-        id_mapper = IDMapper(lesion_type=args.lesion_type)
-        from utils.bids_allocator import get_allocations
-        already = get_allocations(args.lesion_type)
+        id_mapper = IDMapper(lesion_type=args.lesion_type, scope=args.numbering_scope)
+        from utils.bids_allocator import get_allocations, local_scope
+        scope = args.numbering_scope or local_scope(args.lesion_type)
+        already = get_allocations(scope)
         logger.info(
-            f"BIDS allocator (lesion_type={args.lesion_type}): "
+            f"BIDS allocator (scope={scope}): "
             f"{len(already)} patient(s) already allocated; new patients continue "
             f"from the next free number")
     else:

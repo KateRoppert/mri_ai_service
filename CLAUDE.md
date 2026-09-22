@@ -99,3 +99,4 @@ UI в `backend/config.py` нумерует этапы 1–7, пропуская 
 - Не коммитить: `data/` (клинические DICOM), веса (`*.pth`, `nnUNet*_data/`, `nnUNet_results/`), `*.db`, `.env`, `demo_workspace/`, `venv/`.
 - Новую inference-модель: манифест + наследник `ServiceBase` + запись в `configs/services.yaml` + `lesion_types.yaml`. Контракт — JSON с путями, не multipart.
 - Параллелизм этапов разный; простой GPU vs перегруз CPU — смотреть `scripts/performance_monitor.py` и `KNOWN_ISSUES.md`.
+- Номера пациентов (`sub-XXX`) выдаются в рамках датасета Kappa (`utils/bids_allocator.py`), а не глобально по типу поражения. Один и тот же человек в двух датасетах — это два разных номера; искать его нужно по датасету запуска (`pipeline_runs.kappa_dataset_id`, `backend/numbering.py`), а склеивать сессии — по `original_patient_id`. Источник правды о занятых номерах — сам датасет в Kappa (`kappa_dataset_resolver.dataset_floor`), локальная SQLite-таблица лишь кэш с "полом".

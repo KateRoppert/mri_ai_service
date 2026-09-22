@@ -3,7 +3,7 @@
 """
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 import yaml
 
@@ -41,6 +41,20 @@ def get_lesion_types(user_id: Optional[int]) -> List[Dict[str, Any]]:
         item["dataset_id"] = get_dataset_id(user_id, lt["id"], "current")
         enriched.append(item)
     return enriched
+
+
+def datasets_of_user(user_id: int) -> Set[int]:
+    """Every dataset id mapped to this Kappa user, across lesion types and
+    preprocessing keys.
+
+    Keys are "{user_id}:{lesion_type}:{preprocessing_id}", so the prefix is
+    the owner. Used to join one person's sessions across their own datasets
+    (e.g. after `current` moves to a freshly created one) without reaching
+    into another account's data.
+    """
+    datasets = _load_mapping().get("datasets", {})
+    prefix = f"{user_id}:"
+    return {int(v) for k, v in datasets.items() if str(k).startswith(prefix)}
 
 
 def get_dataset_id(

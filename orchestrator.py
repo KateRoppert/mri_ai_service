@@ -70,6 +70,13 @@ def build_command(
     ):
         lesion_type = config['general'].get('lesion_type', 'glioblastoma')
         cmd.extend(['--lesion-type', lesion_type])
+
+    # Numbering scope — only Stage 01 issues subject ids, so only it needs to
+    # know which Kappa dataset (or local space) to number within.
+    if stage_name == 'stage_01_reorganize':
+        numbering_scope = config['general'].get('numbering_scope')
+        if numbering_scope:
+            cmd.extend(['--numbering-scope', numbering_scope])
     
     # Опциональные аргументы - БЕЗ replace()
     for arg_name, arg_value in stage_config['args'].items():
