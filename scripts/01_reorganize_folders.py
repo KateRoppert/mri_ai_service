@@ -611,7 +611,7 @@ class DatasetScanner:
         # dropbox_33/117-152 batch's KA117/{t1ce,t2w,t1w,flair}) are fragments
         # of that ONE patient, not separate patients — verify with the DICOM
         # patient identity tag before trusting folder depth.
-        if self._looks_like_single_patient(patient_dirs):
+        if self._looks_like_single_patient(input_dir, patient_dirs):
             self.logger.info(
                 f"All {len(patient_dirs)} subdirectories of '{input_dir.name}' share the same "
                 f"DICOM patient identity — treating '{input_dir.name}' itself as one patient, "
@@ -622,20 +622,30 @@ class DatasetScanner:
         self.logger.info(f"Found {len(patient_dirs)} patients")
         return patient_dirs
 
-    def _looks_like_single_patient(self, candidate_dirs: List[Path]) -> bool:
+    def _looks_like_single_patient(
+        self, input_dir: Path, candidate_dirs: List[Path]
+    ) -> bool:
         """
         True if candidate_dirs are better explained as fragments (sessions or
         modality folders) of ONE real patient than as separate patients —
         i.e. every one of them contains DICOM files reporting the same
         patient identity (PatientID, falling back to PatientName).
 
-        Requires at least 2 candidates: with only one, there's nothing to
-        compare, and the existing single-child behavior (treat it as the
-        patient) is already correct. Fails open (returns False, "these are
-        separate patients", the pre-existing behavior) whenever identity
-        can't be read for one of the candidates — never guesses.
+        With 2+ candidates a shared identity settles it. With exactly ONE
+        candidate the structure alone is ambiguous — input_dir could be a
+        patient folder holding its single study/session folder, or a cohort
+        folder holding its single patient — so the identity decides: it names
+        the patient, so whichever folder name it matches is the patient's own
+        folder. Real case this covers: <patient>/<study-description>/<series>,
+        where the study folder is named from StudyDescription and is
+        therefore IDENTICAL across patients ("Nr Gruppe Mrnc3"), which made
+        every such patient collapse onto one original_id.
+
+        Fails open (returns False, "these are separate patients", the
+        pre-existing behavior) whenever identity can't be read, or when it
+        matches neither folder name — never guesses.
         """
-        if len(candidate_dirs) < 2:
+        if not candidate_dirs:
             return False
 
         identities = set()
@@ -645,7 +655,23 @@ class DatasetScanner:
                 return False
             identities.add(identity)
 
-        return len(identities) == 1
+        if len(identities) > 1:
+            return False
+
+        if len(candidate_dirs) >= 2:
+            return True
+
+        identity = identities.pop()
+        if self._names_match(identity, input_dir.name):
+            return True          # input_dir is the patient; the child is its study
+        return False             # child is the patient, or naming tells us nothing
+
+    @staticmethod
+    def _names_match(identity: str, folder_name: str) -> bool:
+        """Case- and whitespace-insensitive comparison of a DICOM identity to
+        a folder name. Real data differs in case (DICOM "KA01" vs folder
+        "ka01") and in padding."""
+        return identity.strip().casefold() == folder_name.strip().casefold()
 
     @staticmethod
     def _read_patient_identity(directory: Path) -> Optional[str]:

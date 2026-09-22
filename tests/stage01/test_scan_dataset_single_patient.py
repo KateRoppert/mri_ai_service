@@ -109,6 +109,59 @@ class TestScanDatasetSinglePatientDetection:
 
         assert result == [batch / "KA117"]
 
+    def test_patient_folder_with_one_study_subfolder_is_the_patient(self, tmp_path):
+        """Kate's private_363 layout: <patient>/<study-description>/<series>.
+
+        Pointing input_dir at KA01, whose single child is the study folder
+        "Nr Gruppe Mrnc3", used to return that child as the patient — so
+        original_id became the study description. That description is
+        IDENTICAL across patients (it is StudyDescription, not an identity),
+        so KA01 and KA02 both collapsed onto one original_id and therefore
+        onto one sub-NNN. The DICOM identity names the patient, and here it
+        matches the input folder, not the child.
+        """
+        patient_dir = tmp_path / "KA01"
+        study_dir = patient_dir / "Nr Gruppe Mrnc3"
+        for series in ["t1_mprage_sag_p2 - 16001", "t2_space_flair_fs - 35001"]:
+            _write_fake_dicom(study_dir / series / "IM-0001", patient_id="KA01")
+
+        result = _scanner().scan_dataset(patient_dir)
+
+        assert result == [patient_dir]
+
+    def test_cohort_with_one_patient_still_returns_that_patient(self, tmp_path):
+        """The mirror case that must NOT change: input_dir is a batch that
+        happens to hold exactly one patient folder, and the identity matches
+        the CHILD's name — the child is the patient, as before."""
+        batch = tmp_path / "KA"
+        _write_fake_dicom(batch / "KA01" / "t1w" / "IM-0001", patient_id="KA01")
+
+        result = _scanner().scan_dataset(batch)
+
+        assert result == [batch / "KA01"]
+
+    def test_one_child_and_identity_matches_neither_name_keeps_old_behavior(self, tmp_path):
+        """Folder names that follow no relation to PatientID (the existing
+        test_single_child_directory_unaffected case) must keep today's
+        behavior rather than guess."""
+        batch = tmp_path / "batch"
+        _write_fake_dicom(batch / "KA117" / "t1w" / "IM-0001", patient_id="P117")
+
+        result = _scanner().scan_dataset(batch)
+
+        assert result == [batch / "KA117"]
+
+    def test_patient_folder_match_is_case_insensitive(self, tmp_path):
+        """Real data differs in case: the DICOM here reads "KA01" while the
+        folder could be "ka01" — the same patient either way."""
+        patient_dir = tmp_path / "ka01"
+        _write_fake_dicom(patient_dir / "NR Gruppe MRNC3" / "s1" / "IM-0001",
+                          patient_id="KA01")
+
+        result = _scanner().scan_dataset(patient_dir)
+
+        assert result == [patient_dir]
+
     def test_missing_patient_id_fails_open_to_existing_behavior(self, tmp_path):
         """One child has no readable identity (no DICOM files) — don't guess,
         fall back to treating children as separate patients."""
