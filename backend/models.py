@@ -245,6 +245,13 @@ class RequeueRequest(BaseModel):
         False,
         description="Использовать настройки остановленного запуска, а не текущие",
     )
+    kappa_session_id: Optional[str] = Field(
+        None,
+        description=(
+            "Сессия Kappa для выгрузки результатов. Без неё мониторинг не "
+            "создаёт загрузчик, и повторный прогон молча не попадает в Kappa"
+        ),
+    )
 
 
 class PipelineStartResponse(BaseModel):
