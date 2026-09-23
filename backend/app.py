@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -70,6 +71,8 @@ from models import (
     MergeSessionsRequest,
     MergeSessionsResponse,
     PipelineLossesResponse,
+    KappaDeliveryStatus,
+    KappaBlockedSession,
 )
 from config_diff import diff_configs
 from database import (
@@ -84,7 +87,9 @@ from database import (
     update_stage_execution,
     get_pipeline_history,
     reconcile_orphaned_runs,
+    get_kappa_delivery,
     SessionLocal,
+    PipelineRun,
 )
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
@@ -833,6 +838,30 @@ async def get_pipeline_status(
     )
 
 
+def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
+    """Delivery state for the history list. None means this run never
+    intended to upload (CLI, no Kappa session), which the UI shows as a dash
+    rather than as a problem."""
+    if not getattr(run, "kappa_upload_status", None):
+        return None
+    detail = get_kappa_delivery(run)
+    return KappaDeliveryStatus(
+        status=run.kappa_upload_status,
+        delivered=detail.get("delivered", 0),
+        total=detail.get("total", 0),
+        blocked=[
+            KappaBlockedSession(
+                session=b.get("session"),
+                reason=b.get("reason", "name_clash"),
+                message=b.get("message", ""),
+            )
+            for b in (detail.get("blocked") or [])
+        ],
+        next_attempt_at=run.kappa_upload_next_attempt,
+        reason=detail.get("reason"),
+    )
+
+
 @app.get("/api/pipeline/history", response_model=PipelineHistoryResponse)
 async def get_history(
     limit: int = 50,
@@ -869,6 +898,7 @@ async def get_history(
                 if run.completed_at and run.started_at else None
             ),
             lesion_type=getattr(run, 'lesion_type', None) or 'glioblastoma',
+            kappa_upload=_delivery_status(run),
         )
         for run in runs
     ]
@@ -2686,6 +2716,22 @@ async def retry_kappa_upload(run_id: str, session_id: str):
     # callers, one decision about what the run's delivery state now is.
     verdict = pipeline_monitor._record_delivery(run_id, results, None)
     return {**results, "delivery": verdict}
+
+
+@app.get("/api/kappa/delivery/summary")
+async def kappa_delivery_summary(db: Session = Depends(get_db)):
+    """Сколько прогонов ещё не доехали до Kappa. Для предупреждения в истории."""
+    rows = (
+        db.query(PipelineRun.kappa_upload_status, func.count(PipelineRun.run_id))
+        .filter(PipelineRun.kappa_upload_status.in_(["pending", "needs_attention"]))
+        .group_by(PipelineRun.kappa_upload_status)
+        .all()
+    )
+    counts = {status: count for status, count in rows}
+    return {
+        "pending": counts.get("pending", 0),
+        "needs_attention": counts.get("needs_attention", 0),
+    }
 
 
 @app.get("/api/kappa/entities/{dataset_id}")
