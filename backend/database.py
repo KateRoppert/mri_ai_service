@@ -2,10 +2,11 @@
 Модуль для работы с базой данных
 """
 
-from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, Text
+from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, Text, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime, timezone
 from typing import List, Optional
+import json
 import uuid
 
 from config import settings
@@ -72,6 +73,17 @@ class PipelineRun(Base):
     # здесь лежит run_id исходного запуска. NULL для обычных запусков.
     parent_run_id = Column(String, nullable=True)
 
+    # Deferred Kappa delivery. `kappa_upload_status` is NULL for runs that
+    # never intended to upload (CLI, no Kappa session) — the worker ignores
+    # those entirely. `kappa_upload_detail` is a JSON blob (see
+    # backend/kappa_delivery.py). `kappa_user_id` is the Kappa account that
+    # started the run: session ids rotate on re-login, user ids do not, so
+    # this is what finds a live token days later.
+    kappa_upload_status = Column(String, nullable=True)
+    kappa_upload_next_attempt = Column(DateTime, nullable=True)
+    kappa_upload_detail = Column(Text, nullable=True)
+    kappa_user_id = Column(Integer, nullable=True)
+
 
 class StageExecution(Base):
     """Модель выполнения отдельного этапа"""
@@ -111,6 +123,8 @@ def create_pipeline_run(
     parent_run_id: Optional[str] = None,
     kappa_dataset_id: Optional[int] = None,
     run_id: Optional[str] = None,
+    kappa_upload_status: Optional[str] = None,
+    kappa_user_id: Optional[int] = None,
 ) -> PipelineRun:
     """Создать новый запуск pipeline.
 
@@ -118,6 +132,11 @@ def create_pipeline_run(
     numbering scope has to be decided (backend/numbering.py) before the row
     exists, since a pending scope (Kappa unreachable at start) is keyed by
     this exact run_id and must match what get_pipeline_run() later returns.
+
+    kappa_upload_status is the delivery intent, recorded at birth: 'pending'
+    when the caller supplied a live Kappa session, None (the default) for
+    CLI/orchestrator runs that never intended to upload. A None status keeps
+    the run out of the deferred-delivery worker's queue permanently.
     """
     run_id = run_id or str(uuid.uuid4())
 
@@ -130,6 +149,8 @@ def create_pipeline_run(
         lesion_type=lesion_type,
         parent_run_id=parent_run_id,
         kappa_dataset_id=kappa_dataset_id,
+        kappa_upload_status=kappa_upload_status,
+        kappa_user_id=kappa_user_id,
     )
     
     db.add(run)
@@ -306,6 +327,7 @@ def init_db():
     _migrate_add_parent_run_id()
     _migrate_add_stop_columns()
     _migrate_add_kappa_dataset_id()
+    _migrate_add_kappa_delivery()
 
 
 def _migrate_add_lesion_type():
@@ -364,7 +386,102 @@ def _migrate_add_kappa_dataset_id():
             conn.commit()
 
 
+def _migrate_add_kappa_delivery():
+    """Add the deferred-delivery columns to pipeline_runs, and mark recent
+    completed runs as owing delivery so they are picked up once.
+
+    The backfill window is deliberately bounded: without it the migration
+    would revive every run ever completed, including ones nobody intended to
+    upload. Rows it marks have no kappa_user_id — the worker falls back to
+    owner_of_dataset(kappa_dataset_id), which works precisely because the
+    WHERE clause requires that column to be set.
+    """
+    import sqlalchemy
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            sqlalchemy.text("PRAGMA table_info(pipeline_runs)")
+        )]
+        added = False
+        for name, ddl in [
+            ("kappa_upload_status", "kappa_upload_status VARCHAR"),
+            ("kappa_upload_next_attempt", "kappa_upload_next_attempt DATETIME"),
+            ("kappa_upload_detail", "kappa_upload_detail TEXT"),
+            ("kappa_user_id", "kappa_user_id INTEGER"),
+        ]:
+            if name not in cols:
+                conn.execute(sqlalchemy.text(
+                    f"ALTER TABLE pipeline_runs ADD COLUMN {ddl}"
+                ))
+                added = True
+        if added:
+            conn.execute(sqlalchemy.text(
+                "UPDATE pipeline_runs SET kappa_upload_status = 'pending' "
+                " WHERE status = 'completed' "
+                "   AND kappa_upload_status IS NULL "
+                "   AND kappa_dataset_id IS NOT NULL "
+                "   AND completed_at >= datetime('now', '-30 days')"
+            ))
+        conn.commit()
+
+
 def reset_db():
     """Удалить и пересоздать все таблицы (для разработки)"""
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+
+def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """SQLite stores no timezone. Strip it on the way in so that comparisons
+    inside the database are between like and like."""
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def set_kappa_delivery(
+    db: Session,
+    run_id: str,
+    status: Optional[str],
+    next_attempt: Optional[datetime],
+    detail: dict,
+) -> None:
+    """Persist the verdict of one delivery attempt."""
+    run = get_pipeline_run(db, run_id)
+    if run is None:
+        return
+    run.kappa_upload_status = status
+    run.kappa_upload_next_attempt = _naive_utc(next_attempt)
+    run.kappa_upload_detail = json.dumps(detail, ensure_ascii=False)
+    db.commit()
+
+
+def get_kappa_delivery(run: PipelineRun) -> dict:
+    """The detail blob, or {} when unset or unparseable. Never raises: a
+    corrupt blob must not take down the history page."""
+    raw = getattr(run, "kappa_upload_detail", None)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def runs_due_for_delivery(
+    db: Session, now: datetime, limit: int = 5
+) -> List[PipelineRun]:
+    """Completed runs that still owe data and whose next attempt is due."""
+    return (
+        db.query(PipelineRun)
+        .filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status == "pending",
+            or_(
+                PipelineRun.kappa_upload_next_attempt.is_(None),
+                PipelineRun.kappa_upload_next_attempt <= _naive_utc(now),
+            ),
+        )
+        .order_by(PipelineRun.completed_at.asc())
+        .limit(limit)
+        .all()
+    )
