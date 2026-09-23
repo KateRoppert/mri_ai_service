@@ -1369,16 +1369,6 @@ async def get_run_patient_map(run_id: str, db: Session = Depends(get_db)):
     return {"run_id": run_id, "patient_map": pipeline_manager.get_patient_map(run.output_path)}
 
 
-def _dataset_owner(dataset_id: int) -> Optional[int]:
-    """Which Kappa user owns a dataset, per configs/kappa_datasets.yaml.
-    None if the dataset id is not in the mapping at all."""
-    from kappa_dataset_mapping import _load_mapping
-    for key, value in (_load_mapping().get("datasets") or {}).items():
-        if int(value) == int(dataset_id):
-            return int(str(key).split(":", 1)[0])
-    return None
-
-
 def _resolve_longitudinal_records(
     patient_id: str, lesion_type: str, run_id: Optional[str], db: Session
 ) -> List[Dict[str, Any]]:
@@ -1395,13 +1385,13 @@ def _resolve_longitudinal_records(
     # module-level names imported at the top of this file (not re-imported
     # here) — tests patch "app.find_by_patient_id" etc., which only takes
     # effect on names resolved from this module's globals at call time.
-    from kappa_dataset_mapping import datasets_of_user
+    from kappa_dataset_mapping import datasets_of_user, owner_of_dataset
 
     dataset_ids = None
     if run_id:
         run = get_pipeline_run(db, run_id)
         if run and run.kappa_dataset_id:
-            owner = _dataset_owner(run.kappa_dataset_id)
+            owner = owner_of_dataset(run.kappa_dataset_id)
             dataset_ids = datasets_of_user(owner) if owner else {run.kappa_dataset_id}
 
     # The frontend passes the BIDS subject ("sub-001"). The registry stores

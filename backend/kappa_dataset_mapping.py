@@ -57,6 +57,20 @@ def datasets_of_user(user_id: int) -> Set[int]:
     return {int(v) for k, v in datasets.items() if str(k).startswith(prefix)}
 
 
+def owner_of_dataset(dataset_id: int) -> Optional[int]:
+    """Which Kappa user owns a dataset, per configs/kappa_datasets.yaml.
+    None if the dataset id is not in the mapping at all.
+
+    Lives here rather than in app.py because the delivery worker needs it and
+    is started from app's lifespan — importing back into app would close a
+    cycle.
+    """
+    for key, value in (_load_mapping().get("datasets") or {}).items():
+        if int(value) == int(dataset_id):
+            return int(str(key).split(":", 1)[0])
+    return None
+
+
 def get_dataset_id(
     user_id: Optional[int], lesion_type: str, preprocessing_id: str
 ) -> Optional[int]:
