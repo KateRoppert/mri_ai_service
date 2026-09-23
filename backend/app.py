@@ -2681,7 +2681,11 @@ async def retry_kappa_upload(run_id: str, session_id: str):
 
     results = await uploader.upload_results()
     logger.info("Kappa retry-upload results for %s: %s", run_id, results)
-    return results
+
+    # Same policy as the post-run upload and the background worker — three
+    # callers, one decision about what the run's delivery state now is.
+    verdict = pipeline_monitor._record_delivery(run_id, results, None)
+    return {**results, "delivery": verdict}
 
 
 @app.get("/api/kappa/entities/{dataset_id}")
