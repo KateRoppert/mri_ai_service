@@ -465,6 +465,20 @@ async def start_pipeline(
         run_id, lesion_type, request.kappa_session_id
     )
 
+    # Upload intent, recorded at birth. A run started with a Kappa session
+    # owes delivery from the moment it exists, so a failure later has
+    # somewhere to be recorded; a run started without one never enters the
+    # delivery queue at all (CLI and orchestrator runs stay out by
+    # construction).
+    upload_status = None
+    upload_user_id = None
+    if request.kappa_session_id:
+        from kappa_auth import get_session as _get_kappa_session
+        _session = _get_kappa_session(request.kappa_session_id)
+        if _session:
+            upload_status = "pending"
+            upload_user_id = _session.get("user_id")
+
     # Создаём запись в БД
     run = create_pipeline_run(
         db,
@@ -473,8 +487,10 @@ async def start_pipeline(
         output_path=output_path,
         lesion_type=lesion_type,
         kappa_dataset_id=kappa_dataset_id,
+        kappa_upload_status=upload_status,
+        kappa_user_id=upload_user_id,
     )
-    
+
     # Запускаем pipeline в фоновой задаче
     background_tasks.add_task(
         run_pipeline_background,
@@ -692,6 +708,17 @@ async def requeue_pipeline_run(
         original_run.kappa_dataset_id, resumed_lesion_type
     )
 
+    # Same upload-intent recording as the start endpoint: a requeue/resume
+    # carrying a Kappa session owes delivery from birth too.
+    resumed_upload_status = None
+    resumed_upload_user_id = None
+    if body.kappa_session_id:
+        from kappa_auth import get_session as _get_kappa_session
+        _session = _get_kappa_session(body.kappa_session_id)
+        if _session:
+            resumed_upload_status = "pending"
+            resumed_upload_user_id = _session.get("user_id")
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
@@ -699,6 +726,8 @@ async def requeue_pipeline_run(
         lesion_type=resumed_lesion_type,
         parent_run_id=run_id,
         kappa_dataset_id=original_run.kappa_dataset_id,
+        kappa_upload_status=resumed_upload_status,
+        kappa_user_id=resumed_upload_user_id,
     )
 
     background_tasks.add_task(
