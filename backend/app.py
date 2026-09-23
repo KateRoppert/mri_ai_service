@@ -166,10 +166,14 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Реконсиляция: {n} осиротевших прогонов помечены failed")
     finally:
         _reco_db.close()
-    
+
+    from kappa_delivery_worker import start_delivery_worker
+    _delivery_task = start_delivery_worker()
+
     yield
-    
-    # Shutdown (если нужно что-то делать при завершении)
+
+    # Shutdown
+    _delivery_task.cancel()
     logger.info("Завершение работы приложения")
 
 
