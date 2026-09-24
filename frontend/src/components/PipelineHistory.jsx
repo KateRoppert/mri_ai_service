@@ -2,7 +2,7 @@
  * Компонент для отображения истории запусков pipeline
  */
 import { useState, useEffect, useRef } from 'react';
-import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip } from 'antd';
+import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip, Alert } from 'antd';
 import { 
   EyeOutlined, 
   FileTextOutlined,
@@ -15,7 +15,11 @@ import {
   CloudUploadOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import { getPipelineHistory, retryKappaUpload } from '../services/api';
+import {
+  getPipelineHistory,
+  retryKappaUpload,
+  getKappaDeliverySummary,
+} from '../services/api';
 import { confirmAndResume } from '../utils/resumeRun';
 
 const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses, onRunResumed }) => {
@@ -25,6 +29,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize] = useState(20);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [deliverySummary, setDeliverySummary] = useState(null);
   const [deliveryDetail, setDeliveryDetail] = useState(null);
   const [retrying, setRetrying] = useState(false);
 
@@ -77,6 +82,15 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
 
       setHistory(filteredRuns);
       setTotal(statusFilter === 'all' ? data.total : filteredRuns.length);
+
+      // Counts every run, not just this page — the whole point is the run
+      // that failed days ago and has scrolled out of sight. A failing
+      // summary must never take the history list down with it.
+      try {
+        setDeliverySummary(await getKappaDeliverySummary());
+      } catch (summaryErr) {
+        console.warn('Сводка по выгрузке недоступна:', summaryErr);
+      }
     } catch (err) {
       console.error('Ошибка загрузки истории:', err);
       if (!silent) message.error('Не удалось загрузить историю запусков');
@@ -369,6 +383,31 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
 
   return (
     <>
+    {deliverySummary
+      && (deliverySummary.pending > 0 || deliverySummary.needs_attention > 0) && (
+      <Alert
+        type={deliverySummary.needs_attention > 0 ? 'error' : 'warning'}
+        showIcon
+        style={{ marginBottom: 16 }}
+        message={
+          deliverySummary.needs_attention > 0
+            ? `Требуют внимания: ${deliverySummary.needs_attention}`
+            : `Ожидают выгрузки в Kappa: ${deliverySummary.pending}`
+        }
+        description={
+          deliverySummary.needs_attention > 0
+            ? (
+              `Автоматический повтор не поможет для ${deliverySummary.needs_attention} `
+              + `${deliverySummary.needs_attention === 1 ? 'запуска' : 'запусков'}`
+              + (deliverySummary.pending > 0
+                ? `; ещё ${deliverySummary.pending} досылается автоматически.`
+                : '.')
+              + ' Найдите их по тегу в колонке «Kappa» — они могут быть на других страницах.'
+            )
+            : 'Данные не потеряны — досылка идёт сама. Прогоны могут быть на других страницах истории.'
+        }
+      />
+    )}
     <Card 
       title="История запусков"
       extra={
