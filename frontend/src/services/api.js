@@ -356,6 +356,26 @@ export const resumePipelineRun = async (runId, useSnapshot = false) => {
 };
 
 /**
+ * Повторить выгрузку результатов запуска в Kappa вручную.
+ */
+export const retryKappaUpload = async (runId) => {
+  const response = await apiClient.post(
+    `/kappa/retry-upload/${runId}`,
+    null,
+    { params: { session_id: localStorage.getItem('kappa_session_id') } },
+  );
+  return response.data;
+};
+
+/**
+ * Сколько запусков ещё не доехали до Kappa.
+ */
+export const getKappaDeliverySummary = async () => {
+  const response = await apiClient.get('/kappa/delivery/summary');
+  return response.data;
+};
+
+/**
  * Остановить выполняющийся запуск. Возвращает сводку: сколько пациентов
  * успели обработаться и на каком этапе прервались.
  */
@@ -473,6 +493,8 @@ export default {
   mergeSessions,
   requeuePipelineRun,
   resumePipelineRun,
+  retryKappaUpload,
+  getKappaDeliverySummary,
   stopPipelineRun,
   getSlicerPackageUrl,
   uploadMask,

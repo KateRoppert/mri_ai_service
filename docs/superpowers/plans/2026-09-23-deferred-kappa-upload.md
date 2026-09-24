@@ -2333,7 +2333,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 There is no JavaScript test harness in this repo. Verification is `npm run lint` plus the manual check in Task 10.
 
-- [ ] **Step 1: Add the API helpers**
+- [x] **Step 1: Add the API helpers**
 
 In `frontend/src/services/api.js`, after `requeuePipelineRun` (`:343`):
 
@@ -2361,7 +2361,7 @@ export const getKappaDeliverySummary = async () => {
 
 Add both names to the default-export object at `:474`.
 
-- [ ] **Step 2: Handle the deferred message in ProgressMonitor**
+- [x] **Step 2: Handle the deferred message in ProgressMonitor**
 
 In `frontend/src/components/ProgressMonitor.jsx`, add state beside the others near `:30` and extend the handler at `:106`:
 
@@ -2401,7 +2401,7 @@ Render it just inside the returned fragment at `:339`, above the existing alerts
       )}
 ```
 
-- [ ] **Step 3: Add the Kappa column and modal to PipelineHistory**
+- [x] **Step 3: Add the Kappa column and modal to PipelineHistory**
 
 In `frontend/src/components/PipelineHistory.jsx`, extend the antd import at `:5` to include `Modal`, `Alert`, `List` and `Tooltip`, and add `CloudUploadOutlined` and `WarningOutlined` to the icon import at `:6`. Add `getKappaDeliverySummary, retryKappaUpload` to the api import at `:16`.
 
@@ -2555,7 +2555,7 @@ And the summary alert, immediately above the `Table`:
         )}
 ```
 
-- [ ] **Step 4: Lint**
+- [x] **Step 4: Lint**
 
 Run: `cd frontend && npm run lint`
 Expected: no new errors. If ESLint flags the empty `catch {}` block, give it a parameter and a `void` statement rather than removing the guard — a failing summary must never break the history list.
