@@ -214,19 +214,17 @@ UPDATE pipeline_runs
 
 ## 6. Уборка после тестов
 
-В базе сейчас лежат синтетические строки от прошлых прогонов UI
-(`input_path = /tmp/in`) — они попадают в счётчик плашки и в историю:
+База приведена в порядок 24.09 перед началом проверки: синтетические
+строки `ui_kappa_*` удалены, у трёх прогонов сняты устаревшие признаки
+отказа. На старте проверки все отслеживаемые прогоны — `done`, плашки над
+таблицей нет. Всё, что появится дальше, — результат ваших действий.
+
+Если по ходу тестов появятся свои поддельные строки, убрать их так:
 
 ```bash
-sqlite3 -box backend/data/brain_lesion.db \
-  "SELECT run_id, kappa_upload_status FROM pipeline_runs WHERE run_id LIKE 'ui_kappa%';"
-```
-
-Удалить, когда наиграетесь:
-
-```bash
-sqlite3 backend/data/brain_lesion.db \
-  "DELETE FROM pipeline_runs WHERE run_id LIKE 'ui_kappa%';"
+sqlite3 backend/data/brain_lesion.db "
+DELETE FROM stage_executions WHERE run_id LIKE 'ui_kappa%';
+DELETE FROM pipeline_runs   WHERE run_id LIKE 'ui_kappa%';"
 ```
 
 **Обязательно проверить, что заглушка Kappa снята** — иначе следующий
@@ -236,13 +234,16 @@ sqlite3 backend/data/brain_lesion.db \
 docker exec mri_ai_service-web-1 grep kappa /etc/hosts || echo "заглушки нет — хорошо"
 ```
 
+Резервная копия базы перед уборкой лежит рядом:
+`backend/data/brain_lesion.db.bak-20260924-160707`
+
 ---
 
 ## Подводный камень
 
 Поддельные строки в `pipeline_runs` со статусом `pending` **не лежат
-спокойно**: воркер их подхватывает как настоящие, не находит файлов на
-диске и переводит в `needs_attention/missing_files`. Именно это произошло
-со строкой `ui_kappa_pending` — она названа «pending», а в базе давно
-`needs_attention`. Чтобы посмотреть на вид `pending` в интерфейсе, ставьте
-таким строкам `kappa_upload_next_attempt` далеко в будущее.
+спокойно**: воркер подхватывает их как настоящие, не находит файлов на
+диске и переводит в `needs_attention/missing_files`. Именно так строка,
+заведённая как «pending», оказалась в базе с `needs_attention`. Чтобы
+посмотреть на вид `pending` в интерфейсе, ставьте таким строкам
+`kappa_upload_next_attempt` далеко в будущее — тогда воркер их не тронет.
