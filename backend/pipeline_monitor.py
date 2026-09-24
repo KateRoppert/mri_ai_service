@@ -206,8 +206,49 @@ class PipelineMonitor:
         finally:
             db.close()
 
+    def _seed_delivery_progress(self, run_id):
+        """Write disk/registry counters before upload_results() returns.
+
+        The history column otherwise stays at 0/0 for the whole attempt,
+        and a first-try Kappa outage has no '3 of 4 already there' to show.
+        """
+        from datetime import datetime, timezone
+
+        from database import get_kappa_delivery, set_kappa_delivery
+        from kappa_delivery import (
+            count_local_progress,
+            mark_in_progress,
+            merge_local_counters,
+        )
+
+        db = SessionLocal()
+        try:
+            run = get_pipeline_run(db, run_id)
+            if run is None or run.kappa_upload_status != "pending":
+                return None
+            local = count_local_progress(
+                run_id, run.output_path, run.kappa_dataset_id
+            )
+            state = merge_local_counters(
+                get_kappa_delivery(run), local["total"], local["delivered"],
+            )
+            verdict = mark_in_progress(
+                state, datetime.now(timezone.utc),
+                state["total"], state["delivered"],
+            )
+            set_kappa_delivery(
+                db, run_id, verdict["status"],
+                verdict["next_attempt"], verdict["detail"],
+            )
+            return verdict
+        finally:
+            db.close()
+
     async def _kappa_upload_safe(self, uploader, run_id: str = None):
         """Обёртка для безопасного вызова upload_results"""
+        if run_id:
+            self._seed_delivery_progress(run_id)
+
         results = None
         failure = None
         try:

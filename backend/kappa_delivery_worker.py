@@ -22,7 +22,13 @@ from database import (
 )
 from kappa_auth import find_live_session_for_user
 from kappa_dataset_mapping import owner_of_dataset
-from kappa_delivery import NO_SESSION, classify
+from kappa_delivery import (
+    NO_SESSION,
+    classify,
+    count_local_progress,
+    mark_in_progress,
+    merge_local_counters,
+)
 from pipeline_monitor import PREPROCESSING_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -77,6 +83,10 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
 
         state = get_kappa_delivery(run)
         now = datetime.now(timezone.utc)
+        local = count_local_progress(
+            run_id, run.output_path, run.kappa_dataset_id
+        )
+        state = merge_local_counters(state, local["total"], local["delivered"])
 
         owner = _owner_of(run)
         session = find_live_session_for_user(owner) if owner else None
@@ -84,6 +94,13 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
         if session is None:
             verdict = classify(NO_SESSION, None, state, now)
         else:
+            seeded = mark_in_progress(
+                state, now, state["total"], state["delivered"],
+            )
+            set_kappa_delivery(
+                db, run_id, seeded["status"],
+                seeded["next_attempt"], seeded["detail"],
+            )
             result, exc = None, None
             try:
                 uploader = build_uploader(run, session)
@@ -106,6 +123,25 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
             verdict["detail"].get("delivered"), verdict["detail"].get("total"),
             verdict["detail"].get("reason"),
         )
+        # Same WS types as the post-run upload: the open progress screen
+        # already listens for these (Task 9). History polls on pending.
+        try:
+            from websocket_manager import ws_manager
+            if verdict["status"] == "done":
+                await ws_manager.broadcast(run_id, {
+                    "type": "kappa_upload_complete",
+                    "run_id": run_id,
+                    "entities": [],
+                })
+            else:
+                await ws_manager.broadcast(run_id, {
+                    "type": "kappa_upload_deferred",
+                    "run_id": run_id,
+                    "status": verdict["status"],
+                    "detail": verdict["detail"],
+                })
+        except Exception as e:  # noqa: BLE001 — UI notify must not fail delivery
+            logger.debug("Could not broadcast delivery state for %s: %s", run_id, e)
         return verdict
     finally:
         db.close()

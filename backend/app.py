@@ -2709,6 +2709,7 @@ async def retry_kappa_upload(run_id: str, session_id: str):
             detail="Сессия Kappa не найдена/истекла, или не найден конфиг препроцессинга. Войдите в Kappa заново.",
         )
 
+    pipeline_monitor._seed_delivery_progress(run_id)
     results = await uploader.upload_results()
     logger.info("Kappa retry-upload results for %s: %s", run_id, results)
 

@@ -121,6 +121,59 @@ def test_no_session_waits_do_not_make_a_run_stuck():
     assert out["detail"]["reason"] == "no_session"
 
 
+def test_count_local_progress_from_disk(tmp_path, monkeypatch):
+    pre1 = tmp_path / "preprocessed" / "sub-001" / "ses-001" / "anat"
+    pre1.mkdir(parents=True)
+    (pre1 / "sub-001_ses-001_t1.nii.gz").write_bytes(b"x")
+    pre2 = tmp_path / "preprocessed" / "sub-002" / "ses-001" / "anat"
+    pre2.mkdir(parents=True)
+    (pre2 / "sub-002_ses-001_t1.nii.gz").write_bytes(b"x")
+
+    import patient_registry
+    from kappa_delivery import count_local_progress
+
+    monkeypatch.setattr(patient_registry, "find_by_run_id", lambda rid: [])
+    monkeypatch.setattr(
+        patient_registry, "find_by_bids_id",
+        lambda bids_id, dataset_ids=None: (
+            [{"bids_id": bids_id, "kappa_entity_id": "e1"}]
+            if bids_id == "sub-001_ses-001" else []
+        ),
+    )
+    assert count_local_progress("any", tmp_path, dataset_id=350) == {
+        "total": 2, "delivered": 1,
+    }
+
+
+def test_mark_in_progress_holds_the_worker_slot():
+    from kappa_delivery import mark_in_progress
+    out = mark_in_progress({"attempts": 0}, NOW, total=4, delivered=3)
+    assert out["status"] == "pending"
+    assert out["detail"]["total"] == 4
+    assert out["detail"]["delivered"] == 3
+    assert out["detail"]["reason"] is None
+    assert out["next_attempt"] == NOW + timedelta(minutes=15)
+
+
+def test_network_error_keeps_known_counters():
+    """Kappa down must not wipe '3 of 4 already there' from the column."""
+    state = {"total": 4, "delivered": 3, "attempts": 1}
+    out = classify({"error": "Failed to resolve dataset_id"}, None, state, NOW)
+    assert out["status"] == "pending"
+    assert out["detail"]["reason"] == "network"
+    assert out["detail"]["total"] == 4
+    assert out["detail"]["delivered"] == 3
+
+
+def test_no_session_keeps_known_counters():
+    state = {"total": 4, "delivered": 3, "attempts": 2}
+    out = classify(NO_SESSION, None, state, NOW)
+    assert out["status"] == "pending"
+    assert out["detail"]["reason"] == "no_session"
+    assert out["detail"]["total"] == 4
+    assert out["detail"]["delivered"] == 3
+
+
 def test_progress_resets_the_stuck_window():
     state = {"attempts": 40,
              "first_failure_at": (NOW - timedelta(hours=25)).isoformat()}
@@ -131,3 +184,64 @@ def test_progress_resets_the_stuck_window():
     assert out["status"] == "pending"
     assert out["detail"]["first_failure_at"] is None
     assert out["detail"]["delivered"] == 1
+
+
+def test_count_local_progress_is_scoped_to_this_runs_dataset(tmp_path, monkeypatch):
+    """A session key is only "already in Kappa" if it is in THIS run's dataset.
+
+    sub-NNN is unique only WITHIN a dataset, and the live registry really does
+    hold e.g. sub-001_ses-001 in two datasets at once. An unscoped lookup
+    counts another dataset's patient as delivered, and because counters only
+    ever grow, the column then permanently claims data arrived that never did.
+    """
+    pre = tmp_path / "preprocessed" / "sub-001" / "ses-001" / "anat"
+    pre.mkdir(parents=True)
+    (pre / "sub-001_ses-001_t1.nii.gz").write_bytes(b"x")
+
+    import patient_registry
+    from kappa_delivery import count_local_progress
+
+    seen = {}
+
+    def _find_by_bids_id(bids_id, dataset_ids=None):
+        seen["dataset_ids"] = dataset_ids
+        # The same BIDS id, uploaded by somebody else into dataset 338.
+        rows = [{"bids_id": bids_id, "kappa_entity_id": "other",
+                 "kappa_dataset_id": 338}]
+        # Filter as the real find_by_bids_id does, so this test proves the
+        # scoping works — not merely that an argument was passed along.
+        if dataset_ids is not None:
+            rows = [r for r in rows if r["kappa_dataset_id"] in dataset_ids]
+        return rows
+
+    monkeypatch.setattr(patient_registry, "find_by_run_id", lambda rid: [])
+    monkeypatch.setattr(patient_registry, "find_by_bids_id", _find_by_bids_id)
+
+    result = count_local_progress("any", tmp_path, dataset_id=350)
+
+    assert seen["dataset_ids"] == {350}, "lookup must be scoped to the dataset"
+    assert result == {"total": 1, "delivered": 0}
+
+
+def test_count_local_progress_without_a_dataset_trusts_only_this_run(
+    tmp_path, monkeypatch
+):
+    """Kappa was unreachable at start, so the run has no dataset yet. Nothing
+    can be known to have reached a dataset we cannot name — only this run's
+    own registry rows count."""
+    pre = tmp_path / "preprocessed" / "sub-001" / "ses-001" / "anat"
+    pre.mkdir(parents=True)
+    (pre / "sub-001_ses-001_t1.nii.gz").write_bytes(b"x")
+
+    import patient_registry
+    from kappa_delivery import count_local_progress
+
+    def _must_not_be_called(bids_id, dataset_ids=None):
+        raise AssertionError("unscoped registry lookup with no dataset context")
+
+    monkeypatch.setattr(patient_registry, "find_by_run_id", lambda rid: [])
+    monkeypatch.setattr(patient_registry, "find_by_bids_id", _must_not_be_called)
+
+    assert count_local_progress("any", tmp_path, dataset_id=None) == {
+        "total": 1, "delivered": 0,
+    }

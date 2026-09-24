@@ -59,7 +59,9 @@ def _transient(state, now, detail_over) -> Dict[str, Any]:
     progress means the path works and the rest is worth retrying.
     """
     attempts = state.get("attempts", 0) + 1
-    delivered = detail_over.get("delivered", 0)
+    delivered = detail_over.get(
+        "delivered", state.get("delivered", 0) or 0
+    )
 
     first_failure = None if delivered else (
         state.get("first_failure_at") or now.isoformat()
@@ -164,3 +166,113 @@ def classify(
         }
 
     return _transient(state, now, {"reason": "network", **counters})
+
+
+# How long an in-flight upload holds the worker slot so a second tick
+# does not start the same run again.
+IN_FLIGHT_HOLD_MINUTES = 15
+
+
+def mark_in_progress(state: Dict[str, Any], now: datetime,
+                     total: int, delivered: int) -> Dict[str, Any]:
+    """Persist known counters before upload_results() returns.
+
+    Without this the history column stays at 0/0 for the whole (slow)
+    upload, and a Kappa outage on the first attempt has nothing to show.
+    """
+    state = state or {}
+    return {
+        "status": "pending",
+        "next_attempt": now + timedelta(minutes=IN_FLIGHT_HOLD_MINUTES),
+        "detail": _detail(
+            state, now,
+            total=max(int(state.get("total") or 0), int(total or 0)),
+            delivered=max(int(state.get("delivered") or 0), int(delivered or 0)),
+            reason=None,
+            last_error=None,
+        ),
+    }
+
+
+def merge_local_counters(state: Dict[str, Any], total: int,
+                         delivered: int) -> Dict[str, Any]:
+    """Never let a later snapshot shrink counters we already published."""
+    state = dict(state or {})
+    state["total"] = max(int(state.get("total") or 0), int(total or 0))
+    state["delivered"] = max(int(state.get("delivered") or 0), int(delivered or 0))
+    return state
+
+
+def _session_key_from_path(filepath) -> Optional[str]:
+    from pathlib import Path
+    filepath = Path(filepath)
+    parts = filepath.parts[:-1]
+    sub = ses = None
+    for part in parts:
+        if part.startswith("sub-"):
+            sub = part
+        elif part.startswith("ses-"):
+            ses = part
+    if sub and ses:
+        return f"{sub}_{ses}"
+    name = filepath.stem
+    if name.endswith(".nii"):
+        name = name[:-4]
+    bits = name.split("_")
+    for i, part in enumerate(bits):
+        if part.startswith("sub-") and i + 1 < len(bits) and bits[i + 1].startswith("ses-"):
+            return f"{part}_{bits[i + 1]}"
+    return None
+
+
+def count_local_progress(
+    run_id: str, output_path, dataset_id: Optional[int] = None
+) -> Dict[str, int]:
+    """Sessions on disk vs already registered as uploaded (local registry).
+
+    Does not talk to Kappa. Used to seed the column before an attempt
+    finishes, and to keep '3 of 4 already there' when Kappa is down.
+
+    `dataset_id` is the run's own Kappa dataset, and it is what makes the
+    answer trustworthy: sub-NNN is unique only WITHIN a dataset, so an
+    unscoped registry lookup would count somebody else's sub-001 as this
+    run's delivered session. Counters only ever grow (merge_local_counters),
+    so such a mistake is permanent — the column would claim data arrived that
+    never did. None means the run has no dataset yet (Kappa was unreachable
+    at start): nothing can be known to have reached a dataset we cannot name,
+    so only this run's own registry rows count.
+    """
+    from pathlib import Path
+
+    from patient_registry import find_by_bids_id, find_by_run_id
+
+    keys: set = set()
+    pre = Path(output_path) / "preprocessed"
+    if pre.is_dir():
+        for nifti in pre.rglob("*.nii.gz"):
+            key = _session_key_from_path(nifti)
+            if key:
+                keys.add(key)
+
+    this_run = {
+        r.get("bids_id") for r in (find_by_run_id(run_id) or [])
+        if r.get("kappa_entity_id") and r.get("bids_id")
+    }
+
+    def _already_in_kappa(session_key: str) -> bool:
+        if session_key in this_run:
+            return True
+        if dataset_id is None:
+            return False
+        return any(
+            r.get("kappa_entity_id")
+            for r in (find_by_bids_id(session_key, {dataset_id}) or [])
+        )
+
+    if keys:
+        delivered = sum(1 for key in keys if _already_in_kappa(key))
+        total = max(len(keys), delivered)
+    else:
+        delivered = len(this_run)
+        total = delivered
+    return {"total": total, "delivered": delivered}
