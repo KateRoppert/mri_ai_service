@@ -108,3 +108,30 @@ def test_adoption_clears_the_backoff_so_delivery_resumes_at_once():
     finally:
         _cleanup(db, run_id)
         db.close()
+
+
+def test_reachability_transition_resumes_waiting_runs(monkeypatch):
+    """Kappa coming back must pull in the waiting runs by itself.
+
+    Backoff grows to an hour, so after an outage ends a run can sit that long
+    doing nothing — which reads as broken. Only the down->up TRANSITION
+    resumes, so a genuinely failing run still backs off instead of hammering
+    Kappa every minute.
+    """
+    import kappa_delivery_worker as worker
+
+    worker._last_reachable = None
+    calls = []
+    monkeypatch.setattr(worker, "resume_all_pending",
+                        lambda reason: calls.append(reason) or 1)
+
+    monkeypatch.setattr(worker, "kappa_reachable", lambda: False)
+    worker.note_kappa_reachability()
+    assert calls == []                      # still down, nothing to do
+
+    monkeypatch.setattr(worker, "kappa_reachable", lambda: True)
+    worker.note_kappa_reachability()
+    assert len(calls) == 1                  # came back -> resume
+
+    worker.note_kappa_reachability()
+    assert len(calls) == 1                  # still up -> backoff respected

@@ -73,6 +73,50 @@ def _owner_of(run) -> Optional[int]:
     return None
 
 
+# Last observed reachability of Kappa. None = never checked. Only the
+# down -> up transition resumes waiting runs; see note_kappa_reachability().
+_last_reachable: Optional[bool] = None
+
+
+def kappa_reachable(timeout: float = 5.0) -> bool:
+    """Can we open a TCP connection to Kappa right now?
+
+    Deliberately not an API call: no token needed, nothing to authorise, and
+    it answers the only question that matters for scheduling — is the service
+    responding at all.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    from kappa_auth import KAPPA_BASE_URL
+
+    parsed = urlparse(KAPPA_BASE_URL)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return False
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def note_kappa_reachability() -> None:
+    """Watch Kappa come back, and pull the waiting runs in when it does.
+
+    Backoff reaches an hour, so without this a run can sit idle long after an
+    outage ends — which is indistinguishable from broken. Resuming only on the
+    down -> up TRANSITION is what keeps that from defeating backoff entirely:
+    a run failing for a reason other than the outage still waits its turn.
+    """
+    global _last_reachable
+    reachable = kappa_reachable()
+    if reachable and _last_reachable is False:
+        resume_all_pending("Kappa снова отвечает")
+    _last_reachable = reachable
+
+
 def adopt_orphan_runs(user_id: int) -> int:
     """Give runs that started while Kappa was down an owner, and retry at once.
 
@@ -217,6 +261,16 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
+def _waiting_count(db) -> int:
+    """Runs that owe delivery but are not due yet."""
+    from database import PipelineRun
+    return db.query(PipelineRun).filter(
+        PipelineRun.status == "completed",
+        PipelineRun.kappa_upload_status == "pending",
+        PipelineRun.kappa_upload_next_attempt.isnot(None),
+    ).count()
+
+
 async def tick(now: Optional[datetime] = None) -> int:
     """One pass over the due runs. Returns how many were attempted."""
     now = now or datetime.now(timezone.utc)
@@ -224,8 +278,14 @@ async def tick(now: Optional[datetime] = None) -> int:
     try:
         due = runs_due_for_delivery(db, now, limit=BATCH_SIZE)
         run_ids = [r.run_id for r in due]
+        waiting = _waiting_count(db) if not run_ids else 0
     finally:
         db.close()
+
+    # Only probe when something is actually waiting out a backoff — there is
+    # no point poking Kappa on an idle system.
+    if waiting:
+        await asyncio.to_thread(note_kappa_reachability)
 
     for run_id in run_ids:
         await deliver_one(run_id)
