@@ -2,7 +2,7 @@
  * Главный компонент приложения
  */
 import { useState } from 'react';
-import { Layout, Typography, Space, Divider, Tabs, Card, Button } from 'antd';
+import { Layout, Typography, Space, Divider, Tabs, Card, Button, Alert, Modal, message } from 'antd';
 import { RocketOutlined, HistoryOutlined, LogoutOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import KappaLogin from './components/KappaLogin';
 import PipelineForm from './components/PipelineForm';
@@ -40,10 +40,19 @@ function App() {
   const [showHistoryPipelineLosses, setShowHistoryPipelineLosses] = useState(false);
   const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
+  const [showLogin, setShowLogin] = useState(false);
 
   const handleLoginSuccess = (data) => {
     setKappaSession(data);
     localStorage.setItem('kappa_session_id', data.session_id);
+    setShowLogin(false);
+    // Logging in adopts runs that finished while Kappa was down and clears
+    // their backoff, so the operator is told delivery is moving again.
+    if (data.resumed_uploads) {
+      message.success(
+        `Возобновлена выгрузка в Kappa: ${data.resumed_uploads} запуск(ов)`,
+      );
+    }
   };
 
   const handleLogout = async () => {
@@ -186,7 +195,7 @@ function App() {
         <Typography.Title level={4} style={{ color: 'white', margin: 0 }}>
           🧠 ИИ-система дистанционной диагностики и мониторинга социально значимых заболеваний
         </Typography.Title>
-        {kappaSession && (
+        {kappaSession ? (
           <Space style={{ flexShrink: 0 }}>
             <Text style={{ color: 'white', whiteSpace: 'nowrap' }}>
               {kappaSession.first_name} {kappaSession.last_name}
@@ -200,13 +209,47 @@ function App() {
               Выход
             </Button>
           </Space>
+        ) : (
+          <Space style={{ flexShrink: 0 }}>
+            <Text style={{ color: '#ffd666', whiteSpace: 'nowrap' }}>
+              Без входа в Kappa
+            </Text>
+            <Button size="small" ghost onClick={() => setShowLogin(true)}>
+              Войти в Kappa
+            </Button>
+          </Space>
         )}
       </Layout.Header>
 
       <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
-        {!kappaSession ? (
+        {!kappaSession && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Работа без входа в Kappa"
+            description={
+              'Обработку можно запускать: результаты сохранятся локально и '
+              + 'уйдут в Kappa автоматически, как только вы войдёте и сервис '
+              + 'станет доступен. Пациентам присвоят номера при выгрузке.'
+            }
+            action={
+              <Button size="small" type="primary" onClick={() => setShowLogin(true)}>
+                Войти
+              </Button>
+            }
+          />
+        )}
+        <Modal
+          open={showLogin}
+          onCancel={() => setShowLogin(false)}
+          footer={null}
+          title="Вход в Kappa"
+          destroyOnClose
+        >
           <KappaLogin onLoginSuccess={handleLoginSuccess} />
-        ) : (
+        </Modal>
+        {(
           <>
             <Tabs
               activeKey={activeTabKey}

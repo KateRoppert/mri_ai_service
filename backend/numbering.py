@@ -23,20 +23,37 @@ logger = logging.getLogger(__name__)
 
 
 async def scope_for_run(
-    run_id: str, lesion_type: str, kappa_session_id: Optional[str]
+    run_id: str, lesion_type: str, kappa_session_id: Optional[str],
+    intends_upload: bool = False,
 ) -> Tuple[str, Optional[int], Optional[str]]:
     """(scope, dataset_id, warning) for a run about to start.
 
     Never raises: a run must start even when Kappa is down. `warning` is a
     user-facing message to surface in the start response when set; None means
     nothing worth telling the operator happened.
+
+    `intends_upload` marks a run that WILL go to Kappa once it is reachable —
+    every run started from the web UI, including one started while Kappa is
+    down. Such a run must number into `pending:<run_id>`, not `local:<type>`:
+    a pending scope is rebound to the real dataset at upload time
+    (KappaUploader._bind_pending_scope), whereas local numbers are fixed and
+    would collide with whatever that dataset already holds, surfacing later
+    as an unfixable name_clash.
     """
+    offline_scope = (
+        pending_scope(run_id) if intends_upload else local_scope(lesion_type)
+    )
+    offline_warning = (
+        "Kappa недоступна: номера будут закреплены за датасетом при выгрузке"
+        if intends_upload else None
+    )
+
     if not kappa_session_id:
-        return local_scope(lesion_type), None, None
+        return offline_scope, None, offline_warning
 
     session = get_session(kappa_session_id)
     if not session:
-        return local_scope(lesion_type), None, None
+        return offline_scope, None, offline_warning
 
     preprocessing_id = compute_preprocessing_id(str(PREPROCESSING_CONFIG))
     try:

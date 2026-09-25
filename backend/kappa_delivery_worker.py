@@ -73,6 +73,76 @@ def _owner_of(run) -> Optional[int]:
     return None
 
 
+def adopt_orphan_runs(user_id: int) -> int:
+    """Give runs that started while Kappa was down an owner, and retry at once.
+
+    A run started offline has no kappa_user_id and no dataset, so _owner_of()
+    cannot name an account and the worker can never find a token for it — it
+    would wait on `no_session` forever. Logging in is precisely the event that
+    answers "whose is this": the person who just authenticated.
+
+    Only unowned runs are adopted, so a second operator's pending work is
+    never taken over. The backoff is cleared too: a fresh login is strong
+    evidence Kappa is reachable, and making the operator wait out an hour of
+    exponential backoff after that is indefensible.
+
+    Returns how many runs were adopted.
+    """
+    if user_id is None:
+        return 0
+
+    from database import PipelineRun
+
+    db = SessionLocal()
+    try:
+        orphans = db.query(PipelineRun).filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status == "pending",
+            PipelineRun.kappa_user_id.is_(None),
+        ).all()
+        for run in orphans:
+            run.kappa_user_id = user_id
+            run.kappa_upload_next_attempt = None
+        db.commit()
+        if orphans:
+            logger.info(
+                "Kappa login by user %s adopted %d run(s) awaiting delivery",
+                user_id, len(orphans),
+            )
+        return len(orphans)
+    finally:
+        db.close()
+
+
+def resume_all_pending(reason: str) -> int:
+    """Clear the backoff on every waiting run, so the next tick retries them.
+
+    Used when something tells us Kappa is reachable again — a login, or one
+    delivery succeeding while others sit on a long backoff. Without this a
+    run can be an hour from its next attempt when the outage ends, which
+    reads to the operator as "nothing is happening".
+    """
+    from database import PipelineRun
+
+    db = SessionLocal()
+    try:
+        waiting = db.query(PipelineRun).filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status == "pending",
+            PipelineRun.kappa_upload_next_attempt.isnot(None),
+        ).all()
+        for run in waiting:
+            run.kappa_upload_next_attempt = None
+        db.commit()
+        if waiting:
+            logger.info(
+                "Retrying %d waiting run(s) now: %s", len(waiting), reason,
+            )
+        return len(waiting)
+    finally:
+        db.close()
+
+
 async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
     """One delivery attempt for one run. Never raises."""
     db = SessionLocal()

@@ -471,21 +471,21 @@ async def start_pipeline(
     lesion_type = request.lesion_type or "glioblastoma"
     run_id = str(uuid.uuid4())
     numbering_scope, kappa_dataset_id, scope_warning = await numbering.scope_for_run(
-        run_id, lesion_type, request.kappa_session_id
+        run_id, lesion_type, request.kappa_session_id, intends_upload=True
     )
 
-    # Upload intent, recorded at birth. A run started with a Kappa session
-    # owes delivery from the moment it exists, so a failure later has
-    # somewhere to be recorded; a run started without one never enters the
-    # delivery queue at all (CLI and orchestrator runs stay out by
-    # construction).
-    upload_status = None
+    # Upload intent, recorded at birth. Every run started from the web UI is
+    # meant for Kappa — including one started while Kappa is unreachable, which
+    # is the whole point of deferred delivery. The owning account may be
+    # unknown for now; logging in adopts such runs
+    # (kappa_delivery_worker.adopt_orphan_runs). CLI and orchestrator runs do
+    # not pass through here and so stay out of the queue by construction.
+    upload_status = "pending"
     upload_user_id = None
     if request.kappa_session_id:
         from kappa_auth import get_session as _get_kappa_session
         _session = _get_kappa_session(request.kappa_session_id)
         if _session:
-            upload_status = "pending"
             upload_user_id = _session.get("user_id")
 
     # Создаём запись в БД
@@ -2649,6 +2649,19 @@ async def kappa_login_endpoint(request: KappaLoginRequest):
     result = await kappa_login(request.login_id, request.passwd)
     if not result:
         raise HTTPException(status_code=401, detail="Неверный логин или пароль Kappa")
+
+    # A successful login answers two questions at once: whose the runs started
+    # offline are, and that Kappa is reachable again. Both mean waiting
+    # deliveries should go now rather than sit out an exponential backoff.
+    try:
+        from kappa_delivery_worker import adopt_orphan_runs, resume_all_pending
+        adopted = adopt_orphan_runs(result.get("user_id"))
+        resumed = resume_all_pending("оператор вошёл в Kappa")
+        if adopted or resumed:
+            result = {**result, "resumed_uploads": max(adopted, resumed)}
+    except Exception as e:  # noqa: BLE001 — login must never fail over this
+        logger.error("Не удалось возобновить отложенные выгрузки: %s", e)
+
     return result
 
 
@@ -2668,11 +2681,31 @@ async def kappa_me(session_id: str):
 
 @app.post("/api/kappa/logout")
 async def kappa_logout(session_id: str):
-    """Выход из Kappa"""
-    deleted = delete_session(session_id)
-    if not deleted:
+    """Выход из интерфейса Kappa.
+
+    Выход закрывает сеанс в браузере, но НЕ обрывает отложенную выгрузку:
+    токен остаётся в базе до своего естественного истечения, чтобы уже
+    посчитанные результаты дошли до Kappa сами. Иначе выход из аккаунта
+    молча останавливал бы досылку, и данные ждали бы следующего входа —
+    именно это поведение и сбивало с толку при тестировании.
+
+    Токен доступен только самому бэкенду; session_id из localStorage
+    браузера при выходе стирается, так что интерфейс сеанс не переживает.
+    """
+    session = get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
-    return {"status": "ok"}
+
+    db = SessionLocal()
+    try:
+        pending = db.query(PipelineRun).filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status == "pending",
+        ).count()
+    finally:
+        db.close()
+
+    return {"status": "ok", "pending_uploads": pending}
 
 @app.post("/api/kappa/retry-upload/{run_id}")
 async def retry_kappa_upload(run_id: str, session_id: str):
