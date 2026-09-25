@@ -500,6 +500,11 @@ async def start_pipeline(
         kappa_user_id=upload_user_id,
     )
 
+    # Открываем лог выгрузки в папке запуска: куда поедут пациенты и
+    # знаем ли мы это уже сейчас.
+    import kappa_run_log
+    kappa_run_log.log_start(output_path, kappa_dataset_id, scope_warning)
+
     # Запускаем pipeline в фоновой задаче
     background_tasks.add_task(
         run_pipeline_background,
@@ -2748,7 +2753,9 @@ async def retry_kappa_upload(run_id: str, session_id: str):
 
     # Same policy as the post-run upload and the background worker — three
     # callers, one decision about what the run's delivery state now is.
-    verdict = pipeline_monitor._record_delivery(run_id, results, None)
+    verdict = pipeline_monitor._record_delivery(
+        run_id, results, None, source="вручную"
+    )
     return {**results, "delivery": verdict}
 
 

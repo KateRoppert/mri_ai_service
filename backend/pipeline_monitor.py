@@ -175,7 +175,7 @@ class PipelineMonitor:
             logger.error("Failed to create KappaUploader: %s", e)
             return None
     
-    def _record_delivery(self, run_id, result, exc):
+    def _record_delivery(self, run_id, result, exc, source="после прогона"):
         """Classify one upload attempt and persist the verdict.
 
         Kept separate from the upload itself so the decision is testable and
@@ -199,6 +199,10 @@ class PipelineMonitor:
             set_kappa_delivery(
                 db, run_id, verdict["status"],
                 verdict["next_attempt"], verdict["detail"],
+            )
+            import kappa_run_log
+            kappa_run_log.log_attempt(
+                run.output_path, source, result, exc, verdict,
             )
             logger.info(
                 "Kappa delivery for %s: %s (%d/%d, reason=%s)",

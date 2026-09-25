@@ -205,7 +205,11 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
         owner = _owner_of(run)
         session = find_live_session_for_user(owner) if owner else None
 
+        # Bound on every path: both the verdict and the run log read them.
+        result, exc = None, None
+
         if session is None:
+            result = NO_SESSION
             verdict = classify(NO_SESSION, None, state, now)
         else:
             seeded = mark_in_progress(
@@ -215,7 +219,6 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
                 db, run_id, seeded["status"],
                 seeded["next_attempt"], seeded["detail"],
             )
-            result, exc = None, None
             try:
                 uploader = build_uploader(run, session)
                 if uploader is None:
@@ -230,6 +233,10 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
         set_kappa_delivery(
             db, run_id, verdict["status"],
             verdict["next_attempt"], verdict["detail"],
+        )
+        import kappa_run_log
+        kappa_run_log.log_attempt(
+            run.output_path, "фоновая досылка", result, exc, verdict,
         )
         logger.info(
             "Deferred delivery %s: %s (%s/%s, reason=%s)",
