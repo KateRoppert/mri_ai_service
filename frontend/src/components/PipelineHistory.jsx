@@ -183,18 +183,28 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   /** Человеческая подпись к состоянию выгрузки в Kappa. */
   const deliveryLabel = (d) => {
     const have = `${d.delivered ?? 0} из ${d.total ?? 0}`;
+    // total = 0 до первой удачной попытки значит «ещё не считали», а не
+    // «отправлять нечего». Показывать «0 из 0» — врать оператору, будто
+    // работы нет, тогда как её просто ещё не пересчитали.
+    const counted = (d.total ?? 0) > 0;
     if (d.status === 'done') return `Kappa ${d.delivered}/${d.total}`;
     if (d.status === 'needs_attention') {
+      if (!counted) return 'нужна проверка';
       return d.reason === 'stuck'
         ? `${have} · не удаётся выгрузить`
         : `${have} · нужна проверка`;
     }
     if (d.reason === 'no_session') {
-      return `${have} в Kappa · нужен повторный вход`;
+      return counted
+        ? `${have} в Kappa · нужен повторный вход`
+        : 'ожидает выгрузки · нужен вход в Kappa';
     }
     if (d.reason === 'network') {
-      return `${have} в Kappa · досылка, когда сервис будет доступен`;
+      return counted
+        ? `${have} в Kappa · досылка, когда сервис будет доступен`
+        : 'ожидает выгрузки · Kappa недоступна';
     }
+    if (!counted) return 'ожидает выгрузки';
     if ((d.delivered ?? 0) < (d.total ?? 0)) {
       return `${have} в Kappa · загружается`;
     }
@@ -210,7 +220,9 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
       return 'Уже загруженные сессии на месте. Остальные уйдут сами, когда Kappa снова ответит.';
     }
     if (d.status === 'pending') {
-      return 'Часть сессий уже в Kappa, остальные загружаются сейчас.';
+      return (d.total ?? 0) > 0
+        ? 'Часть сессий уже в Kappa, остальные загружаются сейчас.'
+        : 'Счётчик появится после первой попытки выгрузки.';
     }
     return 'Показать подробности выгрузки';
   };
@@ -485,8 +497,11 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
             <p>
               {deliveryHint(deliveryDetail.kappa_upload)}
               {' '}
-              Сейчас в Kappa {deliveryDetail.kappa_upload.delivered} из{' '}
-              {deliveryDetail.kappa_upload.total}.
+              {(deliveryDetail.kappa_upload.total ?? 0) > 0
+                ? ` Сейчас в Kappa ${deliveryDetail.kappa_upload.delivered} из `
+                  + `${deliveryDetail.kappa_upload.total}.`
+                : ' Сколько сессий войдёт в выгрузку, станет известно после'
+                  + ' первой попытки.'}
               {deliveryDetail.kappa_upload.next_attempt_at
                 && deliveryDetail.kappa_upload.reason === 'network' && (
                 <> Повтор:{' '}
