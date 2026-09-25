@@ -2721,10 +2721,18 @@ async def retry_kappa_upload(run_id: str, session_id: str):
 
 @app.get("/api/kappa/delivery/summary")
 async def kappa_delivery_summary(db: Session = Depends(get_db)):
-    """Сколько прогонов ещё не доехали до Kappa. Для предупреждения в истории."""
+    """Сколько прогонов ещё не доехали до Kappa. Для предупреждения в истории.
+
+    Считает ровно то, с чем воркер может что-то сделать — только завершённые
+    прогоны. Любой другой предикат даёт оператору число, которое он не может
+    убрать никаким действием: воркер такие строки не трогает.
+    """
     rows = (
         db.query(PipelineRun.kappa_upload_status, func.count(PipelineRun.run_id))
-        .filter(PipelineRun.kappa_upload_status.in_(["pending", "needs_attention"]))
+        .filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status.in_(["pending", "needs_attention"]),
+        )
         .group_by(PipelineRun.kappa_upload_status)
         .all()
     )

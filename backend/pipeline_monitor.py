@@ -102,6 +102,11 @@ class PipelineMonitor:
                             # preprocessing config is missing) — the background
                             # worker will retry once a session exists again.
                             self._record_delivery(run_id, NO_SESSION, None)
+                    elif run.status == "failed":
+                        # Nothing was produced, so nothing can be delivered.
+                        # Left pending it would haunt the summary banner
+                        # forever: the worker only looks at completed runs.
+                        self._abandon_delivery(run_id, "прогон завершился ошибкой")
                     break
 
                 await self._send_update(run_id, output_path, db)
@@ -203,6 +208,30 @@ class PipelineMonitor:
                 verdict["detail"].get("reason"),
             )
             return verdict
+        finally:
+            db.close()
+
+    def _abandon_delivery(self, run_id, why: str):
+        """Take a run out of the delivery queue for good.
+
+        The worker only ever looks at completed runs, so a failed run left
+        with kappa_upload_status='pending' can never resolve — it just keeps
+        inflating the summary banner with a number the operator has no way to
+        clear. A run that failed produced nothing to upload, so the honest
+        state is "not tracked".
+        """
+        db = SessionLocal()
+        try:
+            run = get_pipeline_run(db, run_id)
+            if run is None or run.kappa_upload_status is None:
+                return
+            if run.status == "completed":
+                # Never disarm a run that can still deliver.
+                return
+            logger.info("Kappa delivery abandoned for %s: %s", run_id, why)
+            run.kappa_upload_status = None
+            run.kappa_upload_next_attempt = None
+            db.commit()
         finally:
             db.close()
 

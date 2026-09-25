@@ -267,6 +267,11 @@ def reconcile_orphaned_runs(db: Session) -> int:
             run.error_message
             or "Прогон прерван перезапуском сервиса (orphaned at startup)"
         )
+        # A failed run produced nothing to upload. Left 'pending' it would
+        # haunt the summary banner forever, because the delivery worker only
+        # ever looks at completed runs.
+        run.kappa_upload_status = None
+        run.kappa_upload_next_attempt = None
     db.commit()
     return len(orphaned)
 
