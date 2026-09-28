@@ -4,7 +4,7 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons';
 
 const { Title, Text } = Typography;
 
-function KappaLogin({ onLoginSuccess, kappaReachable = true, onSkip }) {
+function KappaLogin({ onLoginSuccess, kappaReachable = true, onSkip, onDeferred }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -45,6 +45,15 @@ function KappaLogin({ onLoginSuccess, kappaReachable = true, onSkip }) {
           passwd: values.passwd,
         }),
       });
+
+      // 503 — Kappa не ответила, и бэкенд запомнил введённое, чтобы войти
+      // самому. Для оператора это успех, а не ошибка: он сделал всё, что от
+      // него требовалось. Показывать красным то же самое, что уже написано
+      // в жёлтом предупреждении выше, — значит пугать без повода.
+      if (response.status === 503 && onDeferred) {
+        onDeferred(values.login_id);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(await readError(response));

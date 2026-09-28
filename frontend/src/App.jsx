@@ -1,7 +1,7 @@
 /**
  * Главный компонент приложения
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Layout, Typography, Space, Divider, Tabs, Card, Button, Alert, Modal, message } from 'antd';
 import { RocketOutlined, HistoryOutlined, LogoutOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import KappaLogin from './components/KappaLogin';
@@ -51,6 +51,25 @@ function App() {
   // после перезагрузки страницы снова предлагаем войти, а не молча
   // оставляем в анонимном режиме.
   const [workOffline, setWorkOffline] = useState(false);
+  // Kappa только что вернулась. Держим зелёную плашку недолго: оператор,
+  // сидящий перед экраном, должен увидеть, что связь восстановилась, но
+  // жить там она не должна — дальше о выгрузке говорят статусы в истории.
+  const [justRecovered, setJustRecovered] = useState(false);
+  const wasReachable = useRef(null);
+  const recoveryTimer = useRef(null);
+
+  /** Заметить, что Kappa снова отвечает, и показать это. */
+  const noteReachable = (reachable) => {
+    setKappaReachable(reachable);
+    if (wasReachable.current === false && reachable === true) {
+      setJustRecovered(true);
+      clearTimeout(recoveryTimer.current);
+      recoveryTimer.current = setTimeout(() => setJustRecovered(false), 20000);
+    }
+    wasReachable.current = reachable;
+  };
+
+  useEffect(() => () => clearTimeout(recoveryTimer.current), []);
 
   // Сессия живёт в БД бэкенда и переживает перезагрузку страницы. Без её
   // восстановления обновление F5 выбрасывало оператора в «работу без входа»,
@@ -72,7 +91,7 @@ function App() {
       try {
         const health = await getKappaHealth();
         if (!cancelled) {
-          setKappaReachable(health?.reachable !== false);
+          noteReachable(health?.reachable !== false);
           setPendingLogin(health?.pending_login ?? null);
         }
       } catch {
@@ -94,7 +113,7 @@ function App() {
     const interval = setInterval(async () => {
       try {
         const health = await getKappaHealth();
-        setKappaReachable(health?.reachable !== false);
+        noteReachable(health?.reachable !== false);
         setPendingLogin(health?.pending_login ?? null);
 
         // Бэкенд мог войти сам по отложенным учётным данным — тогда сессия
@@ -115,6 +134,13 @@ function App() {
   // не отказался от него явно.
   const showLoginPage = sessionChecked && !kappaSession
     && !pendingLogin && !workOffline;
+
+  /** Вход поставлен в очередь: Kappa не ответила, данные приняты. */
+  const handleDeferredLogin = (loginId) => {
+    setPendingLogin(loginId);
+    setShowLogin(false);
+    setWorkOffline(false);
+  };
 
   const handleLoginSuccess = (data) => {
     setKappaSession(data);
@@ -292,11 +318,13 @@ function App() {
         ) : (
           <Space style={{ flexShrink: 0 }}>
             <Text style={{ color: '#ffd666', whiteSpace: 'nowrap' }}>
-              Без входа в Kappa
+              {pendingLogin ? `Войдём автоматически: ${pendingLogin}` : 'Без входа в Kappa'}
             </Text>
-            <Button size="small" ghost onClick={() => setShowLogin(true)}>
-              Войти в Kappa
-            </Button>
+            {!pendingLogin && (
+              <Button size="small" ghost onClick={() => setShowLogin(true)}>
+                Войти в Kappa
+              </Button>
+            )}
           </Space>
         )}
       </Layout.Header>
@@ -311,10 +339,34 @@ function App() {
           <KappaLogin
             onLoginSuccess={handleLoginSuccess}
             kappaReachable={kappaReachable}
+            onDeferred={handleDeferredLogin}
             onSkip={kappaReachable === false ? () => setWorkOffline(true) : undefined}
           />
         )}
-        {sessionChecked && !kappaSession && !showLoginPage && kappaReachable === false && (
+        {/* Зелёная — коротко, чтобы сидящий перед экраном увидел возврат
+            связи. Дальше о выгрузке говорят статусы в истории, и держать
+            плашку постоянно значило бы приучить её не замечать. */}
+        {!showLoginPage && justRecovered && (
+          <Alert
+            type="success"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Kappa снова доступна"
+            description={
+              kappaSession || pendingLogin
+                ? 'Выгрузка возобновлена — статусы запусков обновятся сами.'
+                : 'Войдите, чтобы результаты ушли в Kappa.'
+            }
+            action={
+              !kappaSession && !pendingLogin && (
+                <Button size="small" type="primary" onClick={() => setShowLogin(true)}>
+                  Войти
+                </Button>
+              )
+            }
+          />
+        )}
+        {!showLoginPage && !justRecovered && !kappaSession && kappaReachable === false && (
           <Alert
             type="warning"
             showIcon
@@ -346,7 +398,11 @@ function App() {
           title="Вход в Kappa"
           destroyOnClose
         >
-          <KappaLogin onLoginSuccess={handleLoginSuccess} />
+          <KappaLogin
+            onLoginSuccess={handleLoginSuccess}
+            kappaReachable={kappaReachable}
+            onDeferred={handleDeferredLogin}
+          />
         </Modal>
         {!showLoginPage && (
           <>
