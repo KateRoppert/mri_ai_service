@@ -2656,14 +2656,21 @@ async def kappa_login_endpoint(request: KappaLoginRequest):
     try:
         result = await kappa_login(request.login_id, request.passwd)
     except KappaUnreachable:
+        # Держим введённое в памяти и войдём сами, как только Kappa ответит
+        # (backend/kappa_pending_login.py). Пароль не попадает ни в базу, ни
+        # в логи, ни в этот ответ.
+        import kappa_pending_login
+        kappa_pending_login.remember(request.login_id, request.passwd)
+
         # 503, а не 500: сервис не сломан, недоступен внешний. Ответ обязан
         # быть JSON с внятным текстом — тело 500 от Uvicorn это простая
         # строка, и фронт падал на ней в JSON.parse.
         raise HTTPException(
             status_code=503,
             detail=(
-                "Kappa сейчас недоступна. Обработку можно запускать без "
-                "входа — результаты уйдут в Kappa, когда связь восстановится."
+                "Kappa сейчас недоступна. Вход выполнится автоматически, как "
+                "только связь восстановится — обработку можно запускать "
+                "прямо сейчас, результаты уйдут следом."
             ),
         )
     if not result:
@@ -2694,9 +2701,15 @@ async def kappa_health():
 
     Обычный TCP-коннект: ни токена, ни обращения к API.
     """
+    import kappa_pending_login
     from kappa_delivery_worker import kappa_reachable
+
     reachable = await asyncio.to_thread(kappa_reachable)
-    return {"reachable": reachable}
+    return {
+        "reachable": reachable,
+        # Логин, под которым войдём сами, когда связь появится. Без пароля.
+        "pending_login": kappa_pending_login.held_login(),
+    }
 
 
 @app.get("/api/kappa/me")
@@ -2729,6 +2742,10 @@ async def kappa_logout(session_id: str):
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
+
+    # Выход отменяет и отложенный вход: оператор явно сказал «не я».
+    import kappa_pending_login
+    kappa_pending_login.forget("оператор вышел из аккаунта")
 
     db = SessionLocal()
     try:

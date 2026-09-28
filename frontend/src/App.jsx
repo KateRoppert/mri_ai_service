@@ -45,6 +45,8 @@ function App() {
   // предупреждение: иначе на долю секунды мелькает не то состояние.
   const [kappaReachable, setKappaReachable] = useState(null);
   const [sessionChecked, setSessionChecked] = useState(false);
+  // Логин, под которым бэкенд войдёт сам, когда связь появится (без пароля).
+  const [pendingLogin, setPendingLogin] = useState(null);
 
   // Сессия живёт в БД бэкенда и переживает перезагрузку страницы. Без её
   // восстановления обновление F5 выбрасывало оператора в «работу без входа»,
@@ -65,7 +67,10 @@ function App() {
       }
       try {
         const health = await getKappaHealth();
-        if (!cancelled) setKappaReachable(health?.reachable !== false);
+        if (!cancelled) {
+          setKappaReachable(health?.reachable !== false);
+          setPendingLogin(health?.pending_login ?? null);
+        }
       } catch {
         if (!cancelled) setKappaReachable(false);
       }
@@ -75,6 +80,32 @@ function App() {
     restore();
     return () => { cancelled = true; };
   }, []);
+
+  // Пока входа нет, раз в 15 секунд проверяем, не ответила ли Kappa. Без
+  // этого страница узнавала о возврате сервиса только по F5, из-за чего
+  // предупреждение висело поверх уже работающей Kappa.
+  useEffect(() => {
+    if (kappaSession) return undefined;
+
+    const interval = setInterval(async () => {
+      try {
+        const health = await getKappaHealth();
+        setKappaReachable(health?.reachable !== false);
+        setPendingLogin(health?.pending_login ?? null);
+
+        // Бэкенд мог войти сам по отложенным учётным данным — тогда сессия
+        // уже есть, и спрашивать оператора больше не о чем.
+        const sessionId = localStorage.getItem('kappa_session_id');
+        if (sessionId) {
+          const me = await getKappaMe(sessionId);
+          setKappaSession({ ...me, session_id: sessionId });
+        }
+      } catch {
+        // Молча: это фоновая проверка, а не действие оператора.
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [kappaSession]);
 
   const handleLoginSuccess = (data) => {
     setKappaSession(data);
@@ -270,14 +301,21 @@ function App() {
             style={{ marginBottom: 16 }}
             message="Kappa сейчас недоступна — работаем без входа"
             description={
-              'Обработку можно запускать: результаты сохранятся локально и '
-              + 'уйдут в Kappa автоматически, как только вы войдёте и сервис '
-              + 'станет доступен. Пациентам присвоят номера при выгрузке.'
+              pendingLogin
+                ? `Вход под «${pendingLogin}» выполнится автоматически, как `
+                  + 'только связь восстановится, и результаты уйдут в Kappa '
+                  + 'сами. Обработку можно запускать прямо сейчас.'
+                : 'Обработку можно запускать: результаты сохранятся локально '
+                  + 'и уйдут в Kappa автоматически, как только вы войдёте и '
+                  + 'сервис станет доступен. Пациентам присвоят номера при '
+                  + 'выгрузке.'
             }
             action={
-              <Button size="small" onClick={() => setShowLogin(true)}>
-                Повторить вход
-              </Button>
+              !pendingLogin && (
+                <Button size="small" onClick={() => setShowLogin(true)}>
+                  Войти
+                </Button>
+              )
             }
           />
         )}

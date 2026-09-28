@@ -268,6 +268,28 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
+async def try_deferred_login() -> Optional[Dict[str, Any]]:
+    """Complete a login the operator started while Kappa was unreachable.
+
+    Cheap when nothing is held: kappa_pending_login returns immediately, so
+    this costs nothing on a normally running system. On success the new
+    session is exactly what the waiting runs needed, so adopt them and clear
+    their backoff, same as an interactive login does.
+    """
+    import kappa_pending_login
+
+    if kappa_pending_login.held_login() is None:
+        return None
+
+    result = await kappa_pending_login.try_login_now()
+    if result is None:
+        return None
+
+    adopt_orphan_runs(result.get("user_id"))
+    resume_all_pending("выполнен отложенный вход в Kappa")
+    return result
+
+
 def _waiting_count(db) -> int:
     """Runs that owe delivery but are not due yet."""
     from database import PipelineRun
@@ -293,6 +315,11 @@ async def tick(now: Optional[datetime] = None) -> int:
     # no point poking Kappa on an idle system.
     if waiting:
         await asyncio.to_thread(note_kappa_reachability)
+
+    # The operator typed their login while Kappa was down; finish it for them
+    # the moment it answers. Held in memory only, and dropped on the first
+    # rejection — see kappa_pending_login.
+    await try_deferred_login()
 
     for run_id in run_ids:
         await deliver_one(run_id)

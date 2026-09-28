@@ -33,7 +33,8 @@ async def test_unreachable_kappa_answers_503_not_500(monkeypatch):
     assert caught.value.status_code == 503
     assert "Kappa" in caught.value.detail
     # Says what the operator can still do, not just that something broke.
-    assert "без входа" in caught.value.detail
+    assert "автоматически" in caught.value.detail
+    assert "запускать" in caught.value.detail
 
 
 @pytest.mark.asyncio
@@ -74,3 +75,48 @@ def test_kappa_login_raises_a_named_error_on_network_failure(monkeypatch):
 
     with pytest.raises(kappa_auth.KappaUnreachable):
         asyncio.run(kappa_auth.kappa_login("user", "pass"))
+
+
+@pytest.mark.asyncio
+async def test_unreachable_login_is_remembered_for_later(monkeypatch):
+    """The point of the deferred login: type it once, during the outage."""
+    import app
+    import kappa_pending_login
+    from app import KappaLoginRequest
+    from kappa_auth import KappaUnreachable
+
+    async def _unreachable(login_id, passwd):
+        raise KappaUnreachable("connect timed out")
+
+    monkeypatch.setattr(app, "kappa_login", _unreachable)
+    kappa_pending_login.forget("подготовка теста")
+    try:
+        with pytest.raises(HTTPException):
+            await app.kappa_login_endpoint(
+                KappaLoginRequest(login_id="test.user", passwd="secret")
+            )
+        assert kappa_pending_login.held_login() == "test.user"
+    finally:
+        kappa_pending_login.forget("уборка теста")
+
+
+@pytest.mark.asyncio
+async def test_rejected_login_is_not_remembered(monkeypatch):
+    """Holding a password Kappa already refused would retry it into a lockout."""
+    import app
+    import kappa_pending_login
+    from app import KappaLoginRequest
+
+    async def _rejected(login_id, passwd):
+        return None
+
+    monkeypatch.setattr(app, "kappa_login", _rejected)
+    kappa_pending_login.forget("подготовка теста")
+    try:
+        with pytest.raises(HTTPException):
+            await app.kappa_login_endpoint(
+                KappaLoginRequest(login_id="test.user", passwd="wrong")
+            )
+        assert kappa_pending_login.held_login() is None
+    finally:
+        kappa_pending_login.forget("уборка теста")
