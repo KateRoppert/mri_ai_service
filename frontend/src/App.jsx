@@ -1,7 +1,7 @@
 /**
  * Главный компонент приложения
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Layout, Typography, Space, Divider, Tabs, Card, Button, Alert, Modal, message } from 'antd';
 import { RocketOutlined, HistoryOutlined, LogoutOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import KappaLogin from './components/KappaLogin';
@@ -15,7 +15,7 @@ import ValidationPanel from './components/ValidationPanel';
 import IncompletePatients from './components/IncompletePatients';
 import PipelineLosses from './components/PipelineLosses';
 import './App.css';
-import { getEntitiesForRun } from './services/api';
+import { getEntitiesForRun, getKappaMe, getKappaHealth } from './services/api';
 
 const { Header, Content } = Layout;
 const { Title, Text } = Typography;
@@ -41,11 +41,46 @@ function App() {
   const [historyValidationRef, setHistoryValidationRef] = useState(null);
   const [kappaSession, setKappaSession] = useState(null);
   const [showLogin, setShowLogin] = useState(false);
+  // null = ещё выясняем. Пока не знаем, не показываем ни форму входа, ни
+  // предупреждение: иначе на долю секунды мелькает не то состояние.
+  const [kappaReachable, setKappaReachable] = useState(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  // Сессия живёт в БД бэкенда и переживает перезагрузку страницы. Без её
+  // восстановления обновление F5 выбрасывало оператора в «работу без входа»,
+  // хотя он был авторизован, а Kappa уже отвечала.
+  useEffect(() => {
+    let cancelled = false;
+
+    const restore = async () => {
+      const sessionId = localStorage.getItem('kappa_session_id');
+      if (sessionId) {
+        try {
+          const me = await getKappaMe(sessionId);
+          if (!cancelled) setKappaSession({ ...me, session_id: sessionId });
+        } catch {
+          // Сессия протухла или её нет — забываем и предлагаем войти заново.
+          localStorage.removeItem('kappa_session_id');
+        }
+      }
+      try {
+        const health = await getKappaHealth();
+        if (!cancelled) setKappaReachable(health?.reachable !== false);
+      } catch {
+        if (!cancelled) setKappaReachable(false);
+      }
+      if (!cancelled) setSessionChecked(true);
+    };
+
+    restore();
+    return () => { cancelled = true; };
+  }, []);
 
   const handleLoginSuccess = (data) => {
     setKappaSession(data);
     localStorage.setItem('kappa_session_id', data.session_id);
     setShowLogin(false);
+    setKappaReachable(true);
     // Logging in adopts runs that finished while Kappa was down and clears
     // their backoff, so the operator is told delivery is moving again.
     if (data.resumed_uploads) {
@@ -222,20 +257,26 @@ function App() {
       </Layout.Header>
 
       <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
-        {!kappaSession && (
+        {/* Три состояния, а не два. Kappa доступна и входа нет — это
+            обычная авторизация, как раньше. Работа без входа — исключение
+            для случая, когда войти физически невозможно, а не новая норма. */}
+        {sessionChecked && !kappaSession && kappaReachable && (
+          <KappaLogin onLoginSuccess={handleLoginSuccess} />
+        )}
+        {sessionChecked && !kappaSession && kappaReachable === false && (
           <Alert
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message="Работа без входа в Kappa"
+            message="Kappa сейчас недоступна — работаем без входа"
             description={
               'Обработку можно запускать: результаты сохранятся локально и '
               + 'уйдут в Kappa автоматически, как только вы войдёте и сервис '
               + 'станет доступен. Пациентам присвоят номера при выгрузке.'
             }
             action={
-              <Button size="small" type="primary" onClick={() => setShowLogin(true)}>
-                Войти
+              <Button size="small" onClick={() => setShowLogin(true)}>
+                Повторить вход
               </Button>
             }
           />
@@ -249,7 +290,7 @@ function App() {
         >
           <KappaLogin onLoginSuccess={handleLoginSuccess} />
         </Modal>
-        {(
+        {!(sessionChecked && !kappaSession && kappaReachable) && (
           <>
             <Tabs
               activeKey={activeTabKey}

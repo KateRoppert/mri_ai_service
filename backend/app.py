@@ -2651,7 +2651,21 @@ class KappaLoginRequest(PydanticBaseModel):
 @app.post("/api/kappa/login")
 async def kappa_login_endpoint(request: KappaLoginRequest):
     """Авторизация в Kappa"""
-    result = await kappa_login(request.login_id, request.passwd)
+    from kappa_auth import KappaUnreachable
+
+    try:
+        result = await kappa_login(request.login_id, request.passwd)
+    except KappaUnreachable:
+        # 503, а не 500: сервис не сломан, недоступен внешний. Ответ обязан
+        # быть JSON с внятным текстом — тело 500 от Uvicorn это простая
+        # строка, и фронт падал на ней в JSON.parse.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Kappa сейчас недоступна. Обработку можно запускать без "
+                "входа — результаты уйдут в Kappa, когда связь восстановится."
+            ),
+        )
     if not result:
         raise HTTPException(status_code=401, detail="Неверный логин или пароль Kappa")
 
@@ -2668,6 +2682,21 @@ async def kappa_login_endpoint(request: KappaLoginRequest):
         logger.error("Не удалось возобновить отложенные выгрузки: %s", e)
 
     return result
+
+
+@app.get("/api/kappa/health")
+async def kappa_health():
+    """Отвечает ли Kappa прямо сейчас.
+
+    Нужен фронту, чтобы отличить «оператор просто не вошёл» от «войти
+    невозможно». В первом случае показываем форму входа, во втором —
+    интерфейс с предупреждением, иначе недоступность Kappa запирает работу.
+
+    Обычный TCP-коннект: ни токена, ни обращения к API.
+    """
+    from kappa_delivery_worker import kappa_reachable
+    reachable = await asyncio.to_thread(kappa_reachable)
+    return {"reachable": reachable}
 
 
 @app.get("/api/kappa/me")

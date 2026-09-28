@@ -8,6 +8,30 @@ function KappaLogin({ onLoginSuccess }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  /**
+   * Достать человеческое сообщение из неудачного ответа.
+   *
+   * Тело ошибки — не всегда JSON: необработанное исключение отдаётся
+   * Uvicorn'ом простой строкой "Internal Server Error", и попытка её
+   * распарсить показывала оператору «JSON.parse: unexpected character»
+   * вместо объяснения, что Kappa недоступна.
+   */
+  const readError = async (response) => {
+    try {
+      const data = await response.json();
+      if (data?.detail) return data.detail;
+    } catch {
+      // тело не JSON — сообщение соберём по коду ответа ниже
+    }
+    if (response.status === 503) {
+      return 'Kappa сейчас недоступна. Попробуйте позже.';
+    }
+    if (response.status === 401) {
+      return 'Неверный логин или пароль Kappa.';
+    }
+    return `Не удалось войти (код ${response.status}).`;
+  };
+
   const handleSubmit = async (values) => {
     setLoading(true);
     setError(null);
@@ -23,14 +47,19 @@ function KappaLogin({ onLoginSuccess }) {
       });
 
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Ошибка авторизации');
+        throw new Error(await readError(response));
       }
 
       const data = await response.json();
       onLoginSuccess(data);
     } catch (err) {
-      setError(err.message);
+      // TypeError от fetch означает, что до бэкенда не достучались вовсе
+      // (сеть, контейнер лежит) — это не «ошибка авторизации».
+      setError(
+        err instanceof TypeError
+          ? 'Нет связи с сервисом. Проверьте, запущен ли он.'
+          : err.message,
+      );
     } finally {
       setLoading(false);
     }

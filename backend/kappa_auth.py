@@ -13,6 +13,11 @@ from registry_models import KappaSession
 
 logger = logging.getLogger(__name__)
 
+
+class KappaUnreachable(Exception):
+    """Kappa не ответила: сеть, DNS, таймаут. Отличается от неверных
+    учётных данных, и сообщение оператору должно быть другим."""
+
 KAPPA_BASE_URL = "https://kappa.nsu.ru:8061/user-micro-services/v1"
 
 
@@ -27,8 +32,16 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
         "passwd": passwd,
     }
 
-    async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
-        response = await client.post(url, json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            response = await client.post(url, json=payload)
+    except httpx.HTTPError as exc:
+        # Kappa недоступна — это не то же самое, что неверный пароль, и
+        # обработать это должен вызывающий. Без перехвата исключение уходило
+        # наружу, FastAPI отдавал 500, а его тело — простой текст
+        # "Internal Server Error", на котором фронт спотыкался в JSON.parse.
+        logger.warning("Kappa unreachable at login: %s", exc)
+        raise KappaUnreachable(str(exc)) from exc
 
     if response.status_code != 200:
         logger.warning("Kappa login failed: status=%s, body=%s", response.status_code, response.text[:300])

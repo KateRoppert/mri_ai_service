@@ -368,6 +368,24 @@ export const retryKappaUpload = async (runId) => {
 };
 
 /**
+ * Отвечает ли Kappa прямо сейчас.
+ */
+export const getKappaHealth = async () => {
+  const response = await apiClient.get('/kappa/health');
+  return response.data;
+};
+
+/**
+ * Проверить сохранённую сессию Kappa.
+ */
+export const getKappaMe = async (sessionId) => {
+  const response = await apiClient.get('/kappa/me', {
+    params: { session_id: sessionId },
+  });
+  return response.data;
+};
+
+/**
  * Сколько запусков ещё не доехали до Kappa.
  */
 export const getKappaDeliverySummary = async () => {
@@ -495,6 +513,8 @@ export default {
   resumePipelineRun,
   retryKappaUpload,
   getKappaDeliverySummary,
+  getKappaHealth,
+  getKappaMe,
   stopPipelineRun,
   getSlicerPackageUrl,
   uploadMask,
