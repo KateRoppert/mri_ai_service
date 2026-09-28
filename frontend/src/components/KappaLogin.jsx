@@ -4,7 +4,7 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons';
 
 const { Title, Text } = Typography;
 
-function KappaLogin({ onLoginSuccess }) {
+function KappaLogin({ onLoginSuccess, kappaReachable = true, onSkip }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -81,6 +81,23 @@ function KappaLogin({ onLoginSuccess }) {
           Войдите через учётную запись Kappa
         </Text>
 
+        {/* Форма остаётся точкой входа даже когда Kappa лежит: именно ввод
+            логина ставит вход в очередь, и прятать её — значит лишать
+            оператора этой возможности. */}
+        {kappaReachable === false && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16, textAlign: 'left' }}
+            message="Kappa сейчас недоступна"
+            description={
+              'Введите данные — вход выполнится автоматически, как только '
+              + 'связь восстановится, и результаты уйдут в Kappa сами. '
+              + 'Либо продолжайте без входа: обработка работает в любом случае.'
+            }
+          />
+        )}
+
         {error && (
           <Alert
             message={error}
@@ -107,11 +124,16 @@ function KappaLogin({ onLoginSuccess }) {
             <Input.Password prefix={<LockOutlined />} placeholder="Пароль" />
           </Form.Item>
 
-          <Form.Item>
+          <Form.Item style={{ marginBottom: onSkip ? 8 : 0 }}>
             <Button type="primary" htmlType="submit" loading={loading} block>
               Войти
             </Button>
           </Form.Item>
+          {onSkip && (
+            <Button type="link" block onClick={onSkip}>
+              Продолжить без входа
+            </Button>
+          )}
         </Form>
       </Card>
     </div>

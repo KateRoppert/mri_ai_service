@@ -47,6 +47,10 @@ function App() {
   const [sessionChecked, setSessionChecked] = useState(false);
   // Логин, под которым бэкенд войдёт сам, когда связь появится (без пароля).
   const [pendingLogin, setPendingLogin] = useState(null);
+  // Оператор явно выбрал работать без входа. Намеренно не сохраняется:
+  // после перезагрузки страницы снова предлагаем войти, а не молча
+  // оставляем в анонимном режиме.
+  const [workOffline, setWorkOffline] = useState(false);
 
   // Сессия живёт в БД бэкенда и переживает перезагрузку страницы. Без её
   // восстановления обновление F5 выбрасывало оператора в «работу без входа»,
@@ -107,11 +111,17 @@ function App() {
     return () => clearInterval(interval);
   }, [kappaSession]);
 
+  // Форму показываем, пока оператор не вошёл, не поставил вход в очередь и
+  // не отказался от него явно.
+  const showLoginPage = sessionChecked && !kappaSession
+    && !pendingLogin && !workOffline;
+
   const handleLoginSuccess = (data) => {
     setKappaSession(data);
     localStorage.setItem('kappa_session_id', data.session_id);
     setShowLogin(false);
     setKappaReachable(true);
+    setWorkOffline(false);
     // Logging in adopts runs that finished while Kappa was down and clears
     // their backoff, so the operator is told delivery is moving again.
     if (data.resumed_uploads) {
@@ -133,6 +143,10 @@ function App() {
     }
     setKappaSession(null);
     localStorage.removeItem('kappa_session_id');
+    // Бэкенд при выходе забывает и отложенный вход; сбрасываем и здесь,
+    // чтобы форма появилась сразу, а не после ближайшего опроса здоровья.
+    setPendingLogin(null);
+    setWorkOffline(false);
   };
 
   /**
@@ -288,13 +302,19 @@ function App() {
       </Layout.Header>
 
       <Layout.Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
-        {/* Три состояния, а не два. Kappa доступна и входа нет — это
-            обычная авторизация, как раньше. Работа без входа — исключение
-            для случая, когда войти физически невозможно, а не новая норма. */}
-        {sessionChecked && !kappaSession && kappaReachable && (
-          <KappaLogin onLoginSuccess={handleLoginSuccess} />
+        {/* Форма входа — точка входа всегда, доступна Kappa или нет.
+            Прятать её при недоступной Kappa значило лишать оператора
+            возможности поставить вход в очередь: именно ввод логина её и
+            запускает. Обходим форму только если вход уже поставлен в
+            очередь или оператор явно выбрал работать без него. */}
+        {showLoginPage && (
+          <KappaLogin
+            onLoginSuccess={handleLoginSuccess}
+            kappaReachable={kappaReachable}
+            onSkip={kappaReachable === false ? () => setWorkOffline(true) : undefined}
+          />
         )}
-        {sessionChecked && !kappaSession && kappaReachable === false && (
+        {sessionChecked && !kappaSession && !showLoginPage && kappaReachable === false && (
           <Alert
             type="warning"
             showIcon
@@ -328,7 +348,7 @@ function App() {
         >
           <KappaLogin onLoginSuccess={handleLoginSuccess} />
         </Modal>
-        {!(sessionChecked && !kappaSession && kappaReachable) && (
+        {!showLoginPage && (
           <>
             <Tabs
               activeKey={activeTabKey}
