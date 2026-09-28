@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # 1. Берем старый образ как фундамент (там уже есть рабочие FSL и ANTs)
 FROM kateroppert/mri-ai-service:latest
 
@@ -20,12 +21,15 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 5. Собираем ВАШ НОВЫЙ фронтенд
-COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm install
-COPY frontend/ ./frontend/
-RUN cd frontend && npm run build
 
+# ПОРЯДОК СЛОЁВ. Python-зависимости идут ДО фронтенда намеренно.
+#
+# Docker инвалидирует все слои ниже изменившегося. Когда `COPY frontend/`
+# стоял выше, любая правка одной строки в React обнуляла и установку torch —
+# и сборка заново тянула ~5 ГБ колёс CUDA, включая cuDNN на 658 МБ. Правки
+# фронта случаются постоянно, requirements.txt меняется редко, поэтому
+# дорогое и стабильное должно лежать выше дешёвого и изменчивого.
+#
 # Устойчивость загрузок: колёса тут стокилобайтные не бывают, а обрыв на
 # середине большого файла ронял всю сборку. pip 25.1+ умеет докачивать.
 # Стоит здесь, а не в начале файла: ENV инвалидирует кэш всех слоёв ниже,
@@ -37,7 +41,12 @@ ENV PIP_RESUME_RETRIES=5
 # 6. Устанавливаем ВАШИ Python-зависимости
 # В старом образе точно есть питон. Ставим поверх нужные вам библиотеки.
 COPY requirements.txt .
-RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
+# --mount вместо --no-cache-dir: кэш pip живёт ВНЕ образа, в кэше BuildKit.
+# Размер образа от этого не растёт, зато прерванная сборка не качает заново
+# то, что уже скачала. Именно --no-cache-dir делал каждую повторную попытку
+# полноценной пятигигабайтной загрузкой.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --ignore-installed -r requirements.txt
 
 # 6a. Torch, закреплённый на сборку под CUDA 12.8 — СТРОГО ДО hd-bet.
 #
@@ -55,8 +64,8 @@ RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
 # Когда нужная версия уже стоит, pip помечает требование выполненным и не
 # качает ничего: проверено `pip install --dry-run hd-bet==2.0.1` в готовом
 # образе — скачивается один argparse (23 КБ).
-RUN pip install --no-cache-dir \
-    torch==2.11.0 torchvision \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch==2.11.0 torchvision \
     --index-url https://download.pytorch.org/whl/cu128
 
 # 6b. HD-BET — альтернативный скалстриппер для этапа 05
@@ -67,7 +76,8 @@ RUN pip install --no-cache-dir \
 # этот каталог смонтирован томом в docker-compose, иначе они качались бы
 # заново после каждого пересоздания контейнера.
 # Torch выше уже удовлетворяет его требование — CUDA-колёса не скачиваются.
-RUN pip install --no-cache-dir hd-bet==2.0.1
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install hd-bet==2.0.1
 
 # pyarrow приходит транзитивно, но его бинарник требует GLIBCXX_3.4.32,
 # а в базовом образе максимум 3.4.30 — любой импорт sklearn (через
@@ -76,6 +86,12 @@ RUN pip install --no-cache-dir hd-bet==2.0.1
 # поэтому ImportError пробивается наружу. Ничто в проекте от pyarrow не
 # зависит (pip show -> Required-by пусто), поэтому убираем.
 RUN pip uninstall -y pyarrow
+
+# 5. Собираем ВАШ НОВЫЙ фронтенд
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm install
+COPY frontend/ ./frontend/
+RUN cd frontend && npm run build
 
 # 7. Копируем ВАШ НОВЫЙ код бэкенда и оркестратора
 COPY backend/ ./backend/
