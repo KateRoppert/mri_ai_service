@@ -13,8 +13,10 @@ import kappa_pending_login as pending  # noqa: E402
 @pytest.fixture(autouse=True)
 def _clean():
     pending.forget("тест")
+    pending.clear_outcome()
     yield
     pending.forget("тест")
+    pending.clear_outcome()
 
 
 def test_remembers_the_login_id_but_never_exposes_the_password():
@@ -101,3 +103,57 @@ def test_credentials_expire_after_the_ttl():
 def test_nothing_is_held_without_a_password():
     pending.remember("e.roppert", "")
     assert pending.held_login() is None
+
+
+@pytest.mark.asyncio
+async def test_success_publishes_the_session_for_the_browser(monkeypatch):
+    """The auto-login creates a session the browser has never seen. Without
+    handing its id over, the page keeps saying "we'll log in automatically"
+    long after the login happened."""
+    async def _ok(login_id, passwd):
+        return {
+            "session_id": "sess-42", "user_name": "e.roppert",
+            "first_name": "Kate", "last_name": "R",
+        }
+
+    monkeypatch.setattr("kappa_auth.kappa_login", _ok)
+    pending.remember("e.roppert", "secret")
+
+    await pending.try_login_now()
+
+    out = pending.outcome()
+    assert out["status"] == "succeeded"
+    assert out["session_id"] == "sess-42"
+    assert out["first_name"] == "Kate"
+    # Still readable after a page reload — the browser may not have polled yet.
+    assert pending.outcome()["session_id"] == "sess-42"
+
+
+@pytest.mark.asyncio
+async def test_rejection_is_reported_so_the_operator_can_retype(monkeypatch):
+    """A wrong password must surface, not vanish silently."""
+    async def _rejected(login_id, passwd):
+        return None
+
+    monkeypatch.setattr("kappa_auth.kappa_login", _rejected)
+    pending.remember("e.roppert", "wrong")
+
+    await pending.try_login_now()
+
+    out = pending.outcome()
+    assert out["status"] == "rejected"
+    assert out["login_id"] == "e.roppert"
+
+
+@pytest.mark.asyncio
+async def test_a_new_attempt_clears_the_previous_outcome(monkeypatch):
+    async def _rejected(login_id, passwd):
+        return None
+
+    monkeypatch.setattr("kappa_auth.kappa_login", _rejected)
+    pending.remember("e.roppert", "wrong")
+    await pending.try_login_now()
+    assert pending.outcome()["status"] == "rejected"
+
+    pending.remember("e.roppert", "another-try")
+    assert pending.outcome() is None

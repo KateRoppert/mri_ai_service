@@ -28,13 +28,21 @@ CREDENTIAL_TTL_HOURS = 24
 # Module-private and never rendered: no __repr__, no logging, no API field.
 _held: Optional[Dict[str, Any]] = None
 
+# Чем закончилась последняя автоматическая попытка входа. Живёт отдельно от
+# _held: данные к этому моменту уже стёрты, а рассказать оператору, чем всё
+# кончилось, ещё нужно.
+#   {"status": "succeeded", "session_id", "user_name", "first_name", "last_name"}
+#   {"status": "rejected",  "login_id"}
+_outcome: Optional[Dict[str, Any]] = None
+
 
 def remember(login_id: str, passwd: str) -> None:
     """Hold a login attempt that could not be completed because Kappa was
     unreachable. Never called for a rejected password."""
-    global _held
+    global _held, _outcome
     if not login_id or not passwd:
         return
+    _outcome = None                      # новая попытка — прошлый итог неактуален
     _held = {
         "login_id": login_id,
         "passwd": passwd,
@@ -49,6 +57,21 @@ def forget(reason: str) -> None:
     if _held is not None:
         logger.info("Забыты учётные данные (%s)", reason)
     _held = None
+
+
+def outcome() -> Optional[Dict[str, Any]]:
+    """Чем закончился автоматический вход, чтобы интерфейс мог это показать.
+
+    Не стирается при чтении: страницу могут перезагрузить, и подхватить
+    созданную сессию нужно всё равно. Сбрасывается выходом из аккаунта и
+    новой попыткой входа.
+    """
+    return dict(_outcome) if _outcome else None
+
+
+def clear_outcome() -> None:
+    global _outcome
+    _outcome = None
 
 
 def held_login() -> Optional[str]:
@@ -87,13 +110,25 @@ async def try_login_now() -> Optional[Dict[str, Any]]:
         logger.error("Отложенный вход не удался: %s", e)
         return None
 
+    global _outcome
+
     if result is None:
         # Kappa answered and said no. Retrying the same wrong password is
         # exactly how an account gets locked, so stop here and make the
         # operator re-enter it.
         forget("Kappa отклонила учётные данные")
+        _outcome = {"status": "rejected", "login_id": login_id}
         return None
 
     forget("выполнен автоматический вход")
+    # Сессию создал бэкенд, и браузер о ней не знает — без этого он так и
+    # будет писать «войдём автоматически», хотя вход давно выполнен.
+    _outcome = {
+        "status": "succeeded",
+        "session_id": result.get("session_id"),
+        "user_name": result.get("user_name"),
+        "first_name": result.get("first_name"),
+        "last_name": result.get("last_name"),
+    }
     logger.info("Автоматический вход в Kappa выполнен: %s", login_id)
     return result

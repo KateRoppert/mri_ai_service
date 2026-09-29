@@ -19,7 +19,7 @@ import wsService from '../services/websocket';
 import { confirmAndResume } from '../utils/resumeRun';
 import { getPipelineStatus, getEntitiesForRun, stopPipelineRun } from '../services/api';
 
-const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory }) => {
+const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory, pendingLogin = null }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [stages, setStages] = useState({});
   const [overallProgress, setOverallProgress] = useState(0);
@@ -391,7 +391,12 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
             kappaDeferred.status === 'needs_attention'
               ? 'Автоматический повтор не поможет — подробности в колонке Kappa в истории запусков.'
               : kappaDeferred.detail?.reason === 'no_session'
-                ? 'Токен истек. Войдите в Kappa и нажмите «Повторить сейчас» в истории запусков.'
+                // Вход может быть не «просрочен», а ещё не выполнен: оператор
+                // ввёл данные при недоступной Kappa, и вход стоит в очереди.
+                // Советовать «войдите заново» в этом случае — сбивать с толку.
+                ? (pendingLogin
+                  ? `Войдём в Kappa под «${pendingLogin}» автоматически — результаты уйдут следом.`
+                  : 'Нет входа в Kappa. Данные уйдут, как только вы войдёте.')
                 : (
                   (kappaDeferred.detail?.delivered != null
                     && kappaDeferred.detail?.total)

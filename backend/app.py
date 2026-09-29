@@ -2709,6 +2709,10 @@ async def kappa_health():
         "reachable": reachable,
         # Логин, под которым войдём сами, когда связь появится. Без пароля.
         "pending_login": kappa_pending_login.held_login(),
+        # Чем закончился автоматический вход. При успехе здесь лежит
+        # session_id созданной сессии: браузер её не создавал и иначе
+        # никогда бы о ней не узнал.
+        "auto_login": kappa_pending_login.outcome(),
     }
 
 
@@ -2746,6 +2750,7 @@ async def kappa_logout(session_id: str):
     # Выход отменяет и отложенный вход: оператор явно сказал «не я».
     import kappa_pending_login
     kappa_pending_login.forget("оператор вышел из аккаунта")
+    kappa_pending_login.clear_outcome()
 
     db = SessionLocal()
     try:

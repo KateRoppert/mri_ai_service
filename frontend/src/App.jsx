@@ -47,16 +47,42 @@ function App() {
   const [sessionChecked, setSessionChecked] = useState(false);
   // Логин, под которым бэкенд войдёт сам, когда связь появится (без пароля).
   const [pendingLogin, setPendingLogin] = useState(null);
-  // Оператор явно выбрал работать без входа. Намеренно не сохраняется:
-  // после перезагрузки страницы снова предлагаем войти, а не молча
-  // оставляем в анонимном режиме.
-  const [workOffline, setWorkOffline] = useState(false);
+  // Оператор уже прошёл экран входа — вошёл, поставил вход в очередь или
+  // явно отказался. С этого момента форма НИКОГДА не подменяет собой рабочую
+  // область: у человека на экране может идти прогон, за которым он следит,
+  // и выбрасывать его оттуда недопустимо. Просить войти можно только
+  // плашкой и окном поверх. Намеренно не сохраняется между перезагрузками:
+  // на свежей загрузке форма снова становится точкой входа.
+  const [workspaceEntered, setWorkspaceEntered] = useState(false);
+  // Автоматический вход не удался: пароль не подошёл. Показываем и ждём.
+  const [loginRejected, setLoginRejected] = useState(null);
   // Kappa только что вернулась. Держим зелёную плашку недолго: оператор,
   // сидящий перед экраном, должен увидеть, что связь восстановилась, но
   // жить там она не должна — дальше о выгрузке говорят статусы в истории.
   const [justRecovered, setJustRecovered] = useState(false);
   const wasReachable = useRef(null);
   const recoveryTimer = useRef(null);
+
+  /** Разобрать ответ /health: доступность, очередь входа и его итог. */
+  const applyHealth = (health) => {
+    noteReachable(health?.reachable !== false);
+    setPendingLogin(health?.pending_login ?? null);
+
+    const auto = health?.auto_login;
+    if (auto?.status === 'succeeded' && auto.session_id) {
+      // Сессию создал бэкенд; браузер узнаёт её id только отсюда.
+      localStorage.setItem('kappa_session_id', auto.session_id);
+      setKappaSession({
+        session_id: auto.session_id,
+        user_name: auto.user_name,
+        first_name: auto.first_name,
+        last_name: auto.last_name,
+      });
+      setLoginRejected(null);
+    } else if (auto?.status === 'rejected') {
+      setLoginRejected(auto.login_id || '');
+    }
+  };
 
   /** Заметить, что Kappa снова отвечает, и показать это. */
   const noteReachable = (reachable) => {
@@ -90,10 +116,7 @@ function App() {
       }
       try {
         const health = await getKappaHealth();
-        if (!cancelled) {
-          noteReachable(health?.reachable !== false);
-          setPendingLogin(health?.pending_login ?? null);
-        }
+        if (!cancelled) applyHealth(health);
       } catch {
         if (!cancelled) setKappaReachable(false);
       }
@@ -102,7 +125,9 @@ function App() {
 
     restore();
     return () => { cancelled = true; };
-  }, []);
+    // applyHealth намеренно вне зависимостей: она пересоздаётся на каждый
+    // рендер, и включение её сюда гоняло бы проверку бесконечно.
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Пока входа нет, раз в 15 секунд проверяем, не ответила ли Kappa. Без
   // этого страница узнавала о возврате сервиса только по F5, из-за чего
@@ -113,33 +138,28 @@ function App() {
     const interval = setInterval(async () => {
       try {
         const health = await getKappaHealth();
-        noteReachable(health?.reachable !== false);
-        setPendingLogin(health?.pending_login ?? null);
-
-        // Бэкенд мог войти сам по отложенным учётным данным — тогда сессия
-        // уже есть, и спрашивать оператора больше не о чем.
-        const sessionId = localStorage.getItem('kappa_session_id');
-        if (sessionId) {
-          const me = await getKappaMe(sessionId);
-          setKappaSession({ ...me, session_id: sessionId });
-        }
+        applyHealth(health);
       } catch {
         // Молча: это фоновая проверка, а не действие оператора.
       }
     }, 15000);
     return () => clearInterval(interval);
-  }, [kappaSession]);
+    // applyHealth вне зависимостей по той же причине: иначе интервал
+    // пересоздавался бы на каждый рендер — тот самый бесконечный поллинг,
+    // от которого уже лечили историю запусков.
+  }, [kappaSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Форму показываем, пока оператор не вошёл, не поставил вход в очередь и
   // не отказался от него явно.
   const showLoginPage = sessionChecked && !kappaSession
-    && !pendingLogin && !workOffline;
+    && !pendingLogin && !workspaceEntered;
 
   /** Вход поставлен в очередь: Kappa не ответила, данные приняты. */
   const handleDeferredLogin = (loginId) => {
     setPendingLogin(loginId);
     setShowLogin(false);
-    setWorkOffline(false);
+    setLoginRejected(null);
+    setWorkspaceEntered(true);
   };
 
   const handleLoginSuccess = (data) => {
@@ -147,7 +167,8 @@ function App() {
     localStorage.setItem('kappa_session_id', data.session_id);
     setShowLogin(false);
     setKappaReachable(true);
-    setWorkOffline(false);
+    setWorkspaceEntered(true);
+    setLoginRejected(null);
     // Logging in adopts runs that finished while Kappa was down and clears
     // their backoff, so the operator is told delivery is moving again.
     if (data.resumed_uploads) {
@@ -172,7 +193,8 @@ function App() {
     // Бэкенд при выходе забывает и отложенный вход; сбрасываем и здесь,
     // чтобы форма появилась сразу, а не после ближайшего опроса здоровья.
     setPendingLogin(null);
-    setWorkOffline(false);
+    setWorkspaceEntered(false);
+    setLoginRejected(null);
   };
 
   /**
@@ -318,9 +340,11 @@ function App() {
         ) : (
           <Space style={{ flexShrink: 0 }}>
             <Text style={{ color: '#ffd666', whiteSpace: 'nowrap' }}>
-              {pendingLogin ? `Войдём автоматически: ${pendingLogin}` : 'Без входа в Kappa'}
+              {loginRejected !== null
+                ? 'Вход не выполнен'
+                : (pendingLogin ? `Войдём автоматически: ${pendingLogin}` : 'Без входа в Kappa')}
             </Text>
-            {!pendingLogin && (
+            {(!pendingLogin || loginRejected !== null) && (
               <Button size="small" ghost onClick={() => setShowLogin(true)}>
                 Войти в Kappa
               </Button>
@@ -340,13 +364,35 @@ function App() {
             onLoginSuccess={handleLoginSuccess}
             kappaReachable={kappaReachable}
             onDeferred={handleDeferredLogin}
-            onSkip={kappaReachable === false ? () => setWorkOffline(true) : undefined}
+            onSkip={kappaReachable === false ? () => setWorkspaceEntered(true) : undefined}
           />
         )}
+        {/* Пароль не подошёл — узнаём об этом только когда Kappa ответила,
+            то есть уже посреди работы. Поэтому просим ввести заново плашкой
+            и окном, а не подменой всей рабочей области. */}
+        {!showLoginPage && loginRejected !== null && !kappaSession && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Kappa не приняла логин или пароль"
+            description={
+              `Связь восстановилась, но войти под «${loginRejected}» не `
+              + 'удалось. Обработка продолжается, результаты сохранены — '
+              + 'введите данные заново, и они уйдут в Kappa.'
+            }
+            action={
+              <Button size="small" type="primary" onClick={() => setShowLogin(true)}>
+                Ввести заново
+              </Button>
+            }
+          />
+        )}
+
         {/* Зелёная — коротко, чтобы сидящий перед экраном увидел возврат
             связи. Дальше о выгрузке говорят статусы в истории, и держать
             плашку постоянно значило бы приучить её не замечать. */}
-        {!showLoginPage && justRecovered && (
+        {!showLoginPage && justRecovered && loginRejected === null && (
           <Alert
             type="success"
             showIcon
@@ -366,7 +412,8 @@ function App() {
             }
           />
         )}
-        {!showLoginPage && !justRecovered && !kappaSession && kappaReachable === false && (
+        {!showLoginPage && !justRecovered && loginRejected === null
+          && !kappaSession && kappaReachable === false && (
           <Alert
             type="warning"
             showIcon
@@ -427,6 +474,7 @@ function App() {
                         </Card>
                       ) : (
                         <ProgressMonitor
+                        pendingLogin={pendingLogin}
                           // Remount on a new run instead of reusing the
                           // previous one's state. Without this React keeps
                           // the same instance across runs, so a finished
