@@ -196,7 +196,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     }
     if (d.reason === 'no_session') {
       return counted
-        ? `${have} в Kappa · нужен повторный вход`
+        ? `${have} в Kappa · нужен вход в Kappa`
         : 'ожидает выгрузки · нужен вход в Kappa';
     }
     if (d.reason === 'network') {
@@ -214,7 +214,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   const deliveryHint = (d) => {
     if (d.status === 'done') return 'Все сессии этого запуска есть в Kappa';
     if (d.reason === 'no_session') {
-      return 'Токен истек. Нажмите тег и «Повторить сейчас» после входа в Kappa.';
+      return 'Нет входа в Kappa. Данные уйдут, как только вход будет выполнен.';
     }
     if (d.reason === 'network') {
       return 'Уже загруженные сессии на месте. Остальные уйдут сами, когда Kappa снова ответит.';
