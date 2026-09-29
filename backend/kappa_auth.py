@@ -75,6 +75,12 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
 
     return {
         "session_id": session_id,
+        # user_id обязателен: по нему кто угодно позже находит живой токен
+        # (find_live_session_for_user) и усыновляет прогоны, запущенные без
+        # входа (adopt_orphan_runs). Без него усыновление тихо не делало
+        # ничего — вход происходил, а данные так и не уходили.
+        "user_id": data.get("userId"),
+        "user_type_id": data.get("userTypeId"),
         "user_name": data.get("userName"),
         "first_name": data.get("firstName"),
         "last_name": data.get("lastName"),
@@ -152,6 +158,42 @@ def find_live_session_for_user(
                 ),
             }
         return None
+    finally:
+        db.close()
+
+
+def user_id_for_login(login_id: str) -> Optional[int]:
+    """user_id по логину, из ранее сохранённых сессий. Без обращения к Kappa.
+
+    Kappa кладёт в userName ровно тот логин, которым входили, поэтому связь
+    точная, а не догадка. Нужно, когда Kappa недоступна, а определить датасет
+    для нумерации уже надо: конфиг ключуется по user_id.
+    """
+    if not login_id:
+        return None
+    db = SessionLocal()
+    try:
+        record = db.query(KappaSession).filter(
+            KappaSession.user_name == login_id
+        ).order_by(KappaSession.created_at.desc()).first()
+        return record.user_id if record else None
+    finally:
+        db.close()
+
+
+def sole_known_user_id() -> Optional[int]:
+    """Единственный пользователь, работавший на этой машине, если он один.
+
+    Когда аккаунт на машине один, «чей это прогон» — не догадка, а факт.
+    Если аккаунтов несколько, возвращаем None и не гадаем.
+    """
+    db = SessionLocal()
+    try:
+        ids = {
+            row[0] for row in db.query(KappaSession.user_id).distinct().all()
+            if row[0] is not None
+        }
+        return next(iter(ids)) if len(ids) == 1 else None
     finally:
         db.close()
 

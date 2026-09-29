@@ -2799,7 +2799,21 @@ async def retry_kappa_upload(run_id: str, session_id: str):
         )
 
     pipeline_monitor._seed_delivery_progress(run_id)
-    results = await uploader.upload_results()
+    # Исход записываем в любом случае. Раньше исключение уходило наружу
+    # мимо _record_delivery, и в колонке навсегда оставалось «загружается»
+    # от _seed_delivery_progress — оператор видел ошибку и одновременно
+    # бодрый статус, который ей противоречил.
+    try:
+        results = await uploader.upload_results()
+    except Exception as exc:  # noqa: BLE001 — записываем и отвечаем внятно
+        logger.exception("Kappa retry-upload failed for %s", run_id)
+        pipeline_monitor._record_delivery(run_id, None, exc, source="вручную")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не удалось выгрузить в Kappa: {type(exc).__name__}. "
+                   f"Подробности — в logs/kappa.log этого запуска.",
+        )
+
     logger.info("Kappa retry-upload results for %s: %s", run_id, results)
 
     # Same policy as the post-run upload and the background worker — three

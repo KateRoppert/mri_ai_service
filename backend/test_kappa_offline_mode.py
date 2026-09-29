@@ -135,3 +135,111 @@ def test_reachability_transition_resumes_waiting_runs(monkeypatch):
 
     worker.note_kappa_reachability()
     assert len(calls) == 1                  # still up -> backoff respected
+
+
+def test_kappa_login_returns_what_adoption_needs(monkeypatch):
+    """Contract between kappa_login and adopt_orphan_runs.
+
+    adopt_orphan_runs(result.get("user_id")) silently did nothing for weeks
+    because kappa_login never returned that key: it exits early on a None
+    user id. Logging in appeared to work while no run was ever adopted, so
+    offline runs waited on "no session" forever. Testing the two pieces
+    separately is exactly what let this through.
+    """
+    import asyncio
+    import json as _json
+
+    import kappa_auth
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "token": "t", "userId": 26, "userTypeId": 1,
+                "userName": "e.roppert", "firstName": "Kate", "lastName": "R",
+                "tokenExpiryDate": "2099-01-01T00:00:00.000000Z",
+                "orgDetails": None,
+            }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, *a, **kw):
+            return _Response()
+
+    monkeypatch.setattr(kappa_auth.httpx, "AsyncClient", lambda **kw: _Client())
+
+    result = asyncio.run(kappa_auth.kappa_login("e.roppert", "secret"))
+
+    assert result["user_id"] == 26, "adopt_orphan_runs cannot work without this"
+    assert result["user_type_id"] == 1
+    _json.dumps(result)          # ответ уходит в HTTP — должен сериализоваться
+
+    # Чистим созданную сессию, чтобы не мешала другим тестам.
+    from database import SessionLocal
+    from registry_models import KappaSession
+    db = SessionLocal()
+    try:
+        row = db.query(KappaSession).filter(
+            KappaSession.session_id == result["session_id"]
+        ).first()
+        if row:
+            db.delete(row)
+            db.commit()
+    finally:
+        db.close()
+
+
+def test_offline_numbering_uses_the_configured_dataset(monkeypatch, tmp_path):
+    """Offline runs must continue the dataset's numbering, not restart at 1.
+
+    pending:<run_id> always starts at sub-001, so binding it into a dataset
+    that already holds sub-001 collided on UNIQUE(scope, bids_id) and took the
+    whole upload down. The dataset is knowable offline — it is in a YAML file.
+    """
+    import asyncio
+
+    import kappa_auth
+    import kappa_dataset_mapping as kdm
+    import numbering
+
+    mapping = tmp_path / "kappa_datasets.yaml"
+    mapping.write_text(
+        "datasets:\n  26:glioblastoma:current: 351\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(kdm, "MAPPING_FILE", mapping)
+    monkeypatch.setattr(kappa_auth, "sole_known_user_id", lambda: 26)
+
+    scope, dataset_id, warning = asyncio.run(numbering.scope_for_run(
+        "test_offline_ds", "glioblastoma", None, intends_upload=True,
+    ))
+
+    assert scope == numbering.dataset_scope(351)
+    assert dataset_id == 351
+    assert "351" in warning
+
+
+def test_offline_numbering_refuses_to_guess_between_accounts(monkeypatch):
+    """Two accounts and no queued login: numbering into the wrong dataset is
+    worse than postponing, so fall back to the pending scope."""
+    import asyncio
+
+    import kappa_auth
+    import kappa_pending_login
+    import numbering
+
+    monkeypatch.setattr(kappa_auth, "sole_known_user_id", lambda: None)
+    kappa_pending_login.forget("подготовка теста")
+
+    scope, dataset_id, _ = asyncio.run(numbering.scope_for_run(
+        "test_offline_ambiguous", "glioblastoma", None, intends_upload=True,
+    ))
+
+    assert scope == numbering.pending_scope("test_offline_ambiguous")
+    assert dataset_id is None

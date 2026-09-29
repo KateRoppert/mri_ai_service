@@ -101,3 +101,37 @@ def test_concurrent_allocation_does_not_reuse_a_number(db):
     for t in threads: t.join()
 
     assert len(set(results)) == 8
+
+
+def test_rebind_leaves_colliding_numbers_behind(tmp_path):
+    """A pending scope starts at sub-001, so binding it into a dataset that
+    already holds sub-001 collides. A blanket UPDATE raised UNIQUE and took
+    the whole upload down with a 500 — the worst answer, because the
+    collision is precisely what the operator needs told."""
+    db = tmp_path / "alloc.db"
+
+    # Датасет уже занял sub-001 другим пациентом.
+    assert get_or_allocate("ds:351", "KA01", db_path=db) == "sub-001"
+    # Офлайн-прогон независимо выдал sub-001 своему.
+    assert get_or_allocate("pending:run-x", "KA18", db_path=db) == "sub-001"
+
+    moved = rebind_scope("pending:run-x", "ds:351", db_path=db)
+
+    assert moved == 0
+    # Конфликтующая запись осталась на месте — её разберёт проверка name_clash.
+    assert get_bids_id("pending:run-x", "KA18", db_path=db) == "sub-001"
+    # И чужой номер не перезаписан.
+    assert get_bids_id("ds:351", "KA01", db_path=db) == "sub-001"
+
+
+def test_rebind_still_moves_what_does_not_collide(tmp_path):
+    db = tmp_path / "alloc.db"
+    assert get_or_allocate("ds:351", "KA01", db_path=db) == "sub-001"
+    assert get_or_allocate("pending:run-y", "KA18", db_path=db) == "sub-001"
+    assert get_or_allocate("pending:run-y", "KA19", db_path=db) == "sub-002"
+
+    moved = rebind_scope("pending:run-y", "ds:351", db_path=db)
+
+    assert moved == 1
+    assert get_bids_id("ds:351", "KA19", db_path=db) == "sub-002"
+    assert get_bids_id("pending:run-y", "KA18", db_path=db) == "sub-001"
