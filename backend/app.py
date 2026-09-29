@@ -2702,9 +2702,22 @@ async def kappa_health():
     Обычный TCP-коннект: ни токена, ни обращения к API.
     """
     import kappa_pending_login
-    from kappa_delivery_worker import kappa_reachable
+    from kappa_delivery_worker import kappa_reachable, try_deferred_login
 
     reachable = await asyncio.to_thread(kappa_reachable)
+
+    # Доигрываем отложенный вход прямо здесь. Иначе его делал только фоновый
+    # воркер раз в 60 секунд, а этот запрос ходит раз в 15 — и оператор видел
+    # зелёную плашку «Kappa снова доступна» за минуту до того, как узнавал,
+    # что пароль не подошёл. Теперь оба факта приходят одним ответом.
+    # Повторов это не плодит: успех и отказ одинаково стирают учётные данные,
+    # а одновременные попытки разведены замком в kappa_pending_login.
+    if reachable and kappa_pending_login.held_login():
+        try:
+            await try_deferred_login()
+        except Exception as e:  # noqa: BLE001 — проверка связи важнее
+            logger.error("Отложенный вход из /health не удался: %s", e)
+
     return {
         "reachable": reachable,
         # Логин, под которым войдём сами, когда связь появится. Без пароля.

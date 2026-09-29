@@ -120,3 +120,55 @@ async def test_rejected_login_is_not_remembered(monkeypatch):
         assert kappa_pending_login.held_login() is None
     finally:
         kappa_pending_login.forget("уборка теста")
+
+
+@pytest.mark.asyncio
+async def test_health_completes_the_deferred_login_immediately(monkeypatch):
+    """The health probe runs every 15s, the worker every 60s. Leaving the
+    login to the worker meant the operator saw "Kappa is back" up to a minute
+    before learning the password had been refused."""
+    import app
+    import kappa_pending_login
+
+    called = []
+
+    async def _fake_deferred():
+        called.append(True)
+        return None
+
+    monkeypatch.setattr("kappa_delivery_worker.kappa_reachable", lambda *a, **k: True)
+    monkeypatch.setattr("kappa_delivery_worker.try_deferred_login", _fake_deferred)
+
+    kappa_pending_login.remember("test.user", "secret")
+    try:
+        result = await app.kappa_health()
+        assert result["reachable"] is True
+        assert called, "вход не доигран в том же запросе"
+    finally:
+        kappa_pending_login.forget("уборка теста")
+        kappa_pending_login.clear_outcome()
+
+
+@pytest.mark.asyncio
+async def test_health_does_not_try_to_log_in_while_kappa_is_down(monkeypatch):
+    """No point spending a login attempt on a service that is not answering."""
+    import app
+    import kappa_pending_login
+
+    called = []
+
+    async def _fake_deferred():
+        called.append(True)
+        return None
+
+    monkeypatch.setattr("kappa_delivery_worker.kappa_reachable", lambda *a, **k: False)
+    monkeypatch.setattr("kappa_delivery_worker.try_deferred_login", _fake_deferred)
+
+    kappa_pending_login.remember("test.user", "secret")
+    try:
+        result = await app.kappa_health()
+        assert result["reachable"] is False
+        assert not called
+    finally:
+        kappa_pending_login.forget("уборка теста")
+        kappa_pending_login.clear_outcome()

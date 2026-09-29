@@ -16,6 +16,7 @@ They are dropped as soon as any of these is true:
   * the operator logged out;
   * CREDENTIAL_TTL_HOURS elapsed, as a backstop for a long outage.
 """
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -34,6 +35,11 @@ _held: Optional[Dict[str, Any]] = None
 #   {"status": "succeeded", "session_id", "user_name", "first_name", "last_name"}
 #   {"status": "rejected",  "login_id"}
 _outcome: Optional[Dict[str, Any]] = None
+
+# Попытку входа делают двое: фоновый воркер и обработчик /api/kappa/health.
+# Без замка они могут отправить неверный пароль дважды подряд, а это прямой
+# путь к блокировке учётной записи — ровно то, от чего мы и защищаемся.
+_lock = asyncio.Lock()
 
 
 def remember(login_id: str, passwd: str) -> None:
@@ -95,40 +101,49 @@ async def try_login_now() -> Optional[Dict[str, Any]]:
     Never raises: this runs inside the delivery worker, and a failed login
     must not take the loop down with it.
     """
+    global _outcome
+
     _expire_if_stale()
     if _held is None:
         return None
 
     from kappa_auth import KappaUnreachable, kappa_login
 
-    login_id = _held["login_id"]
-    try:
-        result = await kappa_login(login_id, _held["passwd"])
-    except KappaUnreachable:
-        return None                      # still down; keep waiting
-    except Exception as e:               # noqa: BLE001
-        logger.error("Отложенный вход не удался: %s", e)
-        return None
+    # Замок держим на всю попытку, включая сетевой вызов. Брать из него
+    # только учётные данные бессмысленно: оба вызывающих прочитали бы их и
+    # оба отправили пароль — ровно двойная отправка, от которой защищаемся.
+    async with _lock:
+        # Пока ждали замок, другой вызывающий мог уже всё сделать.
+        if _held is None:
+            return None
+        login_id = _held["login_id"]
+        passwd = _held["passwd"]
 
-    global _outcome
+        try:
+            result = await kappa_login(login_id, passwd)
+        except KappaUnreachable:
+            return None                  # still down; keep waiting
+        except Exception as e:           # noqa: BLE001
+            logger.error("Отложенный вход не удался: %s", e)
+            return None
 
-    if result is None:
-        # Kappa answered and said no. Retrying the same wrong password is
-        # exactly how an account gets locked, so stop here and make the
-        # operator re-enter it.
-        forget("Kappa отклонила учётные данные")
-        _outcome = {"status": "rejected", "login_id": login_id}
-        return None
+        if result is None:
+            # Kappa answered and said no. Retrying the same wrong password is
+            # exactly how an account gets locked, so stop here and make the
+            # operator re-enter it.
+            forget("Kappa отклонила учётные данные")
+            _outcome = {"status": "rejected", "login_id": login_id}
+            return None
 
-    forget("выполнен автоматический вход")
-    # Сессию создал бэкенд, и браузер о ней не знает — без этого он так и
-    # будет писать «войдём автоматически», хотя вход давно выполнен.
-    _outcome = {
-        "status": "succeeded",
-        "session_id": result.get("session_id"),
-        "user_name": result.get("user_name"),
-        "first_name": result.get("first_name"),
-        "last_name": result.get("last_name"),
-    }
-    logger.info("Автоматический вход в Kappa выполнен: %s", login_id)
+        forget("выполнен автоматический вход")
+        # Сессию создал бэкенд, и браузер о ней не знает — без этого он так и
+        # будет писать «войдём автоматически», хотя вход давно выполнен.
+        _outcome = {
+            "status": "succeeded",
+            "session_id": result.get("session_id"),
+            "user_name": result.get("user_name"),
+            "first_name": result.get("first_name"),
+            "last_name": result.get("last_name"),
+        }
+        logger.info("Автоматический вход в Kappa выполнен: %s", login_id)
     return result

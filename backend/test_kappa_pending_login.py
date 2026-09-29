@@ -157,3 +157,25 @@ async def test_a_new_attempt_clears_the_previous_outcome(monkeypatch):
 
     pending.remember("e.roppert", "another-try")
     assert pending.outcome() is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_attempts_send_the_password_once(monkeypatch):
+    """Two callers now race for this: the worker's tick and the health probe.
+    Sending a wrong password twice in a row is how an account gets locked."""
+    import asyncio as _asyncio
+
+    calls = []
+
+    async def _slow_reject(login_id, passwd):
+        calls.append(login_id)
+        await _asyncio.sleep(0.05)      # держим окно для гонки
+        return None
+
+    monkeypatch.setattr("kappa_auth.kappa_login", _slow_reject)
+    pending.remember("e.roppert", "wrong")
+
+    await _asyncio.gather(pending.try_login_now(), pending.try_login_now())
+
+    assert len(calls) == 1, f"пароль отправлен {len(calls)} раз(а)"
+    assert pending.outcome()["status"] == "rejected"
