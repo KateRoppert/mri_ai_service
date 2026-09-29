@@ -91,6 +91,7 @@ class KappaUploader:
         # 4. Загружаем каждую сессию
         results = []
         for session_key, session_data in sessions.items():
+            self._reconciled_name = None
             # Вычисляем study_hash для дедупликации
             study_hash = self._compute_study_hash(session_data)
 
@@ -126,16 +127,21 @@ class KappaUploader:
                     attempts=1,
                 )
 
+                actual = getattr(self, "_reconciled_name", None) or session_key
                 results.append({
                     "session": session_key,
+                    "kappa_name": actual,
                     "success": bool(reconciled_id),
                     "skipped_upload": True,
                     "reconciled": bool(reconciled_id),
                     "entity_id": reconciled_id,
                     "error": None if reconciled_id else "duplicate",
                     "message": (
-                        f"Сессия {session_key} уже в датасете; локальная запись "
-                        f"{'восстановлена' if reconciled_id else 'не найдена'}"
+                        (f"Эти данные уже в датасете под именем {actual}"
+                         if actual != session_key
+                         else f"Сессия {session_key} уже в датасете")
+                        + f"; локальная запись "
+                        + f"{'восстановлена' if reconciled_id else 'не найдена'}"
                     ),
                 })
                 continue
@@ -649,8 +655,21 @@ class KappaUploader:
                         except Exception as e:
                             logger.warning("Failed to set status on reconcile: %s", e)
 
+                    # Под каким именем сущность лежит в Kappa — то и есть
+                    # правда. Регистрация под локальным session_key плодила
+                    # в реестре второго «sub-001» для другого пациента:
+                    # ровно та двусмысленность, ради устранения которой
+                    # нумерация и делалась по датасетам.
+                    actual_name = entity.get("dsEntityName") or session_key
+                    if actual_name != session_key:
+                        logger.warning(
+                            "Session %s is in dataset %d under the name %s — "
+                            "registering it under the dataset's name",
+                            session_key, dataset_id, actual_name,
+                        )
+                    self._reconciled_name = actual_name
                     self._do_local_registration(
-                        session_key, session_data, entity_id, dataset_id
+                        actual_name, session_data, entity_id, dataset_id
                     )
                     return entity_id
 

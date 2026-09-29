@@ -112,7 +112,16 @@ def log_attempt(
             if item.get("success"):
                 entity = item.get("entity_id")
                 suffix = f" (entity {entity})" if entity else ""
-                mark = "уже была в датасете" if item.get("skipped_upload") else "загружено"
+                # Имя в Kappa может отличаться от имени на диске: сессия
+                # попала в датасет под другим номером. Писать локальное имя
+                # значит утверждать, что в датасете лежит не то, что лежит.
+                actual = item.get("kappa_name")
+                if item.get("skipped_upload"):
+                    mark = (f"уже в датасете под именем {actual}"
+                            if actual and actual != name
+                            else "уже была в датасете")
+                else:
+                    mark = "загружено"
                 append(output_path, f"    {name} — {mark}{suffix}")
             else:
                 code = item.get("error") or "неизвестная ошибка"

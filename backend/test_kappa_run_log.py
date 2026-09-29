@@ -89,3 +89,21 @@ def test_writing_never_raises_on_a_bad_path(tmp_path):
     (tmp_path / "gone").write_text("I am a file, not a directory")
     kappa_run_log.append(missing, "что-нибудь")   # must not raise
     kappa_run_log.append(None, "и это тоже")
+
+
+def test_names_the_dataset_entity_when_it_differs(tmp_path):
+    """The session on disk is sub-001 but it lives in the dataset as sub-010.
+    Reporting the local name asserts something false about the dataset."""
+    result = {
+        "dataset_id": 351, "uploaded": 1, "total": 1,
+        "sessions": [{
+            "session": "sub-001_ses-001", "kappa_name": "sub-010_ses-001",
+            "success": True, "skipped_upload": True, "entity_id": "10b0923d",
+        }],
+    }
+    verdict = {"status": "done", "next_attempt": None,
+               "detail": {"delivered": 1, "total": 1, "attempts": 5}}
+    kappa_run_log.log_attempt(tmp_path, "вручную", result, None, verdict)
+
+    text = _read(tmp_path)
+    assert "уже в датасете под именем sub-010_ses-001" in text
