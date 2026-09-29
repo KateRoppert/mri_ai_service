@@ -351,13 +351,34 @@ class QualityReportListResponse(BaseModel):
 # МОДЕЛИ ДЛЯ ИСТОРИИ ЗАПУСКОВ
 # ============================================
 
+class KappaBlockedSession(BaseModel):
+    """Одна сессия, которую повтор не починит."""
+    session: Optional[str] = Field(None, description="BIDS-ключ сессии")
+    reason: str = Field(..., description="name_clash | missing_files")
+    message: str = Field("", description="Объяснение для оператора")
+
+
+class KappaDeliveryStatus(BaseModel):
+    """Состояние выгрузки прогона в Kappa."""
+    status: str = Field(..., description="pending | done | needs_attention")
+    delivered: int = Field(0, description="Сколько сессий уже в датасете")
+    total: int = Field(0, description="Сколько сессий всего")
+    blocked: List[KappaBlockedSession] = Field(default_factory=list)
+    next_attempt_at: Optional[datetime] = Field(
+        None, description="Когда будет следующая автоматическая попытка"
+    )
+    reason: Optional[str] = Field(
+        None, description="network | no_session | name_clash | missing_files | stuck"
+    )
+
+
 class PipelineRunHistoryItem(BaseModel):
     """История одного запуска"""
     run_id: str = Field(..., description="ID запуска")
     input_path: str = Field(..., description="Путь к входным данным")
     output_path: str = Field(..., description="Путь к выходным данным")
     status: PipelineStatus = Field(..., description="Статус выполнения")
-    current_stage: Optional[int] = Field(0, description="Текущий этап (1-6)") 
+    current_stage: Optional[int] = Field(0, description="Текущий этап (1-6)")
     quality_score: Optional[float] = Field(None, description="Оценка качества")
     quality_category: Optional[str] = Field(None, description="Категория качества")
     created_at: datetime = Field(..., description="Время создания")
@@ -365,6 +386,9 @@ class PipelineRunHistoryItem(BaseModel):
     completed_at: Optional[datetime] = Field(None, description="Время завершения")
     duration_seconds: Optional[int] = Field(None, description="Длительность в секундах")
     lesion_type: Optional[str] = Field(None, description="Тип поражения")
+    kappa_upload: Optional[KappaDeliveryStatus] = Field(
+        None, description="Состояние выгрузки в Kappa; None — выгрузка не предполагалась"
+    )
 
 
 class PipelineHistoryResponse(BaseModel):

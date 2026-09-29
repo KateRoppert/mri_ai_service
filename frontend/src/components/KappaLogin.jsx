@@ -4,9 +4,33 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons';
 
 const { Title, Text } = Typography;
 
-function KappaLogin({ onLoginSuccess }) {
+function KappaLogin({ onLoginSuccess, kappaReachable = true, onSkip, onDeferred }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  /**
+   * Достать человеческое сообщение из неудачного ответа.
+   *
+   * Тело ошибки — не всегда JSON: необработанное исключение отдаётся
+   * Uvicorn'ом простой строкой "Internal Server Error", и попытка её
+   * распарсить показывала оператору «JSON.parse: unexpected character»
+   * вместо объяснения, что Kappa недоступна.
+   */
+  const readError = async (response) => {
+    try {
+      const data = await response.json();
+      if (data?.detail) return data.detail;
+    } catch {
+      // тело не JSON — сообщение соберём по коду ответа ниже
+    }
+    if (response.status === 503) {
+      return 'Kappa сейчас недоступна. Попробуйте позже.';
+    }
+    if (response.status === 401) {
+      return 'Неверный логин или пароль Kappa.';
+    }
+    return `Не удалось войти (код ${response.status}).`;
+  };
 
   const handleSubmit = async (values) => {
     setLoading(true);
@@ -22,15 +46,29 @@ function KappaLogin({ onLoginSuccess }) {
         }),
       });
 
+      // 503 — Kappa не ответила, и бэкенд запомнил введённое, чтобы войти
+      // самому. Для оператора это успех, а не ошибка: он сделал всё, что от
+      // него требовалось. Показывать красным то же самое, что уже написано
+      // в жёлтом предупреждении выше, — значит пугать без повода.
+      if (response.status === 503 && onDeferred) {
+        onDeferred(values.login_id);
+        return;
+      }
+
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Ошибка авторизации');
+        throw new Error(await readError(response));
       }
 
       const data = await response.json();
       onLoginSuccess(data);
     } catch (err) {
-      setError(err.message);
+      // TypeError от fetch означает, что до бэкенда не достучались вовсе
+      // (сеть, контейнер лежит) — это не «ошибка авторизации».
+      setError(
+        err instanceof TypeError
+          ? 'Нет связи с сервисом. Проверьте, запущен ли он.'
+          : err.message,
+      );
     } finally {
       setLoading(false);
     }
@@ -51,6 +89,23 @@ function KappaLogin({ onLoginSuccess }) {
         <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>
           Войдите через учётную запись Kappa
         </Text>
+
+        {/* Форма остаётся точкой входа даже когда Kappa лежит: именно ввод
+            логина ставит вход в очередь, и прятать её — значит лишать
+            оператора этой возможности. */}
+        {kappaReachable === false && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16, textAlign: 'left' }}
+            message="Kappa сейчас недоступна"
+            description={
+              'Введите данные — вход выполнится автоматически, как только '
+              + 'связь восстановится, и результаты уйдут в Kappa сами. '
+              + 'Либо продолжайте без входа: обработка работает в любом случае.'
+            }
+          />
+        )}
 
         {error && (
           <Alert
@@ -78,11 +133,16 @@ function KappaLogin({ onLoginSuccess }) {
             <Input.Password prefix={<LockOutlined />} placeholder="Пароль" />
           </Form.Item>
 
-          <Form.Item>
+          <Form.Item style={{ marginBottom: onSkip ? 8 : 0 }}>
             <Button type="primary" htmlType="submit" loading={loading} block>
               Войти
             </Button>
           </Form.Item>
+          {onSkip && (
+            <Button type="link" block onClick={onSkip}>
+              Продолжить без входа
+            </Button>
+          )}
         </Form>
       </Card>
     </div>

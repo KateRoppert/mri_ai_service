@@ -19,7 +19,7 @@ import wsService from '../services/websocket';
 import { confirmAndResume } from '../utils/resumeRun';
 import { getPipelineStatus, getEntitiesForRun, stopPipelineRun } from '../services/api';
 
-const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory }) => {
+const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onRequeued, onSwitchToHistory, pendingLogin = null }) => {
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [stages, setStages] = useState({});
   const [overallProgress, setOverallProgress] = useState(0);
@@ -34,6 +34,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   const [showIncompletePatients, setShowIncompletePatients] = useState(false);
   const [validationRef, setValidationRef] = useState(null);
   const [parentRunId, setParentRunId] = useState(null);
+  const [kappaDeferred, setKappaDeferred] = useState(null);
   // WS callbacks close over a stale render; refs keep terminal-state guards correct.
   const statusRef = useRef('running');
   const terminalNotifiedRef = useRef(false);
@@ -56,6 +57,7 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
     setStopping(false);
     setResuming(false);
     setParentRunId(null);
+    setKappaDeferred(null);
 
     // Сначала получаем текущий статус через REST API
     fetchInitialStatus();
@@ -106,6 +108,17 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
   const handleWebSocketMessage = (data) => {
     if (data.type === 'progress_update' || data.type === 'status') {
       updateStatus(data);
+    } else if (data.type === 'kappa_upload_deferred') {
+      const reason = data.detail?.reason;
+      if (
+        data.status === 'needs_attention'
+        || reason === 'network'
+        || reason === 'no_session'
+      ) {
+        setKappaDeferred(data);
+      }
+    } else if (data.type === 'kappa_upload_complete') {
+      setKappaDeferred(null);
     }
   };
 
@@ -361,6 +374,36 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
             </Button>
           }
           style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {kappaDeferred && (
+        <Alert
+          type={kappaDeferred.status === 'needs_attention' ? 'error' : 'warning'}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={
+            kappaDeferred.status === 'needs_attention'
+              ? 'Выгрузка в Kappa требует внимания'
+              : 'Результаты пока не ушли в Kappa'
+          }
+          description={
+            kappaDeferred.status === 'needs_attention'
+              ? 'Автоматический повтор не поможет — подробности в колонке Kappa в истории запусков.'
+              : kappaDeferred.detail?.reason === 'no_session'
+                // Вход может быть не «просрочен», а ещё не выполнен: оператор
+                // ввёл данные при недоступной Kappa, и вход стоит в очереди.
+                // Советовать «войдите заново» в этом случае — сбивать с толку.
+                ? (pendingLogin
+                  ? `Войдём в Kappa под «${pendingLogin}» автоматически — результаты уйдут следом.`
+                  : 'Нет входа в Kappa. Данные уйдут, как только вы войдёте.')
+                : (
+                  (kappaDeferred.detail?.delivered != null
+                    && kappaDeferred.detail?.total)
+                    ? `${kappaDeferred.detail.delivered} из ${kappaDeferred.detail.total} уже в Kappa. Остальные уйдут сами, когда сервис снова ответит.`
+                    : 'Сервис недоступен. Досылка выполняется автоматически, данные не потеряны.'
+                )
+          }
         />
       )}
 

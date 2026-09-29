@@ -1,13 +1,14 @@
 /**
  * Панель валидации — список сессий, доступных для проверки врачом-экспертом
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, Table, Tag, Button, Alert, Spin, Space, Typography, Select } from 'antd';
 import { CheckCircleOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import {
   getValidationEntities,
   getLesionTypes,
   getValidationFileUrl,
+  getKappaDeliverySummary,
 } from '../services/api';
 import NIfTIViewer from './NIfTIViewer';
 
@@ -125,6 +126,31 @@ const ValidationPanel = () => {
     }
   }, [selectedDatasetId]);
 
+  // Пока есть недоставленные выгрузки, в датасете вот-вот появятся новые
+  // сущности. Раньше их было видно только по кнопке «Обновить», из-за чего
+  // вкладка молча показывала устаревший список.
+  // Опрос идёт по ссылкам, чтобы интервал не пересоздавался на каждый ответ
+  // (та же ошибка однажды уже вызвала бесконечный поллинг в истории).
+  const datasetRef = useRef(null);
+  useEffect(() => {
+    datasetRef.current = selectedDatasetId;
+  }, [selectedDatasetId]);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (!datasetRef.current) return;
+      try {
+        const summary = await getKappaDeliverySummary();
+        if ((summary?.pending ?? 0) > 0) {
+          loadEntities(datasetRef.current, { silent: true });
+        }
+      } catch {
+        // Сводка недоступна — это не повод ломать вкладку.
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   const loadLesionTypes = async () => {
     try {
       const types = await getLesionTypes();
@@ -139,17 +165,22 @@ const ValidationPanel = () => {
     }
   };
 
-  const loadEntities = async (datasetId) => {
-    setLoading(true);
-    setError(null);
+  const loadEntities = async (datasetId, opts = {}) => {
+    // Фоновое обновление не должно мигать спиннером и вешать баннер ошибки
+    // поверх того, что оператор сейчас разглядывает.
+    const silent = opts.silent === true;
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const data = await getValidationEntities(datasetId);
       setEntities(sortEntitiesByPatientSession(data.entities || []));
     } catch (err) {
       console.error('Ошибка загрузки сессий:', err);
-      setError('Не удалось загрузить список сессий');
+      if (!silent) setError('Не удалось загрузить список сессий');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 

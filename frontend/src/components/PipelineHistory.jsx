@@ -2,7 +2,7 @@
  * Компонент для отображения истории запусков pipeline
  */
 import { useState, useEffect, useRef } from 'react';
-import { Table, Tag, Space, Button, Select, Card, message } from 'antd';
+import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip, Alert } from 'antd';
 import { 
   EyeOutlined, 
   FileTextOutlined,
@@ -12,8 +12,14 @@ import {
   SyncOutlined,
   MedicineBoxOutlined,
   PauseCircleOutlined,
+  CloudUploadOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
-import { getPipelineHistory } from '../services/api';
+import {
+  getPipelineHistory,
+  retryKappaUpload,
+  getKappaDeliverySummary,
+} from '../services/api';
 import { confirmAndResume } from '../utils/resumeRun';
 
 const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses, onRunResumed }) => {
@@ -23,6 +29,9 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize] = useState(20);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [deliverySummary, setDeliverySummary] = useState(null);
+  const [deliveryDetail, setDeliveryDetail] = useState(null);
+  const [retrying, setRetrying] = useState(false);
 
   /**
    * Загружаем историю при монтировании и при изменении фильтров
@@ -34,8 +43,12 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   // Track "is anything running" in a ref so the poll interval can read the
   // latest value without being torn down and recreated on every history update.
   const hasRunningRef = useRef(false);
+  const hasPendingDeliveryRef = useRef(false);
   useEffect(() => {
     hasRunningRef.current = history.some(run => run.status === 'running');
+    hasPendingDeliveryRef.current = history.some(
+      (run) => run.kappa_upload?.status === 'pending',
+    );
   }, [history]);
 
   // One stable 5s interval per page/filter. It refetches only while something is
@@ -44,34 +57,45 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   // that never resolved, this polled the backend without end.
   useEffect(() => {
     const interval = setInterval(() => {
-      if (hasRunningRef.current) fetchHistory();
-    }, 5000);
+      if (hasRunningRef.current || hasPendingDeliveryRef.current) {
+        fetchHistory({ silent: true });
+      }
+    }, 2000);
     return () => clearInterval(interval);
   }, [currentPage, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Получить историю запусков
    */
-  const fetchHistory = async () => {
-    setLoading(true);
-    
+  const fetchHistory = async (opts = {}) => {
+    const silent = opts.silent === true;
+    if (!silent) setLoading(true);
+
     try {
       const offset = (currentPage - 1) * pageSize;
       const data = await getPipelineHistory(pageSize, offset);
-      
-      // Фильтруем по статусу если выбран фильтр
+
       let filteredRuns = data.runs || [];
       if (statusFilter !== 'all') {
         filteredRuns = filteredRuns.filter(run => run.status === statusFilter);
       }
-      
+
       setHistory(filteredRuns);
       setTotal(statusFilter === 'all' ? data.total : filteredRuns.length);
+
+      // Counts every run, not just this page — the whole point is the run
+      // that failed days ago and has scrolled out of sight. A failing
+      // summary must never take the history list down with it.
+      try {
+        setDeliverySummary(await getKappaDeliverySummary());
+      } catch (summaryErr) {
+        console.warn('Сводка по выгрузке недоступна:', summaryErr);
+      }
     } catch (err) {
       console.error('Ошибка загрузки истории:', err);
-      message.error('Не удалось загрузить историю запусков');
+      if (!silent) message.error('Не удалось загрузить историю запусков');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -156,6 +180,53 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   return `${minutes}м ${seconds}с`;
   };
 
+  /** Человеческая подпись к состоянию выгрузки в Kappa. */
+  const deliveryLabel = (d) => {
+    const have = `${d.delivered ?? 0} из ${d.total ?? 0}`;
+    // total = 0 до первой удачной попытки значит «ещё не считали», а не
+    // «отправлять нечего». Показывать «0 из 0» — врать оператору, будто
+    // работы нет, тогда как её просто ещё не пересчитали.
+    const counted = (d.total ?? 0) > 0;
+    if (d.status === 'done') return `Kappa ${d.delivered}/${d.total}`;
+    if (d.status === 'needs_attention') {
+      if (!counted) return 'нужна проверка';
+      return d.reason === 'stuck'
+        ? `${have} · не удаётся выгрузить`
+        : `${have} · нужна проверка`;
+    }
+    if (d.reason === 'no_session') {
+      return counted
+        ? `${have} в Kappa · нужен вход в Kappa`
+        : 'ожидает выгрузки · нужен вход в Kappa';
+    }
+    if (d.reason === 'network') {
+      return counted
+        ? `${have} в Kappa · досылка, когда сервис будет доступен`
+        : 'ожидает выгрузки · Kappa недоступна';
+    }
+    if (!counted) return 'ожидает выгрузки';
+    if ((d.delivered ?? 0) < (d.total ?? 0)) {
+      return `${have} в Kappa · загружается`;
+    }
+    return `${have} · досылается`;
+  };
+
+  const deliveryHint = (d) => {
+    if (d.status === 'done') return 'Все сессии этого запуска есть в Kappa';
+    if (d.reason === 'no_session') {
+      return 'Нет входа в Kappa. Данные уйдут, как только вход будет выполнен.';
+    }
+    if (d.reason === 'network') {
+      return 'Уже загруженные сессии на месте. Остальные уйдут сами, когда Kappa снова ответит.';
+    }
+    if (d.status === 'pending') {
+      return (d.total ?? 0) > 0
+        ? 'Часть сессий уже в Kappa, остальные загружаются сейчас.'
+        : 'Счётчик появится после первой попытки выгрузки.';
+    }
+    return 'Показать подробности выгрузки';
+  };
+
   /**
    * Колонки таблицы
    */
@@ -224,6 +295,33 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
         );
       },
       sorter: (a, b) => (a.quality_score || 0) - (b.quality_score || 0),
+    },
+    {
+      title: 'Kappa',
+      key: 'kappa_upload',
+      width: 280,
+      render: (_, record) => {
+        const d = record.kappa_upload;
+        if (!d) return <span style={{ color: '#bbb' }}>—</span>;
+        const color = d.status === 'done'
+          ? 'success'
+          : d.status === 'needs_attention' ? 'error' : 'processing';
+        const icon = d.status === 'needs_attention'
+          ? <WarningOutlined />
+          : <CloudUploadOutlined />;
+        return (
+          <Tooltip title={deliveryHint(d)}>
+            <Tag
+              color={color}
+              icon={icon}
+              style={{ cursor: 'pointer', whiteSpace: 'normal', height: 'auto' }}
+              onClick={() => setDeliveryDetail(record)}
+            >
+              {deliveryLabel(d)}
+            </Tag>
+          </Tooltip>
+        );
+      },
     },
     {
       title: 'Длительность',
@@ -296,6 +394,32 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   ];
 
   return (
+    <>
+    {deliverySummary
+      && (deliverySummary.pending > 0 || deliverySummary.needs_attention > 0) && (
+      <Alert
+        type={deliverySummary.needs_attention > 0 ? 'error' : 'warning'}
+        showIcon
+        style={{ marginBottom: 16 }}
+        message={
+          deliverySummary.needs_attention > 0
+            ? `Требуют внимания: ${deliverySummary.needs_attention}`
+            : `Ожидают выгрузки в Kappa: ${deliverySummary.pending}`
+        }
+        description={
+          deliverySummary.needs_attention > 0
+            ? (
+              `Автоматический повтор не поможет для ${deliverySummary.needs_attention} `
+              + `${deliverySummary.needs_attention === 1 ? 'запуска' : 'запусков'}`
+              + (deliverySummary.pending > 0
+                ? `; ещё ${deliverySummary.pending} досылается автоматически.`
+                : '.')
+              + ' Найдите их по тегу в колонке «Kappa» — они могут быть на других страницах.'
+            )
+            : 'Данные не потеряны — досылка идёт сама. Прогоны могут быть на других страницах истории.'
+        }
+      />
+    )}
     <Card 
       title="История запусков"
       extra={
@@ -336,6 +460,73 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
         }}
       />
     </Card>
+      <Modal
+        open={!!deliveryDetail}
+        onCancel={() => setDeliveryDetail(null)}
+        title="Выгрузка в Kappa"
+        footer={[
+          <Button key="close" onClick={() => setDeliveryDetail(null)}>
+            Закрыть
+          </Button>,
+          <Button
+            key="retry"
+            type="primary"
+            loading={retrying}
+            onClick={async () => {
+              setRetrying(true);
+              try {
+                await retryKappaUpload(deliveryDetail.run_id);
+                message.success('Повтор выполнен');
+                setDeliveryDetail(null);
+                fetchHistory();
+              } catch (e) {
+                message.error(
+                  e?.response?.data?.detail || 'Не удалось повторить выгрузку',
+                );
+              } finally {
+                setRetrying(false);
+              }
+            }}
+          >
+            Повторить сейчас
+          </Button>,
+        ]}
+      >
+        {deliveryDetail?.kappa_upload && (
+          <>
+            <p>
+              {deliveryHint(deliveryDetail.kappa_upload)}
+              {' '}
+              {(deliveryDetail.kappa_upload.total ?? 0) > 0
+                ? ` Сейчас в Kappa ${deliveryDetail.kappa_upload.delivered} из `
+                  + `${deliveryDetail.kappa_upload.total}.`
+                : ' Сколько сессий войдёт в выгрузку, станет известно после'
+                  + ' первой попытки.'}
+              {deliveryDetail.kappa_upload.next_attempt_at
+                && deliveryDetail.kappa_upload.reason === 'network' && (
+                <> Повтор:{' '}
+                  {new Date(
+                    deliveryDetail.kappa_upload.next_attempt_at,
+                  ).toLocaleString('ru-RU')}.
+                </>
+              )}
+            </p>
+            {(deliveryDetail.kappa_upload.blocked || []).length > 0 && (
+              <List
+                size="small"
+                header="Требуют внимания"
+                dataSource={deliveryDetail.kappa_upload.blocked}
+                renderItem={(b) => (
+                  <List.Item>
+                    <strong>{b.session}</strong>: {b.message || b.reason}
+                  </List.Item>
+                )}
+              />
+            )}
+          </>
+        )}
+      </Modal>
+    </>
   );
 };
 

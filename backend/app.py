@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -70,6 +71,8 @@ from models import (
     MergeSessionsRequest,
     MergeSessionsResponse,
     PipelineLossesResponse,
+    KappaDeliveryStatus,
+    KappaBlockedSession,
 )
 from config_diff import diff_configs
 from database import (
@@ -84,7 +87,9 @@ from database import (
     update_stage_execution,
     get_pipeline_history,
     reconcile_orphaned_runs,
+    get_kappa_delivery,
     SessionLocal,
+    PipelineRun,
 )
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
@@ -166,10 +171,14 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Реконсиляция: {n} осиротевших прогонов помечены failed")
     finally:
         _reco_db.close()
-    
+
+    from kappa_delivery_worker import start_delivery_worker
+    _delivery_task = start_delivery_worker()
+
     yield
-    
-    # Shutdown (если нужно что-то делать при завершении)
+
+    # Shutdown
+    _delivery_task.cancel()
     logger.info("Завершение работы приложения")
 
 
@@ -462,8 +471,22 @@ async def start_pipeline(
     lesion_type = request.lesion_type or "glioblastoma"
     run_id = str(uuid.uuid4())
     numbering_scope, kappa_dataset_id, scope_warning = await numbering.scope_for_run(
-        run_id, lesion_type, request.kappa_session_id
+        run_id, lesion_type, request.kappa_session_id, intends_upload=True
     )
+
+    # Upload intent, recorded at birth. Every run started from the web UI is
+    # meant for Kappa — including one started while Kappa is unreachable, which
+    # is the whole point of deferred delivery. The owning account may be
+    # unknown for now; logging in adopts such runs
+    # (kappa_delivery_worker.adopt_orphan_runs). CLI and orchestrator runs do
+    # not pass through here and so stay out of the queue by construction.
+    upload_status = "pending"
+    upload_user_id = None
+    if request.kappa_session_id:
+        from kappa_auth import get_session as _get_kappa_session
+        _session = _get_kappa_session(request.kappa_session_id)
+        if _session:
+            upload_user_id = _session.get("user_id")
 
     # Создаём запись в БД
     run = create_pipeline_run(
@@ -473,8 +496,15 @@ async def start_pipeline(
         output_path=output_path,
         lesion_type=lesion_type,
         kappa_dataset_id=kappa_dataset_id,
+        kappa_upload_status=upload_status,
+        kappa_user_id=upload_user_id,
     )
-    
+
+    # Открываем лог выгрузки в папке запуска: куда поедут пациенты и
+    # знаем ли мы это уже сейчас.
+    import kappa_run_log
+    kappa_run_log.log_start(output_path, kappa_dataset_id, scope_warning)
+
     # Запускаем pipeline в фоновой задаче
     background_tasks.add_task(
         run_pipeline_background,
@@ -692,6 +722,17 @@ async def requeue_pipeline_run(
         original_run.kappa_dataset_id, resumed_lesion_type
     )
 
+    # Same upload-intent recording as the start endpoint: a requeue/resume
+    # carrying a Kappa session owes delivery from birth too.
+    resumed_upload_status = None
+    resumed_upload_user_id = None
+    if body.kappa_session_id:
+        from kappa_auth import get_session as _get_kappa_session
+        _session = _get_kappa_session(body.kappa_session_id)
+        if _session:
+            resumed_upload_status = "pending"
+            resumed_upload_user_id = _session.get("user_id")
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
@@ -699,6 +740,8 @@ async def requeue_pipeline_run(
         lesion_type=resumed_lesion_type,
         parent_run_id=run_id,
         kappa_dataset_id=original_run.kappa_dataset_id,
+        kappa_upload_status=resumed_upload_status,
+        kappa_user_id=resumed_upload_user_id,
     )
 
     background_tasks.add_task(
@@ -800,6 +843,30 @@ async def get_pipeline_status(
     )
 
 
+def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
+    """Delivery state for the history list. None means this run never
+    intended to upload (CLI, no Kappa session), which the UI shows as a dash
+    rather than as a problem."""
+    if not getattr(run, "kappa_upload_status", None):
+        return None
+    detail = get_kappa_delivery(run)
+    return KappaDeliveryStatus(
+        status=run.kappa_upload_status,
+        delivered=detail.get("delivered", 0),
+        total=detail.get("total", 0),
+        blocked=[
+            KappaBlockedSession(
+                session=b.get("session"),
+                reason=b.get("reason", "name_clash"),
+                message=b.get("message", ""),
+            )
+            for b in (detail.get("blocked") or [])
+        ],
+        next_attempt_at=run.kappa_upload_next_attempt,
+        reason=detail.get("reason"),
+    )
+
+
 @app.get("/api/pipeline/history", response_model=PipelineHistoryResponse)
 async def get_history(
     limit: int = 50,
@@ -836,6 +903,7 @@ async def get_history(
                 if run.completed_at and run.started_at else None
             ),
             lesion_type=getattr(run, 'lesion_type', None) or 'glioblastoma',
+            kappa_upload=_delivery_status(run),
         )
         for run in runs
     ]
@@ -1369,16 +1437,6 @@ async def get_run_patient_map(run_id: str, db: Session = Depends(get_db)):
     return {"run_id": run_id, "patient_map": pipeline_manager.get_patient_map(run.output_path)}
 
 
-def _dataset_owner(dataset_id: int) -> Optional[int]:
-    """Which Kappa user owns a dataset, per configs/kappa_datasets.yaml.
-    None if the dataset id is not in the mapping at all."""
-    from kappa_dataset_mapping import _load_mapping
-    for key, value in (_load_mapping().get("datasets") or {}).items():
-        if int(value) == int(dataset_id):
-            return int(str(key).split(":", 1)[0])
-    return None
-
-
 def _resolve_longitudinal_records(
     patient_id: str, lesion_type: str, run_id: Optional[str], db: Session
 ) -> List[Dict[str, Any]]:
@@ -1395,13 +1453,13 @@ def _resolve_longitudinal_records(
     # module-level names imported at the top of this file (not re-imported
     # here) — tests patch "app.find_by_patient_id" etc., which only takes
     # effect on names resolved from this module's globals at call time.
-    from kappa_dataset_mapping import datasets_of_user
+    from kappa_dataset_mapping import datasets_of_user, owner_of_dataset
 
     dataset_ids = None
     if run_id:
         run = get_pipeline_run(db, run_id)
         if run and run.kappa_dataset_id:
-            owner = _dataset_owner(run.kappa_dataset_id)
+            owner = owner_of_dataset(run.kappa_dataset_id)
             dataset_ids = datasets_of_user(owner) if owner else {run.kappa_dataset_id}
 
     # The frontend passes the BIDS subject ("sub-001"). The registry stores
@@ -2593,10 +2651,82 @@ class KappaLoginRequest(PydanticBaseModel):
 @app.post("/api/kappa/login")
 async def kappa_login_endpoint(request: KappaLoginRequest):
     """Авторизация в Kappa"""
-    result = await kappa_login(request.login_id, request.passwd)
+    from kappa_auth import KappaUnreachable
+
+    try:
+        result = await kappa_login(request.login_id, request.passwd)
+    except KappaUnreachable:
+        # Держим введённое в памяти и войдём сами, как только Kappa ответит
+        # (backend/kappa_pending_login.py). Пароль не попадает ни в базу, ни
+        # в логи, ни в этот ответ.
+        import kappa_pending_login
+        kappa_pending_login.remember(request.login_id, request.passwd)
+
+        # 503, а не 500: сервис не сломан, недоступен внешний. Ответ обязан
+        # быть JSON с внятным текстом — тело 500 от Uvicorn это простая
+        # строка, и фронт падал на ней в JSON.parse.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Kappa сейчас недоступна. Вход выполнится автоматически, как "
+                "только связь восстановится — обработку можно запускать "
+                "прямо сейчас, результаты уйдут следом."
+            ),
+        )
     if not result:
         raise HTTPException(status_code=401, detail="Неверный логин или пароль Kappa")
+
+    # A successful login answers two questions at once: whose the runs started
+    # offline are, and that Kappa is reachable again. Both mean waiting
+    # deliveries should go now rather than sit out an exponential backoff.
+    try:
+        from kappa_delivery_worker import adopt_orphan_runs, resume_all_pending
+        adopted = adopt_orphan_runs(result.get("user_id"))
+        resumed = resume_all_pending("оператор вошёл в Kappa")
+        if adopted or resumed:
+            result = {**result, "resumed_uploads": max(adopted, resumed)}
+    except Exception as e:  # noqa: BLE001 — login must never fail over this
+        logger.error("Не удалось возобновить отложенные выгрузки: %s", e)
+
     return result
+
+
+@app.get("/api/kappa/health")
+async def kappa_health():
+    """Отвечает ли Kappa прямо сейчас.
+
+    Нужен фронту, чтобы отличить «оператор просто не вошёл» от «войти
+    невозможно». В первом случае показываем форму входа, во втором —
+    интерфейс с предупреждением, иначе недоступность Kappa запирает работу.
+
+    Обычный TCP-коннект: ни токена, ни обращения к API.
+    """
+    import kappa_pending_login
+    from kappa_delivery_worker import kappa_reachable, try_deferred_login
+
+    reachable = await asyncio.to_thread(kappa_reachable)
+
+    # Доигрываем отложенный вход прямо здесь. Иначе его делал только фоновый
+    # воркер раз в 60 секунд, а этот запрос ходит раз в 15 — и оператор видел
+    # зелёную плашку «Kappa снова доступна» за минуту до того, как узнавал,
+    # что пароль не подошёл. Теперь оба факта приходят одним ответом.
+    # Повторов это не плодит: успех и отказ одинаково стирают учётные данные,
+    # а одновременные попытки разведены замком в kappa_pending_login.
+    if reachable and kappa_pending_login.held_login():
+        try:
+            await try_deferred_login()
+        except Exception as e:  # noqa: BLE001 — проверка связи важнее
+            logger.error("Отложенный вход из /health не удался: %s", e)
+
+    return {
+        "reachable": reachable,
+        # Логин, под которым войдём сами, когда связь появится. Без пароля.
+        "pending_login": kappa_pending_login.held_login(),
+        # Чем закончился автоматический вход. При успехе здесь лежит
+        # session_id созданной сессии: браузер её не создавал и иначе
+        # никогда бы о ней не узнал.
+        "auto_login": kappa_pending_login.outcome(),
+    }
 
 
 @app.get("/api/kappa/me")
@@ -2615,11 +2745,36 @@ async def kappa_me(session_id: str):
 
 @app.post("/api/kappa/logout")
 async def kappa_logout(session_id: str):
-    """Выход из Kappa"""
-    deleted = delete_session(session_id)
-    if not deleted:
+    """Выход из интерфейса Kappa.
+
+    Выход закрывает сеанс в браузере, но НЕ обрывает отложенную выгрузку:
+    токен остаётся в базе до своего естественного истечения, чтобы уже
+    посчитанные результаты дошли до Kappa сами. Иначе выход из аккаунта
+    молча останавливал бы досылку, и данные ждали бы следующего входа —
+    именно это поведение и сбивало с толку при тестировании.
+
+    Токен доступен только самому бэкенду; session_id из localStorage
+    браузера при выходе стирается, так что интерфейс сеанс не переживает.
+    """
+    session = get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
-    return {"status": "ok"}
+
+    # Выход отменяет и отложенный вход: оператор явно сказал «не я».
+    import kappa_pending_login
+    kappa_pending_login.forget("оператор вышел из аккаунта")
+    kappa_pending_login.clear_outcome()
+
+    db = SessionLocal()
+    try:
+        pending = db.query(PipelineRun).filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status == "pending",
+        ).count()
+    finally:
+        db.close()
+
+    return {"status": "ok", "pending_uploads": pending}
 
 @app.post("/api/kappa/retry-upload/{run_id}")
 async def retry_kappa_upload(run_id: str, session_id: str):
@@ -2656,9 +2811,54 @@ async def retry_kappa_upload(run_id: str, session_id: str):
             detail="Сессия Kappa не найдена/истекла, или не найден конфиг препроцессинга. Войдите в Kappa заново.",
         )
 
-    results = await uploader.upload_results()
+    pipeline_monitor._seed_delivery_progress(run_id)
+    # Исход записываем в любом случае. Раньше исключение уходило наружу
+    # мимо _record_delivery, и в колонке навсегда оставалось «загружается»
+    # от _seed_delivery_progress — оператор видел ошибку и одновременно
+    # бодрый статус, который ей противоречил.
+    try:
+        results = await uploader.upload_results()
+    except Exception as exc:  # noqa: BLE001 — записываем и отвечаем внятно
+        logger.exception("Kappa retry-upload failed for %s", run_id)
+        pipeline_monitor._record_delivery(run_id, None, exc, source="вручную")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не удалось выгрузить в Kappa: {type(exc).__name__}. "
+                   f"Подробности — в logs/kappa.log этого запуска.",
+        )
+
     logger.info("Kappa retry-upload results for %s: %s", run_id, results)
-    return results
+
+    # Same policy as the post-run upload and the background worker — three
+    # callers, one decision about what the run's delivery state now is.
+    verdict = pipeline_monitor._record_delivery(
+        run_id, results, None, source="вручную"
+    )
+    return {**results, "delivery": verdict}
+
+
+@app.get("/api/kappa/delivery/summary")
+async def kappa_delivery_summary(db: Session = Depends(get_db)):
+    """Сколько прогонов ещё не доехали до Kappa. Для предупреждения в истории.
+
+    Считает ровно то, с чем воркер может что-то сделать — только завершённые
+    прогоны. Любой другой предикат даёт оператору число, которое он не может
+    убрать никаким действием: воркер такие строки не трогает.
+    """
+    rows = (
+        db.query(PipelineRun.kappa_upload_status, func.count(PipelineRun.run_id))
+        .filter(
+            PipelineRun.status == "completed",
+            PipelineRun.kappa_upload_status.in_(["pending", "needs_attention"]),
+        )
+        .group_by(PipelineRun.kappa_upload_status)
+        .all()
+    )
+    counts = {status: count for status, count in rows}
+    return {
+        "pending": counts.get("pending", 0),
+        "needs_attention": counts.get("needs_attention", 0),
+    }
 
 
 @app.get("/api/kappa/entities/{dataset_id}")

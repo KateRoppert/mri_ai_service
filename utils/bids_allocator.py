@@ -76,9 +76,14 @@ def pending_scope(run_id: str) -> str:
     """Temporary numbering space for a run that had no dataset yet because
     Kappa was unreachable at start.
 
-    Bound to a newly created dataset with rebind_scope() once upload resolves
-    one. Always binds to a dataset created for THIS purpose — never merged into
-    a dataset that already holds numbers, which could collide with them.
+    Bound to a real dataset with rebind_scope() once upload resolves one.
+
+    This scope starts at sub-001, so binding it into a dataset that already
+    holds numbers DOES collide — that assumption was wrong, and the collision
+    used to surface as a UNIQUE violation mid-upload. rebind_scope now leaves
+    colliding numbers behind for the uploader to report as a name clash, and
+    backend/numbering.py avoids the scope entirely whenever the dataset can be
+    determined from configs/kappa_datasets.yaml without Kappa.
     """
     return f"pending:{run_id}"
 
@@ -269,15 +274,42 @@ def rebind_scope(
     """Move every allocation from one scope to another; returns the count moved.
 
     Used when a pending scope's dataset finally gets created (backend/kappa_uploader.py).
+
+    Numbers already taken in the target scope are LEFT BEHIND rather than
+    moved. A blanket UPDATE raised UNIQUE(scope, bids_id) and took the whole
+    upload down with a 500 — and a crash is the worst possible answer here,
+    because the collision itself is a real situation an operator must be told
+    about. The rows that stay put keep their pending scope, and the uploader's
+    name-clash check reports them per session, which is what the operator can
+    actually act on.
     """
     conn = _connect(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        cur = conn.execute(
-            f"UPDATE {_TABLE} SET scope = ? WHERE scope = ?", (new_scope, old_scope)
-        )
-        conn.execute(f"DELETE FROM {_FLOOR_TABLE} WHERE scope = ?", (old_scope,))
+        taken = {
+            row[0] for row in conn.execute(
+                f"SELECT bids_id FROM {_TABLE} WHERE scope = ?", (new_scope,)
+            )
+        }
+        moved = 0
+        for bids_id, in conn.execute(
+            f"SELECT bids_id FROM {_TABLE} WHERE scope = ?", (old_scope,)
+        ).fetchall():
+            if bids_id in taken:
+                continue
+            conn.execute(
+                f"UPDATE {_TABLE} SET scope = ? WHERE scope = ? AND bids_id = ?",
+                (new_scope, old_scope, bids_id),
+            )
+            moved += 1
+        # Пол старого скоупа убираем, только если из него всё уехало: иначе
+        # оставшиеся записи потеряли бы нижнюю границу нумерации.
+        remaining = conn.execute(
+            f"SELECT COUNT(*) FROM {_TABLE} WHERE scope = ?", (old_scope,)
+        ).fetchone()[0]
+        if not remaining:
+            conn.execute(f"DELETE FROM {_FLOOR_TABLE} WHERE scope = ?", (old_scope,))
         conn.commit()
-        return cur.rowcount
+        return moved
     finally:
         conn.close()
