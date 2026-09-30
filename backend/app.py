@@ -735,6 +735,17 @@ async def requeue_pipeline_run(
             resumed_upload_status = "pending"
             resumed_upload_user_id = _session.get("user_id")
 
+    # Сессии, у которых врач поменял набор модальностей, надо пересчитать.
+    # skip_existing пропускает всё, у чего уже есть результаты, поэтому без
+    # удаления исправление просто не дошло бы до данных.
+    try:
+        from session_artifacts import purge_sessions_marked_for_reprocess
+        purged = purge_sessions_marked_for_reprocess(original_run.output_path)
+        if purged:
+            logger.info("Переобработка: очищено сессий — %d", len(purged))
+    except Exception as e:  # noqa: BLE001 — запуск важнее уборки
+        logger.error("Не удалось очистить помеченные сессии: %s", e)
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
