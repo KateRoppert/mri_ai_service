@@ -1382,7 +1382,31 @@ async def save_assignment(
         "Набор модальностей сохранён: %s/%s -> %s",
         patient_id, session_id, sorted(request.assignments),
     )
-    return AssignmentResponse(**result)
+
+    # Переобработка даёт тот же study_hash (он считается от
+    # PatientID:StudyInstanceUID, а не от изображений), поэтому загрузчик
+    # сочтёт пациента дубликатом и в Kappa останется старая маска. Молчать
+    # об этом нельзя: исправление выглядело бы применённым, не будучи им.
+    kappa_warning = None
+    if result.get("needs_reprocess") and getattr(run, "kappa_dataset_id", None):
+        import kappa_run_log
+
+        session_key = f"{patient_id}_{session_id}"
+        # Со скоупом по датасету: sub-NNN уникален только внутри датасета,
+        # и неквалифицированный поиск выдал бы чужого пациента.
+        records = find_by_bids_id(session_key, {run.kappa_dataset_id}) or []
+        if any(r.get("kappa_entity_id") for r in records):
+            kappa_warning = (
+                "Этот пациент уже выгружен в Kappa. После переобработки там "
+                "останется прежняя версия — она не обновится сама."
+            )
+            kappa_run_log.append(
+                run.output_path,
+                f"Набор модальностей {session_key} изменён врачом; "
+                f"в Kappa остаётся прежняя версия",
+            )
+
+    return AssignmentResponse(**result, kappa_warning=kappa_warning)
 
 
 @app.post(
