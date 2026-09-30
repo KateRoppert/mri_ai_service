@@ -1185,6 +1185,151 @@ class PipelineManager:
             'available': sorted(session_data['series'].keys()),
         }
 
+    def apply_assignment(
+        self,
+        output_path: str,
+        patient_id: str,
+        session_id: str,
+        assignments: Dict[str, str],
+        lesion_type: str = 'glioblastoma',
+    ) -> Dict[str, Any]:
+        """Apply a desired modality set to a session, all at once.
+
+        Takes the FINAL set the doctor wants, not a list of operations, so
+        the whole thing can be checked before a single file is written and
+        the order edits were made in cannot change the outcome.
+
+        dataset_mapping.json is written exactly once, at the end. If any copy
+        fails it is not written at all, so the file every stage reads either
+        describes the new set completely or is untouched.
+        """
+        from session_assignment import plan_changes, validate
+
+        if not _BIDS_PATIENT_ID_PATTERN.match(patient_id):
+            raise ValueError(f"Invalid patient_id: {patient_id!r}")
+        if not _BIDS_SESSION_ID_PATTERN.match(session_id):
+            raise ValueError(f"Invalid session_id: {session_id!r}")
+
+        mapping_file = self._dataset_mapping_path(output_path)
+        with open(mapping_file, 'r', encoding='utf-8') as f:
+            mapping_data = json.load(f)
+
+        try:
+            session_data = mapping_data['patients'][patient_id]['sessions'][session_id]
+        except KeyError:
+            raise ValueError(f"No such session: {patient_id}/{session_id}")
+
+        try:
+            required = list(load_lesion_type_config(lesion_type)['required_modalities'])
+        except KeyError:
+            required = ['t1', 't1c', 't2', 't2fl']
+
+        # Everything that can be judged without touching the disk, judged now.
+        validate(session_data, assignments, required)
+        changes = plan_changes(session_data, assignments)
+
+        bids_dir = Path(output_path) / "bids_organized"
+        was_incomplete = session_data.get('status') == 'incomplete'
+        current_root = (bids_dir / "_incomplete") if was_incomplete else bids_dir
+
+        series = session_data.setdefault('series', {})
+        excluded = list(session_data.get('excluded_series', []))
+
+        def _to_excluded(modality: str, entry: Dict[str, Any], reason: str):
+            excluded.append({
+                'original_path': (entry or {}).get('original_path', ''),
+                'series_description': (entry or {}).get('series_description', ''),
+                'slice_count': (entry or {}).get('slice_count', 0),
+                'detected_modality': modality,
+                'reason': reason,
+            })
+
+        for modality in changes.clear:
+            _to_excluded(modality, series.pop(modality), 'cleared_by_doctor')
+            stale_dir = current_root / patient_id / session_id / "anat" / modality
+            if stale_dir.is_dir():
+                shutil.rmtree(stale_dir)
+
+        for modality, original_path in changes.assign.items():
+            source_entry = next(
+                (e for e in excluded if e['original_path'] == original_path), None
+            )
+            target_dir = current_root / patient_id / session_id / "anat" / modality
+            target_dir.mkdir(parents=True, exist_ok=True)
+            # Clear first: a replacement with FEWER files than the previous
+            # occupant would otherwise overwrite only the first N and leave
+            # the old tail behind, so the directory would silently hold a mix
+            # of two series while the mapping calls it one.
+            for stale_file in target_dir.iterdir():
+                if stale_file.is_file():
+                    stale_file.unlink()
+
+            metadata_extractor = self._build_metadata_extractor()
+            if metadata_extractor is None:
+                raise ValueError(
+                    "Anonymization config (configs/dicom_tags.yaml) not found — "
+                    "refusing to copy patient DICOM data without anonymizing it"
+                )
+            source_files = find_dicom_files(Path(original_path))
+            copied = copy_and_anonymize_series(
+                source_files, target_dir, patient_id, session_id, modality,
+                metadata_extractor=metadata_extractor, logger=logger,
+            )
+            if copied != len(source_files):
+                raise ValueError(
+                    f"Copy failed: only {copied}/{len(source_files)} files copied "
+                    f"for {patient_id}/{session_id}/{modality} (source: {original_path})"
+                )
+
+            previous = series.get(modality)
+            if previous is not None:
+                _to_excluded(modality, previous, 'replaced_by_manual_relabel')
+            excluded = [e for e in excluded if e['original_path'] != original_path]
+            series[modality] = {
+                'original_path': original_path,
+                'slice_count': len(source_files),
+                'series_description': (source_entry or {}).get(
+                    'series_description', ''),
+            }
+
+        session_data['excluded_series'] = excluded
+        is_complete = set(required).issubset(series.keys())
+        session_data['status'] = 'complete' if is_complete else 'incomplete'
+        session_data['manually_reviewed'] = True
+        if not changes.is_empty():
+            session_data['needs_reprocess'] = True
+
+        # Move the session between _incomplete/ and the main tree if its
+        # completeness flipped. Only the incomplete -> complete direction
+        # existed before; clearing a modality needs the other one.
+        session_src = current_root / patient_id / session_id
+        target_root = bids_dir if is_complete else (bids_dir / "_incomplete")
+        session_dst = target_root / patient_id / session_id
+        if session_src != session_dst and session_src.is_dir():
+            session_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(session_src), str(session_dst))
+            leftover = current_root / patient_id
+            if leftover.is_dir() and not any(leftover.iterdir()):
+                leftover.rmdir()
+
+        with open(mapping_file, 'w', encoding='utf-8') as f:
+            json.dump(mapping_data, f, indent=2, ensure_ascii=False)
+
+        return {
+            'status': session_data['status'],
+            'selected': [
+                {
+                    'modality': m,
+                    'series_description': (series[m] or {}).get('series_description', ''),
+                    'original_path': (series[m] or {}).get('original_path', ''),
+                    'slice_count': (series[m] or {}).get('slice_count', 0),
+                }
+                for m in sorted(required) if m in series
+            ],
+            'excluded_series': excluded,
+            'needs_reprocess': bool(session_data.get('needs_reprocess')),
+        }
+
     def get_segmask_label_path(self, output_path: str, subject_id: str, session_id: str) -> Optional[Path]:
         """
         Locate the per-lesion labeled mask (*_segmask_labels.nii.gz) Stage 08
