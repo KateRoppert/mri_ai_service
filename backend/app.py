@@ -67,6 +67,8 @@ from models import (
     IncompletePatientsResponse,
     RelabelSeriesRequest,
     RelabelSeriesResponse,
+    AssignmentRequest,
+    AssignmentResponse,
     DiscardSessionResponse,
     MergeSessionsRequest,
     MergeSessionsResponse,
@@ -1331,6 +1333,46 @@ async def relabel_series(
 
     logger.info(f"Переразметка {patient_id}/{session_id}: {request.original_path} -> {request.modality}")
     return RelabelSeriesResponse(**result)
+
+@app.put(
+    "/api/incomplete-patients/{run_id}/{patient_id}/{session_id}/assignment",
+    response_model=AssignmentResponse,
+)
+async def save_assignment(
+    run_id: str,
+    patient_id: str,
+    session_id: str,
+    request: AssignmentRequest,
+    db: Session = Depends(get_db),
+):
+    """Сохранить набор модальностей сессии целиком."""
+    from session_assignment import AssignmentError
+
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    try:
+        result = pipeline_manager.apply_assignment(
+            output_path=run.output_path,
+            patient_id=patient_id,
+            session_id=session_id,
+            assignments=request.assignments,
+            lesion_type=getattr(run, "lesion_type", None) or "glioblastoma",
+        )
+    except AssignmentError as e:
+        # Набор невозможен — это ошибка запроса, а не сбой сервиса. И текст
+        # должен дойти до экрана: врачу нужно знать, что именно не так.
+        raise HTTPException(status_code=400, detail=str(e))
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    logger.info(
+        "Набор модальностей сохранён: %s/%s -> %s",
+        patient_id, session_id, sorted(request.assignments),
+    )
+    return AssignmentResponse(**result)
+
 
 @app.post(
     "/api/incomplete-patients/{run_id}/{patient_id}/{session_id}/discard",

@@ -189,6 +189,30 @@ class RelabelSeriesResponse(BaseModel):
     available: List[str] = Field(..., description="Модальности, доступные после переразметки")
 
 
+class AssignmentRequest(BaseModel):
+    """Желаемый итоговый набор модальностей сессии.
+
+    Именно набор, а не список действий: тогда его можно проверить целиком
+    до первой записи на диск, и порядок правок не влияет на результат.
+    """
+    assignments: Dict[str, str] = Field(
+        ..., description="модальность -> original_path выбранной серии"
+    )
+
+
+class AssignmentResponse(BaseModel):
+    """Состояние сессии после сохранения набора."""
+    status: str = Field(..., description="complete | incomplete")
+    selected: List[SelectedModality] = Field(default_factory=list)
+    excluded_series: List[ExcludedSeriesInfo] = Field(default_factory=list)
+    needs_reprocess: bool = Field(
+        False, description="Набор изменился — пациент будет переобработан"
+    )
+    kappa_warning: Optional[str] = Field(
+        None, description="Предупреждение, если старая версия уже в Kappa"
+    )
+
+
 class DiscardSessionResponse(BaseModel):
     """Результат исключения сессии из очереди review"""
     status: str = Field(..., description="Статус сессии после исключения: discarded")
