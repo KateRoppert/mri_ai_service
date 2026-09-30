@@ -826,6 +826,24 @@ class PipelineManager:
                     mapping_changed = True
 
                 available = sorted(session_data.get('series', {}).keys())
+                series = session_data.get('series', {}) or {}
+                # What the algorithm actually picked, with the protocol name
+                # already stored alongside it. Without this the doctor can
+                # only act on an empty slot — a modality picked WRONGLY is
+                # invisible, and so cannot be argued with.
+                selected = [
+                    {
+                        "modality": modality,
+                        "series_description": (series[modality] or {}).get(
+                            'series_description', ''),
+                        "original_path": (series[modality] or {}).get(
+                            'original_path', ''),
+                        "slice_count": (series[modality] or {}).get(
+                            'slice_count', 0),
+                    }
+                    for modality in sorted(required)
+                    if modality in series
+                ]
                 results.append({
                     "patient_id": patient_id,
                     "original_id": patient_data.get('original_id', ''),
@@ -834,6 +852,10 @@ class PipelineManager:
                     "status": status,
                     "available": available,
                     "missing": sorted(required - set(available)),
+                    "selected": selected,
+                    # Lesion-type-aware, so the frontend can stop hardcoding
+                    # glioblastoma's four modalities and offering t1c to MS.
+                    "required": sorted(required),
                     "excluded_series": session_data.get('excluded_series', []),
                     "merged_into_session_id": session_data.get('merged_into_session_id'),
                 })
