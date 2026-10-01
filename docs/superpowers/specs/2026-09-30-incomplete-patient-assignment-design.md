@@ -162,15 +162,24 @@ untouched.
 **`backend/session_artifacts.py`** — one responsibility, testable alone:
 
 ```python
-STAGE_DIRS = ("metadata", "nifti", "preprocessed",
+STAGE_DIRS = ("nifti", "preprocessed",
               "quality_reports", "segmentation", "transformations")
 
 delete_session_artifacts(output_path, patient_id, session_id) -> list[str]
 purge_sessions_marked_for_reprocess(output_path) -> dict
 ```
 
+`metadata/` is **not** in that list, though it has the same layout. It is
+written by stage 01 as it copies DICOM, and stage 02 — which could rebuild
+it — is disabled in this pipeline. Since `bids_organized/` is kept on
+purpose, stage 01 skips the patient on a requeue and never rewrites it, so
+deleting metadata loses it permanently. The loss is not cosmetic either:
+`_compute_study_hash` reads `PatientID` and `StudyInstanceUID` from there,
+and without it every session already in the dataset comes back as
+`name_clash` and nothing uploads at all.
+
 Every stage writes per-patient output as `{stage_dir}/{sub-XXX}/{ses-YYY}/`,
-verified against a real run, so deletion is a predictable walk over six
+verified against a real run, so deletion is a predictable walk over five
 directories plus removing the patient directory if it is left empty.
 
 `bids_organized/` is deliberately **not** deleted: it holds the corrected
@@ -197,6 +206,13 @@ Replacing the entity is possible in principle — `kappa_client.replace_entity_f
 already exists for expert-edited masks — but it takes one file at a time and it
 is not established whether it replaces a multi-file entity or adds to it. That
 is its own investigation.
+
+**Observed in practice (run `fbc37b13`, 2026-10-01):** the first version of
+this work deleted `metadata/` along with the stage outputs, which made the
+hash `None` and turned both sessions into `name_clash` — nothing uploaded
+at all. So the realistic failure is not only that Kappa quietly keeps the
+old version; it can also refuse the new one. Either way the correction does
+not reach Kappa, which is what the warning has to convey.
 
 **Decision: out of scope here; warn instead.** When a session marked for
 reprocessing already has a `kappa_entity_id`, the save response and the UI say

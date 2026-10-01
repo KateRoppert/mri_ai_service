@@ -110,3 +110,27 @@ def test_purge_clears_the_flags_it_acted_on(tmp_path):
 
 def test_purge_is_a_no_op_without_a_mapping(tmp_path):
     assert purge_sessions_marked_for_reprocess(str(tmp_path)) == {}
+
+
+def test_metadata_is_never_deleted(tmp_path):
+    """metadata/ is written by stage 01 as it copies DICOM, not by a later
+    stage — and stage 02, which could rebuild it, is disabled in this
+    pipeline. Since bids_organized/ is deliberately kept, stage 01 skips the
+    patient on a requeue and never rewrites it, so deleting metadata loses it
+    for good.
+
+    The loss is not cosmetic: _compute_study_hash reads PatientID and
+    StudyInstanceUID from there. Without it the hash is None, every session
+    already in the dataset comes back as name_clash, and nothing uploads.
+    Seen for real on run fbc37b13: "0 из 2, номер занят другими данными".
+    """
+    assert "metadata" not in STAGE_DIRS
+
+    _make_run(tmp_path)
+    meta = tmp_path / "metadata" / "sub-001" / "ses-001" / "anat" / "t1"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "scan.json").write_text('{"identification": {}}', encoding="utf-8")
+
+    delete_session_artifacts(str(tmp_path), "sub-001", "ses-001")
+
+    assert (meta / "scan.json").exists(), "метаданные удалены — восстановить их нечем"

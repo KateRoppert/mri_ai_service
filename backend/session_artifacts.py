@@ -18,8 +18,16 @@ from typing import Dict, List
 logger = logging.getLogger(__name__)
 
 # Every stage writes per-patient output as {stage}/{sub-XXX}/{ses-YYY}/.
+#
+# metadata/ is deliberately NOT here. It is written by stage 01 while it
+# copies DICOM, not by a later stage, and stage 02 — which could rebuild it —
+# is disabled in this pipeline. bids_organized/ is kept on purpose, so stage
+# 01 skips the patient on a requeue and never rewrites it: deleting metadata
+# loses it permanently. And the loss is not cosmetic — _compute_study_hash
+# reads PatientID and StudyInstanceUID from there, so without it every
+# session already in the dataset comes back as name_clash and nothing
+# uploads at all.
 STAGE_DIRS = (
-    "metadata",
     "nifti",
     "preprocessed",
     "quality_reports",

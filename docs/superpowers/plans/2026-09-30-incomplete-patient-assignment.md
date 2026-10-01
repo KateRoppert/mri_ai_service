@@ -417,7 +417,6 @@ logger = logging.getLogger(__name__)
 
 # Every stage writes per-patient output as {stage}/{sub-XXX}/{ses-YYY}/.
 STAGE_DIRS = (
-    "metadata",
     "nifti",
     "preprocessed",
     "quality_reports",
