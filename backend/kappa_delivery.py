@@ -21,6 +21,12 @@ STUCK_AFTER_HOURS = 24
 # one place where delivery state is decided.
 NO_SESSION: Dict[str, Any] = {"error": "no_session"}
 
+# A session lost during processing (stage 05/06 never produced its data). The
+# uploader counts it in `total` but does not upload it. Not blocking — the
+# loss is already in the lost-patients report — and not retryable: there is
+# nothing on disk to send.
+NOT_PROCESSED = "not_processed"
+
 # Per-session errors that retrying cannot fix.
 _BLOCKING = {
     "name_clash": "name_clash",
@@ -42,6 +48,7 @@ def _detail(state: Dict[str, Any], now: datetime, **over: Any) -> Dict[str, Any]
         "total": state.get("total", 0),
         "delivered": state.get("delivered", 0),
         "blocked": [],
+        "not_processed": state.get("not_processed", []),
         "reason": None,
         "last_error": None,
         "attempts": state.get("attempts", 0),
@@ -138,7 +145,22 @@ def classify(
         if not s.get("success") and s.get("error") in _BLOCKING
     ]
 
-    counters = {"total": total, "delivered": delivered}
+    not_processed = [
+        {"session": s.get("session"), "message": s.get("message") or ""}
+        for s in sessions
+        if s.get("error") == NOT_PROCESSED
+    ]
+
+    counters = {"total": total, "delivered": delivered,
+                "not_processed": not_processed}
+
+    if sessions and len(not_processed) == len(sessions):
+        # Every session was lost in processing: nothing was ever uploadable.
+        return {
+            "status": "needs_attention",
+            "next_attempt": None,
+            "detail": _detail(state, now, reason="missing_files", **counters),
+        }
 
     if not sessions:
         # A completed run that produced nothing to upload. Not transient —
@@ -158,7 +180,7 @@ def classify(
                               blocked=blocked, **counters),
         }
 
-    if delivered >= total:
+    if delivered + len(not_processed) >= total:
         return {
             "status": "done",
             "next_attempt": None,
@@ -247,6 +269,15 @@ def count_local_progress(
     from patient_registry import find_by_bids_id, find_by_run_id
 
     keys: set = set()
+    # Same denominator as KappaUploader._session_universe: every complete
+    # session stage 01 produced (not the _incomplete/ queue), plus whatever
+    # reached preprocessed/.
+    bids = Path(output_path) / "bids_organized"
+    if bids.is_dir():
+        for sub in bids.glob("sub-*"):
+            for ses in (sub.glob("ses-*") if sub.is_dir() else []):
+                if ses.is_dir():
+                    keys.add(f"{sub.name}_{ses.name}")
     pre = Path(output_path) / "preprocessed"
     if pre.is_dir():
         for nifti in pre.rglob("*.nii.gz"):
