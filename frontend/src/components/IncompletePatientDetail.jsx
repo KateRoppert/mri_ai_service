@@ -3,30 +3,35 @@
  * какие модальности есть/не хватает, список исключённых серий с
  * возможностью назначить их на модальность, кнопка отбросить сессию.
  */
-import { useState } from 'react';
-import { Modal, Tag, Space, List, Select, Button, Popconfirm, message, Divider, Typography } from 'antd';
+import { useState, useEffect } from 'react';
+import { Modal, Tag, Space, List, Select, Button, Popconfirm, message, Divider, Typography, Checkbox } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
-import { relabelSeries, discardSession, mergeSessions } from '../services/api';
+import { saveAssignment, discardSession, mergeSessions } from '../services/api';
 
 const { Text } = Typography;
-
-const MODALITY_OPTIONS = [
-  { label: 'T1', value: 't1' },
-  { label: 'T1c', value: 't1c' },
-  { label: 'T2', value: 't2' },
-  { label: 'FLAIR (T2fl)', value: 't2fl' },
-];
 
 const REASON_LABELS = {
   unrecognized: 'алгоритм не распознал',
   lost_deduplication: 'алгоритм распознал, но выбрал другую копию',
   replaced_by_manual_relabel: 'заменена вручную ранее',
   from_other_session: 'перенесена из другой сессии пациента',
+  cleared_by_doctor: 'снята врачом',
+  currently_selected: 'сейчас выбрана для другой модальности',
+};
+
+/** Черновик набора по тому, что пришло с сервера. */
+const draftFromSession = (session) => {
+  const draft = {};
+  (session?.selected || []).forEach((s) => { draft[s.modality] = s.original_path; });
+  return draft;
 };
 
 const IncompletePatientDetail = ({ runId, session, sessions = [], visible, onClose, onActionComplete }) => {
-  const [selectedModality, setSelectedModality] = useState({});
-  const [loadingPath, setLoadingPath] = useState(null);
+  // Черновик: модальность -> original_path. На диск ничего не уходит,
+  // пока не нажата «Сохранить», так что решение можно переиграть.
+  const [draft, setDraft] = useState({});
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(draftFromSession(session)); }, [session]);
   const [discarding, setDiscarding] = useState(false);
   const [donorSessionId, setDonorSessionId] = useState(undefined);
   const [merging, setMerging] = useState(false);
@@ -35,28 +40,53 @@ const IncompletePatientDetail = ({ runId, session, sessions = [], visible, onClo
 
   const isReadOnly = session.status === 'discarded' || session.status === 'merged';
 
-  const handleRelabel = async (excludedEntry) => {
-    const modality = selectedModality[excludedEntry.original_path] || excludedEntry.detected_modality;
-    if (!modality) {
-      message.error('Выберите модальность');
-      return;
-    }
-    setLoadingPath(excludedEntry.original_path);
+  const initialDraft = draftFromSession(session);
+  const isDirty = () => {
+    const keys = new Set([...Object.keys(initialDraft), ...Object.keys(draft)]);
+    return [...keys].some((k) => initialDraft[k] !== draft[k]);
+  };
+
+  /** Описание серии по её пути — она может лежать в любом из двух списков. */
+  const describe = (path) => (
+    (session.selected || []).find((x) => x.original_path === path)
+    || (session.excluded_series || []).find((x) => x.original_path === path)
+    || null
+  );
+
+  const assign = (modality, path) => setDraft((prev) => {
+    const next = { ...prev };
+    // Одна серия не может занимать две модальности: освобождаем прежнюю.
+    Object.keys(next).forEach((m) => { if (next[m] === path) delete next[m]; });
+    next[modality] = path;
+    return next;
+  });
+
+  const clearModality = (modality) => setDraft((prev) => {
+    const next = { ...prev };
+    delete next[modality];
+    return next;
+  });
+
+  const handleSave = async () => {
+    setSaving(true);
     try {
-      const result = await relabelSeries(
-        runId, session.patient_id, session.session_id, excludedEntry.original_path, modality
+      const result = await saveAssignment(
+        runId, session.patient_id, session.session_id, draft,
       );
       message.success(
-        result.status === 'complete'
-          ? 'Серия назначена, сессия теперь полная'
-          : 'Серия назначена'
+        result.needs_reprocess
+          ? 'Сохранено. Пациент будет переобработан при следующем запуске.'
+          : 'Сохранено.',
       );
+      if (result.kappa_warning) {
+        message.warning(result.kappa_warning, 8);
+      }
       onActionComplete();
     } catch (err) {
-      console.error('Ошибка переразметки:', err);
-      message.error(err.response?.data?.detail || 'Не удалось назначить серию');
+      console.error('Ошибка сохранения набора:', err);
+      message.error(err.response?.data?.detail || 'Не удалось сохранить набор');
     } finally {
-      setLoadingPath(null);
+      setSaving(false);
     }
   };
 
@@ -101,7 +131,46 @@ const IncompletePatientDetail = ({ runId, session, sessions = [], visible, onClo
       && s.status !== 'discarded'
   );
 
-  const isAlreadyFilled = (modality) => session.available.includes(modality);
+  // Пул неотобранных: всё, что сейчас не занято черновиком. Снятые галочкой
+  // выборы тоже попадают сюда — иначе вернуть серию обратно было бы нечем.
+  const taken = new Set(Object.values(draft));
+  const pool = (session.excluded_series || [])
+    .concat((session.selected || []).map((x) => ({
+      original_path: x.original_path,
+      series_description: x.series_description,
+      slice_count: x.slice_count,
+      detected_modality: x.modality,
+      reason: 'currently_selected',
+    })))
+    .filter((e) => !taken.has(e.original_path));
+  const recognized = pool.filter((e) => e.detected_modality);
+  const unrecognized = pool.filter((e) => !e.detected_modality);
+
+  const renderPoolItem = (entry) => (
+    <List.Item key={entry.original_path}>
+      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+        <Text>{entry.series_description} ({entry.slice_count} срезов)</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {entry.detected_modality
+            ? `Похоже на: ${entry.detected_modality} — ${REASON_LABELS[entry.reason] || entry.reason}`
+            : REASON_LABELS[entry.reason] || entry.reason}
+        </Text>
+        {!isReadOnly && (
+          <Select
+            size="small"
+            style={{ width: 260 }}
+            placeholder="Назначить на модальность"
+            value={undefined}
+            onChange={(modality) => assign(modality, entry.original_path)}
+            options={(session.required || []).map((m) => ({
+              value: m,
+              label: draft[m] ? `${m} — заменить` : `${m} — свободна`,
+            }))}
+          />
+        )}
+      </Space>
+    </List.Item>
+  );
 
   return (
     <Modal
@@ -118,82 +187,68 @@ const IncompletePatientDetail = ({ runId, session, sessions = [], visible, onClo
           </Text>
         )}
         <div>
-          <Text strong>Модальности: </Text>
-          <Space wrap>
-            {session.available.map((m) => (
-              <Tag color="green" key={m}>{m}</Tag>
-            ))}
-            {session.missing.map((m) => (
-              <Tag color="default" key={m}>{m} — нет</Tag>
-            ))}
-          </Space>
+          <Text strong>Отобранные модальности</Text>
+          <List
+            size="small"
+            dataSource={session.required || []}
+            renderItem={(modality) => {
+              const path = draft[modality];
+              const info = path ? describe(path) : null;
+              return (
+                <List.Item key={modality}>
+                  <Space>
+                    <Checkbox
+                      checked={!!path}
+                      disabled={isReadOnly || !path}
+                      onChange={() => clearModality(modality)}
+                    />
+                    <Tag color={path ? 'green' : 'default'}>{modality}</Tag>
+                    <Text type={path ? undefined : 'secondary'}>
+                      {info
+                        ? `${info.series_description} (${info.slice_count} срезов)`
+                        : 'не назначена'}
+                    </Text>
+                  </Space>
+                </List.Item>
+              );
+            }}
+          />
         </div>
 
         <Divider style={{ margin: '8px 0' }} />
 
         <div>
-          <Text strong>Неотобранные серии:</Text>
-          {session.excluded_series.length === 0 ? (
-            <p style={{ color: '#999' }}>Нет неотобранных серий</p>
+          <Text strong>Неотобранные серии</Text>
+          {recognized.length === 0 ? (
+            <p style={{ color: '#999' }}>Нет распознанных неотобранных серий</p>
           ) : (
-            <List
-              dataSource={session.excluded_series}
-              renderItem={(entry) => {
-                const modality = selectedModality[entry.original_path] || entry.detected_modality || undefined;
-                const willReplace = modality && isAlreadyFilled(modality);
-                const relabelButton = (
-                  <Button
-                    type="primary"
-                    size="small"
-                    loading={loadingPath === entry.original_path}
-                    disabled={!modality}
-                    onClick={willReplace ? undefined : () => handleRelabel(entry)}
-                  >
-                    Назначить
-                  </Button>
-                );
-                return (
-                  <List.Item>
-                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                      <Text>{entry.series_description} ({entry.slice_count} срезов)</Text>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        {entry.detected_modality
-                          ? `Похоже на: ${entry.detected_modality} — ${REASON_LABELS[entry.reason] || entry.reason}`
-                          : REASON_LABELS[entry.reason] || entry.reason}
-                      </Text>
-                      {!isReadOnly && (
-                        <Space>
-                          <Select
-                            size="small"
-                            style={{ width: 160 }}
-                            placeholder="Модальность"
-                            options={MODALITY_OPTIONS}
-                            value={modality}
-                            onChange={(value) =>
-                              setSelectedModality((prev) => ({ ...prev, [entry.original_path]: value }))
-                            }
-                          />
-                          {willReplace ? (
-                            <Popconfirm
-                              title="Эта модальность уже заполнена другой серией — заменить?"
-                              onConfirm={() => handleRelabel(entry)}
-                              okText="Да"
-                              cancelText="Нет"
-                            >
-                              {relabelButton}
-                            </Popconfirm>
-                          ) : (
-                            relabelButton
-                          )}
-                        </Space>
-                      )}
-                    </Space>
-                  </List.Item>
-                );
-              }}
-            />
+            <List size="small" dataSource={recognized} renderItem={renderPoolItem} />
+          )}
+
+          {unrecognized.length > 0 && (
+            <>
+              <Text strong style={{ display: 'block', marginTop: 12 }}>
+                Нераспознанные серии
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Алгоритм не смог их классифицировать — назначить можно так же.
+              </Text>
+              <List size="small" dataSource={unrecognized} renderItem={renderPoolItem} />
+            </>
           )}
         </div>
+
+        {!isReadOnly && (
+          <Space>
+            <Button type="primary" disabled={!isDirty()} loading={saving}
+                    onClick={handleSave}>
+              Сохранить
+            </Button>
+            <Button disabled={!isDirty()} onClick={() => setDraft(initialDraft)}>
+              Отменить
+            </Button>
+          </Space>
+        )}
 
         {!isReadOnly && otherSessions.length > 0 && (
           <>

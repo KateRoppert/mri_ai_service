@@ -308,6 +308,18 @@ export const relabelSeries = async (runId, patientId, sessionId, originalPath, m
 };
 
 /**
+ * Сохранить итоговый набор модальностей сессии целиком.
+ * assignments: { t1: '<original_path>', t2: '<original_path>', ... }
+ */
+export const saveAssignment = async (runId, patientId, sessionId, assignments) => {
+  const response = await apiClient.put(
+    `/incomplete-patients/${runId}/${patientId}/${sessionId}/assignment`,
+    { assignments },
+  );
+  return response.data;
+};
+
+/**
  * Отбросить сессию — пометить как намеренно исключённую из очереди review
  */
 export const discardSession = async (runId, patientId, sessionId) => {
@@ -507,6 +519,7 @@ export default {
   getIncompletePatients,
   getPipelineLosses,
   relabelSeries,
+  saveAssignment,
   discardSession,
   mergeSessions,
   requeuePipelineRun,
