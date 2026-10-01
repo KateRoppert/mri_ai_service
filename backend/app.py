@@ -67,6 +67,8 @@ from models import (
     IncompletePatientsResponse,
     RelabelSeriesRequest,
     RelabelSeriesResponse,
+    AssignmentRequest,
+    AssignmentResponse,
     DiscardSessionResponse,
     MergeSessionsRequest,
     MergeSessionsResponse,
@@ -733,6 +735,17 @@ async def requeue_pipeline_run(
             resumed_upload_status = "pending"
             resumed_upload_user_id = _session.get("user_id")
 
+    # Сессии, у которых врач поменял набор модальностей, надо пересчитать.
+    # skip_existing пропускает всё, у чего уже есть результаты, поэтому без
+    # удаления исправление просто не дошло бы до данных.
+    try:
+        from session_artifacts import purge_sessions_marked_for_reprocess
+        purged = purge_sessions_marked_for_reprocess(original_run.output_path)
+        if purged:
+            logger.info("Переобработка: очищено сессий — %d", len(purged))
+    except Exception as e:  # noqa: BLE001 — запуск важнее уборки
+        logger.error("Не удалось очистить помеченные сессии: %s", e)
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
@@ -1331,6 +1344,70 @@ async def relabel_series(
 
     logger.info(f"Переразметка {patient_id}/{session_id}: {request.original_path} -> {request.modality}")
     return RelabelSeriesResponse(**result)
+
+@app.put(
+    "/api/incomplete-patients/{run_id}/{patient_id}/{session_id}/assignment",
+    response_model=AssignmentResponse,
+)
+async def save_assignment(
+    run_id: str,
+    patient_id: str,
+    session_id: str,
+    request: AssignmentRequest,
+    db: Session = Depends(get_db),
+):
+    """Сохранить набор модальностей сессии целиком."""
+    from session_assignment import AssignmentError
+
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    try:
+        result = pipeline_manager.apply_assignment(
+            output_path=run.output_path,
+            patient_id=patient_id,
+            session_id=session_id,
+            assignments=request.assignments,
+            lesion_type=getattr(run, "lesion_type", None) or "glioblastoma",
+        )
+    except AssignmentError as e:
+        # Набор невозможен — это ошибка запроса, а не сбой сервиса. И текст
+        # должен дойти до экрана: врачу нужно знать, что именно не так.
+        raise HTTPException(status_code=400, detail=str(e))
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    logger.info(
+        "Набор модальностей сохранён: %s/%s -> %s",
+        patient_id, session_id, sorted(request.assignments),
+    )
+
+    # Переобработка даёт тот же study_hash (он считается от
+    # PatientID:StudyInstanceUID, а не от изображений), поэтому загрузчик
+    # сочтёт пациента дубликатом и в Kappa останется старая маска. Молчать
+    # об этом нельзя: исправление выглядело бы применённым, не будучи им.
+    kappa_warning = None
+    if result.get("needs_reprocess") and getattr(run, "kappa_dataset_id", None):
+        import kappa_run_log
+
+        session_key = f"{patient_id}_{session_id}"
+        # Со скоупом по датасету: sub-NNN уникален только внутри датасета,
+        # и неквалифицированный поиск выдал бы чужого пациента.
+        records = find_by_bids_id(session_key, {run.kappa_dataset_id}) or []
+        if any(r.get("kappa_entity_id") for r in records):
+            kappa_warning = (
+                "Этот пациент уже выгружен в Kappa. После переобработки там "
+                "останется прежняя версия — она не обновится сама."
+            )
+            kappa_run_log.append(
+                run.output_path,
+                f"Набор модальностей {session_key} изменён врачом; "
+                f"в Kappa остаётся прежняя версия",
+            )
+
+    return AssignmentResponse(**result, kappa_warning=kappa_warning)
+
 
 @app.post(
     "/api/incomplete-patients/{run_id}/{patient_id}/{session_id}/discard",

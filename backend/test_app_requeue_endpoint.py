@@ -185,3 +185,41 @@ def test_requeue_without_a_session_still_works():
 
     assert response.status_code == 200
     assert mock_monitor.call_args[0][2] is None
+
+
+def test_requeue_rebuilds_sessions_whose_set_changed():
+    """Without this the correction changes nothing: skip_existing sees the
+    old outputs and walks straight past the patient."""
+    original = _fake_original_run(status="completed")
+    new_run = _fake_new_run()
+    purged = []
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
+         patch("session_artifacts.purge_sessions_marked_for_reprocess",
+               side_effect=lambda out: purged.append(out) or {"sub-001/ses-001": []}):
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 200
+    assert purged == ["/out"], "помеченные сессии не очищены перед запуском"
+
+
+def test_a_failed_purge_does_not_block_the_run():
+    """Cleanup is housekeeping. Refusing to start the run because a stale
+    folder could not be removed would be a worse outcome than the mess."""
+    original = _fake_original_run(status="completed")
+    new_run = _fake_new_run()
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
+         patch("session_artifacts.purge_sessions_marked_for_reprocess",
+               side_effect=OSError("disk is read-only")):
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 200

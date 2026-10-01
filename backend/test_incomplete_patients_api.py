@@ -841,3 +841,84 @@ class TestRelabelSeriesReplace:
         )
         for f in final_dir.glob("*.dcm"):
             assert f.read_bytes() != b"old series bytes"
+
+
+class TestSelectedAndRequired:
+    def test_returns_what_the_algorithm_selected_with_protocol_names(self, tmp_path):
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {
+                            "t1": {
+                                "original_path": "/raw/p1/t1",
+                                "slice_count": 176,
+                                "series_description": "t1_mprage_sag",
+                            },
+                        },
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        sessions = PipelineManager().get_incomplete_patients(
+            str(tmp_path), lesion_type="glioblastoma",
+        )
+        selected = sessions[0]["selected"]
+        assert len(selected) == 1
+        assert selected[0]["modality"] == "t1"
+        assert selected[0]["series_description"] == "t1_mprage_sag"
+        assert selected[0]["slice_count"] == 176
+
+    def test_required_comes_from_the_lesion_type_not_a_hardcoded_list(self, tmp_path):
+        """MS does not use t1c. A hardcoded four-modality list offers the
+        doctor a slot that lesion type has no concept of."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        ms = PipelineManager().get_incomplete_patients(
+            str(tmp_path), lesion_type="multiple_sclerosis",
+        )
+        assert ms[0]["required"] == ["t1", "t2", "t2fl"]
+
+        gbm = PipelineManager().get_incomplete_patients(
+            str(tmp_path), lesion_type="glioblastoma",
+        )
+        assert gbm[0]["required"] == ["t1", "t1c", "t2", "t2fl"]
+
+    def test_sparse_series_entries_do_not_crash(self, tmp_path):
+        """Older mappings (and every existing fixture) store bare {} for a
+        selected modality. Reading it must not require fields it lacks."""
+        _write_mapping(tmp_path, {
+            "sub-001": {
+                "original_id": "P1",
+                "sessions": {
+                    "ses-001": {
+                        "original_date": "20230101",
+                        "status": "incomplete",
+                        "series": {"t1": {}},
+                        "excluded_series": [],
+                    },
+                },
+            },
+        })
+        selected = PipelineManager().get_incomplete_patients(
+            str(tmp_path), lesion_type="glioblastoma",
+        )[0]["selected"]
+        assert selected[0] == {
+            "modality": "t1", "series_description": "",
+            "original_path": "", "slice_count": 0,
+        }
