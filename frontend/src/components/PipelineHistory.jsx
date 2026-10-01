@@ -180,6 +180,9 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   return `${minutes}м ${seconds}с`;
   };
 
+  /** Сессии, потерянные при обработке: входят в счёт, в Kappa не грузятся. */
+  const notProcessed = (d) => d.not_processed || [];
+
   /** Человеческая подпись к состоянию выгрузки в Kappa. */
   const deliveryLabel = (d) => {
     const have = `${d.delivered ?? 0} из ${d.total ?? 0}`;
@@ -187,7 +190,13 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     // «отправлять нечего». Показывать «0 из 0» — врать оператору, будто
     // работы нет, тогда как её просто ещё не пересчитали.
     const counted = (d.total ?? 0) > 0;
-    if (d.status === 'done') return `Kappa ${d.delivered}/${d.total}`;
+    if (d.status === 'done') {
+      const lost = notProcessed(d).length;
+      if (lost > 0) {
+        return `Kappa ${d.delivered}/${d.total} · ${lost} ${lost === 1 ? 'не обработана' : 'не обработаны'}`;
+      }
+      return `Kappa ${d.delivered}/${d.total}`;
+    }
     if (d.status === 'needs_attention') {
       if (!counted) return 'нужна проверка';
       return d.reason === 'stuck'
@@ -212,7 +221,12 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   };
 
   const deliveryHint = (d) => {
-    if (d.status === 'done') return 'Все сессии этого запуска есть в Kappa';
+    if (d.status === 'done') {
+      return notProcessed(d).length > 0
+        ? 'Все обработанные сессии есть в Kappa. Остальные не дошли до конца '
+          + 'обработки и не загружались — причины в «Потерянных пациентах».'
+        : 'Все сессии этого запуска есть в Kappa';
+    }
     if (d.reason === 'no_session') {
       return 'Нет входа в Kappa. Данные уйдут, как только вход будет выполнен.';
     }
@@ -304,7 +318,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
         const d = record.kappa_upload;
         if (!d) return <span style={{ color: '#bbb' }}>—</span>;
         const color = d.status === 'done'
-          ? 'success'
+          ? (notProcessed(d).length > 0 ? 'warning' : 'success')
           : d.status === 'needs_attention' ? 'error' : 'processing';
         const icon = d.status === 'needs_attention'
           ? <WarningOutlined />
@@ -520,6 +534,27 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
                   <List.Item>
                     <strong>{b.session}</strong>: {b.message || b.reason}
                   </List.Item>
+                )}
+              />
+            )}
+            {notProcessed(deliveryDetail.kappa_upload).length > 0 && (
+              <List
+                size="small"
+                header="Не обработаны — в Kappa не загружались"
+                dataSource={notProcessed(deliveryDetail.kappa_upload)}
+                renderItem={(s) => (
+                  <List.Item>
+                    <strong>{s.session}</strong>: {s.message}
+                  </List.Item>
+                )}
+                footer={onShowPipelineLosses && (
+                  <Button
+                    type="link"
+                    style={{ padding: 0 }}
+                    onClick={() => onShowPipelineLosses(deliveryDetail.run_id)}
+                  >
+                    На каком этапе и почему — «Потерянные пациенты»
+                  </Button>
                 )}
               />
             )}

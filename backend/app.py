@@ -73,6 +73,7 @@ from models import (
     PipelineLossesResponse,
     KappaDeliveryStatus,
     KappaBlockedSession,
+    KappaNotProcessedSession,
 )
 from config_diff import diff_configs
 from database import (
@@ -861,6 +862,13 @@ def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
                 message=b.get("message", ""),
             )
             for b in (detail.get("blocked") or [])
+        ],
+        not_processed=[
+            KappaNotProcessedSession(
+                session=s.get("session"),
+                message=s.get("message", ""),
+            )
+            for s in (detail.get("not_processed") or [])
         ],
         next_attempt_at=run.kappa_upload_next_attempt,
         reason=detail.get("reason"),

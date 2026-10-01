@@ -49,6 +49,42 @@ async def test_history_carries_delivery_state():
 
 
 @pytest.mark.asyncio
+async def test_history_carries_sessions_lost_in_processing():
+    """Run 30_09_1752: 4 of 6 delivered, the other two never processed. The
+    history column must be able to say which two and why."""
+    import app
+
+    db = SessionLocal()
+    run_id = "test_api_history_not_processed"
+    try:
+        run = create_pipeline_run(
+            db, input_path="/in", output_path="/out", run_id=run_id,
+            kappa_upload_status="done",
+        )
+        run.status = "completed"
+        db.commit()
+        set_kappa_delivery(db, run_id, "done", None, {
+            "total": 6, "delivered": 4,
+            "not_processed": [
+                {"session": "sub-003_ses-005", "message": "нет t2fl и маски сегментации"},
+                {"session": "sub-003_ses-006", "message": "нет данных после предобработки"},
+            ],
+        })
+
+        response = await app.get_history(limit=100, offset=0, db=db)
+        item = next(r for r in response.runs if r.run_id == run_id)
+
+        assert (item.kappa_upload.delivered, item.kappa_upload.total) == (4, 6)
+        assert [s.session for s in item.kappa_upload.not_processed] == [
+            "sub-003_ses-005", "sub-003_ses-006",
+        ]
+        assert item.kappa_upload.not_processed[0].message == "нет t2fl и маски сегментации"
+    finally:
+        _cleanup(db, run_id)
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_history_item_without_delivery_has_none():
     import app
 
