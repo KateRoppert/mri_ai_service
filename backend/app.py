@@ -93,7 +93,7 @@ from database import (
 )
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
-from pipeline_manager import PipelineManager
+from pipeline_manager import PipelineManager, wait_for_pipeline, append_master_log_note
 import numbering
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -311,11 +311,44 @@ def run_pipeline_background(
             _kill_process_tree(process)
             return
 
-        timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
-        logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
+        # Killed for being stuck, not for being long — see wait_for_pipeline
+        # and KI-052. No total-duration limit: Stop covers "end it now".
+        stall_seconds = settings.pipeline_stall_timeout_seconds
+        logger.info(
+            "Порог простоя для run_id %s: %ss без изменений в %s",
+            run_id, stall_seconds, output_path,
+        )
+        waited = wait_for_pipeline(process, output_path, stall_seconds)
 
-        stdout, stderr = process.communicate(timeout=timeout)
-        return_code = process.returncode
+        if waited.stalled:
+            idle_min = int(waited.idle_seconds // 60)
+            limit_min = int(stall_seconds // 60)
+            logger.error(
+                "Pipeline %s завис: нет изменений в %s %s мин — останавливаем",
+                run_id, output_path, idle_min,
+            )
+            # Before the kill: SIGKILL gives the orchestrator no chance to
+            # log, and the master log would otherwise just stop mid-line.
+            append_master_log_note(
+                output_path,
+                f"PIPELINE KILLED BY BACKEND: no file changed under the output "
+                f"folder for {idle_min} min (stall timeout {limit_min} min)",
+            )
+            _kill_process_tree(process)
+            update_pipeline_run_if_active(
+                db,
+                run_id,
+                status="failed",
+                error_message=(
+                    f"Запуск остановлен: нет активности {idle_min} мин "
+                    f"(порог простоя {limit_min} мин)"
+                ),
+                completed_at=datetime.utcnow()
+            )
+            return
+
+        stdout, stderr = waited.stdout, waited.stderr
+        return_code = waited.returncode
 
         if return_code == 0:
             # Успешное завершение
@@ -364,19 +397,6 @@ def run_pipeline_background(
                 completed_at=datetime.utcnow()
             )
             
-    except subprocess.TimeoutExpired:
-        # Таймаут
-        logger.error(f"Таймаут выполнения pipeline для run_id: {run_id}")
-        _kill_process_tree(process)
-
-        update_pipeline_run_if_active(
-            db,
-            run_id,
-            status="failed",
-            error_message="Превышено время ожидания выполнения",
-            completed_at=datetime.utcnow()
-        )
-    
     except Exception as e:
         # Другие ошибки
         logger.error(f"Ошибка выполнения pipeline для run_id: {run_id}: {e}")

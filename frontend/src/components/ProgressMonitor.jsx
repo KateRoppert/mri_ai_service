@@ -525,21 +525,29 @@ const ProgressMonitor = ({ runId, onComplete, lesionType = 'glioblastoma', onReq
         visible={showQualityReport}
         onClose={handleCloseQualityReport}
       />
-      {/* Модальное окно 3D визуализации */}
-      <NIfTIViewer
-        runId={runId}
-        visible={showVisualization}
-        onClose={handleCloseVisualization}
-        validationRef={validationRef}
-        lesionType={lesionType}
-        onValidationRefChange={(ref) => setValidationRef((prev) => ({ ...prev, ...ref }))}
-      />
-      <ClinicalReport
-        runId={runId}
-        visible={showClinicalReport}
-        onClose={handleCloseClinicalReport}
-        lesionType={lesionType}
-      />
+      {/* Модальное окно 3D визуализации.
+          Монтируется только пока открыто — как в истории (App.jsx). Кнопка
+          появляется до этапа 08 и до загрузки в Kappa, которая пишет реестр
+          пациентов для динамики; смонтированный навсегда отчёт загрузил бы
+          данные один раз и так и остался бы без динамики между сессиями. */}
+      {showVisualization && (
+        <NIfTIViewer
+          runId={runId}
+          visible={showVisualization}
+          onClose={handleCloseVisualization}
+          validationRef={validationRef}
+          lesionType={lesionType}
+          onValidationRefChange={(ref) => setValidationRef((prev) => ({ ...prev, ...ref }))}
+        />
+      )}
+      {showClinicalReport && (
+        <ClinicalReport
+          runId={runId}
+          visible={showClinicalReport}
+          onClose={handleCloseClinicalReport}
+          lesionType={lesionType}
+        />
+      )}
       <IncompletePatients
         runId={runId}
         visible={showIncompletePatients}

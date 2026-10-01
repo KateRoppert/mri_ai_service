@@ -2,12 +2,15 @@
 Модуль для управления запуском и мониторингом pipeline
 """
 
+import os
 import re
 import subprocess
+import time
 import yaml
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List, Union
 from datetime import datetime
 import logging
 import json
@@ -60,6 +63,100 @@ _LOSS_REPORT_FILES = [
     ("05_preprocessing", "preprocessed/incomplete_data/preprocessing_incomplete_data.json"),
     ("06_segmentation", "segmentation/incomplete_data/segmentation_incomplete_data.json"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Stall timeout (KI-052)
+#
+# The backend kills a run for being stuck, not for being long. A duration
+# limit sized from the input folder count killed a healthy 3-patient /
+# 11-session MS run mid-stage 05 on 2026-09-28: it counted folders, not
+# sessions, and a SibBMS session costs minutes, not 90 s. A healthy run keeps
+# writing files under its output_path; a hung one does not.
+#
+# The whole tree is watched, not only logs/: in parallel mode worker logs do
+# not reach the stage log file (KI-032), but every stage writes per-session
+# outputs.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PipelineWaitResult:
+    returncode: Optional[int]
+    stdout: str
+    stderr: str
+    stalled: bool = False
+    idle_seconds: float = 0.0
+
+
+def newest_mtime(root: Union[str, Path]) -> Optional[float]:
+    """Latest modification time of anything under `root` (files and dirs),
+    or None if `root` does not exist."""
+    root = str(root)
+    if not os.path.isdir(root):
+        return None
+    newest = os.stat(root).st_mtime
+    stack = [root]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue  # removed mid-walk (temp files) — skip
+                    if st.st_mtime > newest:
+                        newest = st.st_mtime
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+        except OSError:
+            continue
+    return newest
+
+
+def wait_for_pipeline(
+    process,
+    output_path: Union[str, Path],
+    stall_seconds: float,
+    poll_seconds: float = 60,
+    clock: Callable[[], float] = time.time,
+) -> PipelineWaitResult:
+    """Wait for the orchestrator; give up only when output_path goes quiet.
+
+    communicate() is retried after each TimeoutExpired — documented to lose
+    no output — so the stdout/stderr pipes keep draining the whole time.
+    The run's start counts as activity, so a reused output folder with old
+    files does not look stalled at once. The caller does the kill.
+    """
+    last_activity = clock()
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=poll_seconds)
+            return PipelineWaitResult(process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            pass
+        latest = newest_mtime(output_path)
+        if latest is not None and latest > last_activity:
+            last_activity = latest
+        idle = clock() - last_activity
+        if idle >= stall_seconds:
+            return PipelineWaitResult(None, "", "", stalled=True, idle_seconds=idle)
+
+
+def append_master_log_note(output_path: Union[str, Path], message: str) -> None:
+    """Add an ERROR line to the run's pipeline_master.log, in its format.
+
+    Used before the backend kills a run: a SIGKILL leaves the orchestrator no
+    chance to log anything, and without this the run just stops mid-line.
+    """
+    log_path = Path(output_path) / "logs" / "pipeline_master.log"
+    if not log_path.parent.is_dir():
+        return
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{stamp} | ERROR   | {message}\n")
+    except OSError as e:
+        logger.warning("Could not write to %s: %s", log_path, e)
 
 
 class PipelineManager:
@@ -304,25 +401,6 @@ class PipelineManager:
             logger.error(f"Ошибка создания выходной директории {output_path}: {e}")
             return False
     
-    def estimate_pipeline_timeout(self, input_path: str) -> int:
-        """
-        Estimate a generous timeout for the whole multi-stage pipeline,
-        scaled by how many patients are in the input directory — see
-        KI-052 in KNOWN_ISSUES.md. Counts non-hidden top-level
-        subdirectories, mirroring DatasetScanner.scan_dataset's own simple
-        patient-counting convention in scripts/01_reorganize_folders.py
-        (not imported here — that scanner also handles nested single-patient
-        layouts, which the backend doesn't need just to size a timeout).
-        """
-        path = Path(input_path)
-        if not path.is_dir():
-            return settings.pipeline_timeout_base_seconds
-
-        patient_count = sum(
-            1 for entry in path.iterdir()
-            if entry.is_dir() and not entry.name.startswith('.')
-        )
-        return settings.pipeline_timeout_base_seconds + settings.pipeline_timeout_per_patient_seconds * patient_count
 
     def start_pipeline(
         self,
