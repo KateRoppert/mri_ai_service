@@ -291,33 +291,69 @@ def apply_transform(
         }
 
 
+def registration_spacing(spacing, max_mm: float) -> Tuple[float, ...]:
+    """Spacing to register at: each axis coarsened to `max_mm`, never refined."""
+    return tuple(max(float(s), float(max_mm)) for s in spacing)
+
+
+def _downsample_for_registration(img, max_mm: float):
+    """A <=`max_mm` copy of `img` for computing a transform, or `img` itself
+    when no axis is finer than that. Only the fine axes are coarsened: a 2D
+    scan with 0.47 mm in-plane and 5 mm slices registers at 1 x 1 x 5 mm.
+
+    Why: SibBMS P000067 ses-005/006 are 3D 0.35 mm (t1 231 Mvox, t2fl up to
+    186 Mvox); registering them at native resolution needed >9.2 GB and the
+    stage-05 worker was OOM-killed. A rigid transform is in mm, and every
+    stage-05 output is resampled onto the 1 mm atlas grid, so the transform
+    found on the copy applies unchanged to the original.
+    """
+    target = registration_spacing(img.spacing, max_mm)
+    if all(abs(t - s) < 1e-6 for t, s in zip(target, img.spacing)):
+        return img
+    # interp_type 0 = linear
+    return ants.resample_image(img, target, use_voxels=False, interp_type=0)
+
+
 def register_modalities(
     reference_path: Path,
     moving_path: Path,
     output_path: Path,
     transform_path: Path,
-    registration_type: str = "Rigid"
+    registration_type: str = "Rigid",
+    max_registration_spacing_mm: float = 1.0,
 ) -> dict:
     """
     Register one modality to another (e.g., T1 to T1c).
-    
+
     Args:
         reference_path: Path to reference (fixed) image
         moving_path: Path to moving image
         output_path: Path to save registered image
         transform_path: Path to save transformation
         registration_type: Type of registration (default: "Rigid")
-    
+        max_registration_spacing_mm: images finer than this are registered
+            on copies resampled to it (see _downsample_for_registration)
+
     Returns:
         dict: Information about the registration
     """
     try:
         logger.info(f"Registering {moving_path.name} to {reference_path.name}")
-        
-        # Load images
-        fixed = load_ants_image(str(reference_path))
-        moving = load_ants_image(str(moving_path))
-        
+
+        # Load images; register on <=1 mm copies when finer than that
+        fixed_full = load_ants_image(str(reference_path))
+        moving_full = load_ants_image(str(moving_path))
+        fixed = _downsample_for_registration(fixed_full, max_registration_spacing_mm)
+        moving = _downsample_for_registration(moving_full, max_registration_spacing_mm)
+        if fixed is not fixed_full or moving is not moving_full:
+            logger.info(
+                "  Registering on %.1f mm copies: fixed %s -> %s, moving %s -> %s",
+                max_registration_spacing_mm,
+                fixed_full.shape, fixed.shape, moving_full.shape, moving.shape,
+            )
+        # Only the copies are needed from here on
+        del fixed_full, moving_full
+
         # Perform registration
         registration_result = ants.registration(
             fixed=fixed,
@@ -470,7 +506,8 @@ def process_subject_registration(
             moving_path=modal_file,
             output_path=modal_output_temp,
             transform_path=modal_transform,
-            registration_type=params.get("registration_type", "Rigid")
+            registration_type=params.get("registration_type", "Rigid"),
+            max_registration_spacing_mm=params.get("max_registration_spacing_mm", 1.0),
         )
         
         if not modal_result["success"]:
