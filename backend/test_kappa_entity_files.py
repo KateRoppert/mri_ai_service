@@ -163,3 +163,138 @@ async def test_wait_for_job_gives_up_without_claiming_an_outcome(monkeypatch):
     monkeypatch.setattr(kef.asyncio, "sleep", _no_sleep)
 
     assert await kef.wait_for_job("tok", 355, "job-7", timeout=0.1) == "running"
+
+
+class _Recorder:
+    """Stands in for the whole v2 surface so the diff can be tested alone."""
+
+    def __init__(self, existing):
+        self.existing = existing
+        self.patched, self.added, self.deleted = [], [], []
+
+    async def list_entity_files(self, *a, **k):
+        return self.existing
+
+    async def patch_file(self, token, uid, utid, ds, eid, file_id, path):
+        self.patched.append((file_id, path.name))
+        return True
+
+    async def add_files(self, token, uid, utid, ds, eid, paths):
+        self.added.extend(p.name for p in paths)
+        return True
+
+    async def delete_files(self, token, uid, utid, ds, file_ids):
+        self.deleted.extend(file_ids)
+        return "job-1"
+
+    async def wait_for_job(self, *a, **k):
+        return "succeeded"
+
+
+def _wire(monkeypatch, rec):
+    for name in ("list_entity_files", "patch_file", "add_files",
+                 "delete_files", "wait_for_job"):
+        monkeypatch.setattr(kef, name, getattr(rec, name))
+
+
+def _paths(tmp_path, *names):
+    out = []
+    for n in names:
+        p = tmp_path / n
+        p.write_bytes(b"x")
+        out.append(p)
+    return out
+
+
+@pytest.mark.asyncio
+async def test_matching_names_are_patched_not_re_added(monkeypatch, tmp_path):
+    rec = _Recorder([{"fileId": "f1", "fileName": "t1.nii.gz"},
+                     {"fileId": "f2", "fileName": "t2.nii.gz"}])
+    _wire(monkeypatch, rec)
+
+    result = await kef.replace_entity_contents(
+        "tok", 26, 1, 355, "e1", _paths(tmp_path, "t1.nii.gz", "t2.nii.gz"))
+
+    assert sorted(rec.patched) == [("f1", "t1.nii.gz"), ("f2", "t2.nii.gz")]
+    assert rec.added == [] and rec.deleted == []
+    assert result["patched"] == 2
+
+
+@pytest.mark.asyncio
+async def test_new_names_are_added_and_vanished_ones_deleted(monkeypatch, tmp_path):
+    rec = _Recorder([{"fileId": "f1", "fileName": "t1.nii.gz"},
+                     {"fileId": "f2", "fileName": "t1c.nii.gz"}])
+    _wire(monkeypatch, rec)
+
+    result = await kef.replace_entity_contents(
+        "tok", 26, 1, 355, "e1", _paths(tmp_path, "t1.nii.gz", "t2fl.nii.gz"))
+
+    assert rec.patched == [("f1", "t1.nii.gz")]
+    assert rec.added == ["t2fl.nii.gz"]
+    assert rec.deleted == ["f2"]          # t1c is gone from the new set
+    assert result == {"patched": 1, "added": 1, "deleted": 1,
+                      "failed": [], "delete_job": "succeeded"}
+
+
+@pytest.mark.asyncio
+async def test_expert_masks_are_never_deleted(monkeypatch, tmp_path):
+    """Without this exemption the first replacement wipes every expert edit
+    on that patient — they are not part of a recomputed set."""
+    rec = _Recorder([
+        {"fileId": "f1", "fileName": "sub-002_ses-001_t1.nii.gz"},
+        {"fileId": "m1", "fileName": "sub-002_ses-001_segmask_v2.nii.gz"},
+        {"fileId": "m2", "fileName": "sub-002_ses-001_segmask_v3.nii.gz"},
+    ])
+    _wire(monkeypatch, rec)
+
+    await kef.replace_entity_contents(
+        "tok", 26, 1, 355, "e1", _paths(tmp_path, "sub-002_ses-001_t1.nii.gz"))
+
+    assert rec.deleted == []
+    assert rec.patched == [("f1", "sub-002_ses-001_t1.nii.gz")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_file_is_named_not_swallowed(monkeypatch, tmp_path):
+    """A partial replacement must be visible: the session stays blocked and
+    the operator can repeat the action, which is idempotent."""
+    rec = _Recorder([{"fileId": "f1", "fileName": "t1.nii.gz"}])
+    _wire(monkeypatch, rec)
+
+    async def _fail(*a, **k):
+        return False
+    monkeypatch.setattr(kef, "patch_file", _fail)
+
+    result = await kef.replace_entity_contents(
+        "tok", 26, 1, 355, "e1", _paths(tmp_path, "t1.nii.gz"))
+
+    assert result["patched"] == 0
+    assert result["failed"] == ["t1.nii.gz"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_replacement_is_refused(monkeypatch, tmp_path):
+    """An empty set means discovery found nothing — a bug upstream, not a
+    request to empty the entity. A function that deletes data in someone
+    else's system must not depend on its caller being careful."""
+    rec = _Recorder([{"fileId": "f1", "fileName": "t1.nii.gz"}])
+    _wire(monkeypatch, rec)
+
+    with pytest.raises(ValueError):
+        await kef.replace_entity_contents("tok", 26, 1, 355, "e1", [])
+
+    assert rec.deleted == [] and rec.patched == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_entity_changes_nothing(monkeypatch, tmp_path):
+    rec = _Recorder([])
+    _wire(monkeypatch, rec)
+
+    result = await kef.replace_entity_contents(
+        "tok", 26, 1, 355, "e1", _paths(tmp_path, "t1.nii.gz"))
+
+    # Nothing to match against, so everything is an addition — and crucially
+    # nothing was deleted on the strength of an empty listing.
+    assert rec.deleted == []
+    assert result["added"] == 1

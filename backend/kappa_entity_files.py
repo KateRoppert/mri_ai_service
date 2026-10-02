@@ -11,6 +11,7 @@ separate module makes the boundary a thing you have to walk through.
 """
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -167,3 +168,79 @@ async def wait_for_job(
         await asyncio.sleep(interval)
     logger.warning("Job %s still running after %.0fs", job_id, timeout)
     return "running"
+
+
+# Expert masks are versioned into the filename by the Slicer flow
+# ("{base}_segmask_v{N}.nii.gz"). This pattern is the one app.py already uses
+# to read those version numbers back — the same rule, not a second guess at
+# it. They are not part of a recomputed set, and deleting them would throw
+# away a specialist's work on the first replacement.
+EXPERT_MASK_RE = re.compile(r"_segmask_v\d+\.nii\.gz$")
+
+
+async def replace_entity_contents(
+    token: str, user_id: int, user_type_id: int,
+    dataset_id: int, entity_id: str, files: List[Path],
+) -> Dict[str, Any]:
+    """Make the entity hold exactly `files`, plus whatever expert masks it had.
+
+    Matched by filename: same name is replaced in place (keeping its id), a
+    name only in the new set is added, a name only in the entity is deleted.
+
+    Raises ValueError on an empty `files`: that means discovery found
+    nothing, and emptying the entity because of a failure upstream is the
+    one outcome worth refusing outright.
+    """
+    if not files:
+        # Reaching here with nothing means discovery failed, and carrying on
+        # would delete the entity's contents on the strength of that failure.
+        raise ValueError(
+            f"Refusing to replace entity {entity_id} with an empty file set"
+        )
+
+    existing = await list_entity_files(
+        token, user_id, user_type_id, dataset_id, entity_id)
+    by_name = {f.get("fileName"): f.get("fileId") for f in existing}
+    wanted = {p.name: p for p in files}
+
+    patched = 0
+    failed: List[str] = []
+
+    for name, path in wanted.items():
+        file_id = by_name.get(name)
+        if file_id is None:
+            continue
+        if await patch_file(token, user_id, user_type_id,
+                            dataset_id, entity_id, file_id, path):
+            patched += 1
+        else:
+            failed.append(name)
+
+    to_add = [p for name, p in wanted.items() if name not in by_name]
+    added = 0
+    if to_add:
+        if await add_files(token, user_id, user_type_id,
+                           dataset_id, entity_id, to_add):
+            added = len(to_add)
+        else:
+            failed.extend(p.name for p in to_add)
+
+    stale_ids = [
+        file_id for name, file_id in by_name.items()
+        if name not in wanted and not EXPERT_MASK_RE.search(name or "")
+    ]
+    delete_job = None
+    if stale_ids:
+        job_id = await delete_files(token, user_id, user_type_id,
+                                    dataset_id, stale_ids)
+        delete_job = (
+            await wait_for_job(token, dataset_id, job_id) if job_id else "failed"
+        )
+
+    return {
+        "patched": patched,
+        "added": added,
+        "deleted": len(stale_ids),
+        "failed": failed,
+        "delete_job": delete_job,
+    }
