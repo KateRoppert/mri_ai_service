@@ -84,6 +84,12 @@ class PipelineRun(Base):
     kappa_upload_detail = Column(Text, nullable=True)
     kappa_user_id = Column(Integer, nullable=True)
 
+    # Sessions this run rebuilt because the doctor corrected their modality
+    # set. JSON list of "sub-NNN_ses-NNN". Their results in Kappa were
+    # computed from a set now known to be wrong, so they supersede rather
+    # than duplicate — see kappa_uploader.
+    reprocessed_sessions = Column(Text, nullable=True)
+
 
 class StageExecution(Base):
     """Модель выполнения отдельного этапа"""
@@ -125,6 +131,7 @@ def create_pipeline_run(
     run_id: Optional[str] = None,
     kappa_upload_status: Optional[str] = None,
     kappa_user_id: Optional[int] = None,
+    reprocessed_sessions: Optional[str] = None,
 ) -> PipelineRun:
     """Создать новый запуск pipeline.
 
@@ -151,6 +158,7 @@ def create_pipeline_run(
         kappa_dataset_id=kappa_dataset_id,
         kappa_upload_status=kappa_upload_status,
         kappa_user_id=kappa_user_id,
+        reprocessed_sessions=reprocessed_sessions,
     )
     
     db.add(run)
@@ -333,6 +341,7 @@ def init_db():
     _migrate_add_stop_columns()
     _migrate_add_kappa_dataset_id()
     _migrate_add_kappa_delivery()
+    _migrate_add_reprocessed_sessions()
 
 
 def _migrate_add_lesion_type():
@@ -387,6 +396,20 @@ def _migrate_add_kappa_dataset_id():
         if 'kappa_dataset_id' not in cols:
             conn.execute(__import__('sqlalchemy').text(
                 "ALTER TABLE pipeline_runs ADD COLUMN kappa_dataset_id INTEGER"
+            ))
+            conn.commit()
+
+
+def _migrate_add_reprocessed_sessions():
+    """Add pipeline_runs.reprocessed_sessions if it is not there yet."""
+    import sqlalchemy
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            sqlalchemy.text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'reprocessed_sessions' not in cols:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE pipeline_runs ADD COLUMN reprocessed_sessions TEXT"
             ))
             conn.commit()
 
@@ -490,3 +513,16 @@ def runs_due_for_delivery(
         .limit(limit)
         .all()
     )
+
+
+def superseding_sessions(run) -> set:
+    """Session keys whose Kappa contents this run supersedes. Never raises:
+    a corrupt value must not stop an upload."""
+    raw = getattr(run, "reprocessed_sessions", None)
+    if not raw:
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return set()
+    return {str(x) for x in parsed} if isinstance(parsed, list) else set()

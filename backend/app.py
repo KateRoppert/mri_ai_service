@@ -738,11 +738,18 @@ async def requeue_pipeline_run(
     # Сессии, у которых врач поменял набор модальностей, надо пересчитать.
     # skip_existing пропускает всё, у чего уже есть результаты, поэтому без
     # удаления исправление просто не дошло бы до данных.
+    purged_sessions = None
     try:
         from session_artifacts import purge_sessions_marked_for_reprocess
         purged = purge_sessions_marked_for_reprocess(original_run.output_path)
         if purged:
             logger.info("Переобработка: очищено сессий — %d", len(purged))
+            # Запоминаем на новом прогоне: к моменту выгрузки флаг
+            # needs_reprocess уже снят, и иначе никто не вспомнит, что эти
+            # сессии вытесняют лежащее в Kappa, а не дублируют его.
+            purged_sessions = json.dumps(
+                [key.replace("/", "_") for key in purged]
+            )
     except Exception as e:  # noqa: BLE001 — запуск важнее уборки
         logger.error("Не удалось очистить помеченные сессии: %s", e)
 
@@ -755,6 +762,7 @@ async def requeue_pipeline_run(
         kappa_dataset_id=original_run.kappa_dataset_id,
         kappa_upload_status=resumed_upload_status,
         kappa_user_id=resumed_upload_user_id,
+        reprocessed_sessions=purged_sessions,
     )
 
     background_tasks.add_task(

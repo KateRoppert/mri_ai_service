@@ -223,3 +223,52 @@ def test_a_failed_purge_does_not_block_the_run():
         response = client.post("/api/pipeline-runs/orig-run/requeue")
 
     assert response.status_code == 200
+
+
+def test_requeue_records_what_it_purged_on_the_new_run():
+    """needs_reprocess is cleared by the purge itself, so by upload time
+    nothing would remember that these sessions supersede what Kappa holds."""
+    import json as _json
+
+    original = _fake_original_run(status="completed")
+    new_run = _fake_new_run()
+    captured = {}
+
+    def _create(db, **kwargs):
+        captured.update(kwargs)
+        return new_run
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run", side_effect=_create), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
+         patch("session_artifacts.purge_sessions_marked_for_reprocess",
+               return_value={"sub-002/ses-001": [], "sub-002/ses-002": []}):
+        response = client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 200
+    assert sorted(_json.loads(captured["reprocessed_sessions"])) == [
+        "sub-002_ses-001", "sub-002_ses-002",
+    ]
+
+
+def test_requeue_without_a_purge_records_nothing():
+    original = _fake_original_run(status="completed")
+    new_run = _fake_new_run()
+    captured = {}
+
+    def _create(db, **kwargs):
+        captured.update(kwargs)
+        return new_run
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.create_pipeline_run", side_effect=_create), \
+         patch("app.run_pipeline_background"), \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
+         patch("session_artifacts.purge_sessions_marked_for_reprocess",
+               return_value={}):
+        client.post("/api/pipeline-runs/orig-run/requeue")
+
+    assert captured.get("reprocessed_sessions") is None
