@@ -141,6 +141,14 @@ class ExcludedSeriesInfo(BaseModel):
     reason: str = Field(..., description="unrecognized | lost_deduplication | replaced_by_manual_relabel | from_other_session")
 
 
+class SelectedModality(BaseModel):
+    """Модальность, которую алгоритм (или врач) уже отобрал."""
+    modality: str = Field(..., description="t1 | t1c | t2 | t2fl")
+    series_description: str = Field("", description="Имя серии из протокола")
+    original_path: str = Field("", description="Путь к исходной DICOM-серии")
+    slice_count: int = Field(0, description="Число DICOM-файлов в серии")
+
+
 class IncompletePatientSession(BaseModel):
     """Одна неполная сессия, требующая внимания врача"""
     patient_id: str = Field(..., description="BIDS ID пациента (sub-XXX)")
@@ -152,6 +160,13 @@ class IncompletePatientSession(BaseModel):
     missing: List[str] = Field(..., description="Модальности, которых не хватает (lesion-type-aware)")
     excluded_series: List[ExcludedSeriesInfo] = Field(
         default_factory=list, description="Серии вне финального набора — кандидаты на ручную переразметку"
+    )
+    selected: List[SelectedModality] = Field(
+        default_factory=list, description="Что уже отобрано, с именами из протокола"
+    )
+    required: List[str] = Field(
+        default_factory=list,
+        description="Обязательные модальности ДЛЯ ЭТОГО типа поражения",
     )
     merged_into_session_id: Optional[str] = Field(None, description="Если статус 'merged' — ID сессии, в которую объединили")
 
@@ -172,6 +187,30 @@ class RelabelSeriesResponse(BaseModel):
     """Результат переразметки"""
     status: str = Field(..., description="Статус сессии после переразметки: complete или incomplete")
     available: List[str] = Field(..., description="Модальности, доступные после переразметки")
+
+
+class AssignmentRequest(BaseModel):
+    """Желаемый итоговый набор модальностей сессии.
+
+    Именно набор, а не список действий: тогда его можно проверить целиком
+    до первой записи на диск, и порядок правок не влияет на результат.
+    """
+    assignments: Dict[str, str] = Field(
+        ..., description="модальность -> original_path выбранной серии"
+    )
+
+
+class AssignmentResponse(BaseModel):
+    """Состояние сессии после сохранения набора."""
+    status: str = Field(..., description="complete | incomplete")
+    selected: List[SelectedModality] = Field(default_factory=list)
+    excluded_series: List[ExcludedSeriesInfo] = Field(default_factory=list)
+    needs_reprocess: bool = Field(
+        False, description="Набор изменился — пациент будет переобработан"
+    )
+    kappa_warning: Optional[str] = Field(
+        None, description="Предупреждение, если старая версия уже в Kappa"
+    )
 
 
 class DiscardSessionResponse(BaseModel):
