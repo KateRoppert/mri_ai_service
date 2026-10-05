@@ -213,6 +213,17 @@ class AssignmentResponse(BaseModel):
     )
 
 
+class ReplaceEntityResponse(BaseModel):
+    """Результат замены содержимого сущности в Kappa."""
+    patched: int = Field(0, description="Файлов заменено на месте")
+    added: int = Field(0, description="Файлов добавлено")
+    deleted: int = Field(0, description="Файлов удалено")
+    failed: List[str] = Field(default_factory=list, description="Что не удалось")
+    delete_job: Optional[str] = Field(
+        None, description="succeeded | failed | running — итог удаления"
+    )
+
+
 class DiscardSessionResponse(BaseModel):
     """Результат исключения сессии из очереди review"""
     status: str = Field(..., description="Статус сессии после исключения: discarded")
@@ -393,7 +404,9 @@ class QualityReportListResponse(BaseModel):
 class KappaBlockedSession(BaseModel):
     """Одна сессия, которую повтор не починит."""
     session: Optional[str] = Field(None, description="BIDS-ключ сессии")
-    reason: str = Field(..., description="name_clash | missing_files")
+    reason: str = Field(
+        ..., description="name_clash | missing_files | supersedes_kappa"
+    )
     message: str = Field("", description="Объяснение для оператора")
 
 

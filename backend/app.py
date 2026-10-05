@@ -75,6 +75,7 @@ from models import (
     PipelineLossesResponse,
     KappaDeliveryStatus,
     KappaBlockedSession,
+    ReplaceEntityResponse,
 )
 from config_diff import diff_configs
 from database import (
@@ -2920,6 +2921,93 @@ async def retry_kappa_upload(run_id: str, session_id: str):
         run_id, results, None, source="вручную"
     )
     return {**results, "delivery": verdict}
+
+
+@app.post(
+    "/api/kappa/replace-entity/{run_id}/{patient_id}/{session_id}",
+    response_model=ReplaceEntityResponse,
+)
+async def replace_kappa_entity(
+    run_id: str,
+    patient_id: str,
+    session_id: str,
+    kappa_session_id: str,
+    db: Session = Depends(get_db),
+):
+    """Заменить содержимое сущности пациента в Kappa результатами переобработки.
+
+    Параметр сессии Kappa называется kappa_session_id, а не session_id:
+    session_id в пути — это BIDS-сессия, и два параметра с одним именем
+    FastAPI связать не может.
+    """
+    import kappa_entity_files
+    import kappa_run_log
+    from database import superseding_sessions
+    from kappa_uploader import session_file_paths
+
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+
+    session_key = f"{patient_id}_{session_id}"
+    # Эндпоинт перезаписывает данные в чужой системе. Он должен работать
+    # только для сессии, которую переобработали, а не для любой, чей адрес
+    # удалось угадать.
+    if session_key not in superseding_sessions(run):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сессия {session_key} не помечена как вытесняющая — "
+                   f"заменять нечего",
+        )
+
+    # Тот же путь, которым пользуется retry-upload: разрешает сессию Kappa,
+    # проверяет конфиг предобработки и знает раскладку файлов прогона.
+    uploader = pipeline_monitor._create_kappa_uploader(
+        run_id, run.output_path, kappa_session_id,
+        getattr(run, "lesion_type", None) or "glioblastoma",
+    )
+    if uploader is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Сессия Kappa не найдена/истекла, или не найден конфиг "
+                   "препроцессинга. Войдите в Kappa заново.",
+        )
+
+    records = find_by_bids_id(session_key, {run.kappa_dataset_id}) or []
+    entity_id = next((r.get("kappa_entity_id") for r in records
+                      if r.get("kappa_entity_id")), None)
+    if not entity_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"В Kappa нет записи для {session_key} — заменять нечего",
+        )
+
+    session_data = uploader._discover_sessions().get(session_key)
+    files = session_file_paths(session_data) if session_data else []
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"На диске нет файлов {session_key} — нечем заменять",
+        )
+
+    result = await kappa_entity_files.replace_entity_contents(
+        token=uploader.token,
+        user_id=uploader.user_id,
+        user_type_id=uploader.user_type_id,
+        dataset_id=run.kappa_dataset_id,
+        entity_id=entity_id,
+        files=files,
+    )
+
+    kappa_run_log.append(
+        run.output_path,
+        f"Замена в Kappa для {session_key}: заменено {result['patched']}, "
+        f"добавлено {result['added']}, удалено {result['deleted']}"
+        + (f", не удалось: {', '.join(result['failed'])}"
+           if result["failed"] else ""),
+    )
+    logger.info("Kappa entity replaced for %s: %s", session_key, result)
+    return ReplaceEntityResponse(**result)
 
 
 @app.get("/api/kappa/delivery/summary")
