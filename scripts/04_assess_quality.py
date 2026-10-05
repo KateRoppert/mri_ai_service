@@ -454,7 +454,15 @@ class QualityAssessor:
         skipped_count = 0
         category_counts = {'GOOD': 0, 'ACCEPTABLE': 0, 'POOR': 0}
 
-        for success, category in results:
+        # KI-058: report the heaviest task's peak — one line, not one per file
+        heaviest = max(results, key=lambda r: r[2] or 0, default=None)
+        if heaviest is not None and heaviest[2]:
+            from utils.resource_planner import format_task_peak
+            self.logger.info(
+                f"Heaviest task {heaviest[4]}: {format_task_peak(heaviest[2], heaviest[3])}"
+            )
+
+        for success, category, *_peak in results:
             if success:
                 if category == "SKIPPED":
                     skipped_count += 1
@@ -474,6 +482,22 @@ class QualityAssessor:
 
     @staticmethod
     def _assess_image_wrapper(args):
+        """Assess one image under a peak-memory meter (KI-058).
+
+        Returns (success, category, peak_bytes, voxels, file name); the parent
+        logs the heaviest one, since worker log records do not reliably reach
+        the stage log (KI-032).
+        """
+        from utils.resource_planner import max_voxels, task_peak_meter
+
+        nifti_path = args[0]
+        voxels = max_voxels([nifti_path])
+        with task_peak_meter() as meter:
+            success, category = QualityAssessor._assess_image_task(args)
+        return success, category, meter.peak_bytes, voxels, Path(nifti_path).name
+
+    @staticmethod
+    def _assess_image_task(args):
         """Static wrapper for multiprocessing."""
         nifti_path, patient_id, session_id, modality, output_dir, config, skip_existing = args
         
