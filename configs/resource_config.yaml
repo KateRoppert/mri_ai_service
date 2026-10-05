@@ -2,14 +2,26 @@
 # k_bytes_per_voxel = measured peak bytes-per-worker / worst-case input voxels.
 # Calibrated on the SibBMS 3-patient run (worst case 231M voxels). Refine as more
 # datasets are measured. See docs/superpowers/specs/2026-07-17-memory-aware-worker-sizing-design.md
+#
+# Since KI-058 (2026-10-02) stages 04/05/07 log each task's measured peak and
+# k ("peak RSS … · max input … Mvox · k=… B/voxel"): recalibrate from those
+# lines on the largest inputs. k from small inputs is meaningless — the
+# fixed per-process cost dominates there (reserve_bytes covers it).
 safety_factor: 0.85
 min_workers: 1
 stages:
   stage_04_quality:
-    k_bytes_per_voxel: 6.9
+    # 2026-10-02, SibBMS P000067 ses-005 t1 (231.4 Mvox): peak 4.03 GB -> 17.4.
+    # The July value 6.9 planned 1.6 GB/worker, so 4 workers on a 9.7 GB cap.
+    k_bytes_per_voxel: 17.4
     reserve_bytes: 1500000000
   stage_05_preprocessing:
-    k_bytes_per_voxel: 17.7
+    # 2026-10-02, SibBMS P000067 (run 2_10_1733), with intra-session
+    # registration on <=1 mm copies: ses-005 231.4 Mvox peak 8.10 GB -> 35.0;
+    # ses-006 185.6 Mvox 6.04 GB -> 32.5. 2D sessions (7-9 Mvox) peak
+    # 1.2-1.3 GB — fixed cost, covered by reserve_bytes. Before the
+    # registration fix the same session went past 9.2 GB and was killed.
+    k_bytes_per_voxel: 35.0
     reserve_bytes: 2000000000
   stage_07_inverse_transform:
     # Calibrated against the true cross-modality worst-case file (confirmed
@@ -17,5 +29,8 @@ stages:
     # valid as long as max_voxels() is computed across all modalities, not
     # just the reference modality (see scripts/07_inverse_transform.py's
     # _input_refs).
-    k_bytes_per_voxel: 22.5
+    # 2026-10-02, SibBMS P000067 ses-005 (231.4 Mvox): peak 8.73 GB -> 37.7.
+    # The July value 22.5 planned 5.2 GB; workers were OOM-killed at 5.1-5.5 GB
+    # on 2026-09-30 before reaching their peak.
+    k_bytes_per_voxel: 37.7
     reserve_bytes: 2000000000
