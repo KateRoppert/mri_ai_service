@@ -24,8 +24,8 @@ def test_stage04_uses_plan_stage_workers(tmp_path):
     assert hasattr(mod, "_plan_workers_for_inputs")
     big = tmp_path / "big.nii.gz"
     nib.save(nib.Nifti1Image(np.zeros((310, 864, 864), np.int16), np.eye(4)), str(big))
-    # 231M * 6.9 ~= 1.6 GB/worker; 20*0.85-1.5 = 15.5 GB -> 9 workers, capped by requested=6
-    plan = mod._plan_workers_for_inputs([big], requested=6, budget_bytes=20_000_000_000)
+    # KI-058 recalibration: 231M * 17.4 ~= 4.0 GB/worker; 40*0.85-1.5 = 32.5 GB -> 8, capped by requested=6
+    plan = mod._plan_workers_for_inputs([big], requested=6, budget_bytes=40_000_000_000)
     assert plan.actual_workers == 6
     # tighter budget forces fewer
     plan2 = mod._plan_workers_for_inputs([big], requested=6, budget_bytes=6_000_000_000)

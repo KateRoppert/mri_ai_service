@@ -567,6 +567,30 @@ def process_single_subject(
     return results
 
 def process_subject_wrapper(args_tuple):
+    """Run one session under a peak-memory meter (KI-058).
+
+    The peak line travels back in the result and is logged by the parent:
+    worker-side log records do not reliably reach the stage log (KI-032).
+    """
+    from utils.resource_planner import format_task_peak, max_voxels, task_peak_meter
+
+    anat_dir, subject_id, session_id = args_tuple[0], args_tuple[1], args_tuple[2]
+    modalities = args_tuple[8]
+    voxels = max_voxels(
+        anat_dir / f"{subject_id}_{session_id}_{m}.nii.gz" for m in modalities
+    )
+    with task_peak_meter() as meter:
+        result = _process_subject_wrapper(args_tuple)
+    result["peak_line"] = format_task_peak(meter.peak_bytes, voxels)
+    return result
+
+
+def _peak_suffix(result: dict) -> str:
+    line = result.get("peak_line") if isinstance(result, dict) else None
+    return f" — {line}" if line else ""
+
+
+def _process_subject_wrapper(args_tuple):
     """
     Wrapper for parallel processing of subjects.
     Unpacks arguments and calls process_single_subject.
@@ -902,6 +926,8 @@ def main():
                 
                 result = process_subject_wrapper(args_tuple)
                 all_results.append(result)
+                if result.get("peak_line"):
+                    logger.info(f"{subject_id}/{session_id}: {result['peak_line']}")
                 
                 if result['success']:
                     successful += 1
@@ -1005,13 +1031,13 @@ def main():
                             
                             if result['success']:
                                 successful += 1
-                                logger.info(f"✓ [{idx}/{len(processing_args)}] {subject_id}/{session_id} completed")
+                                logger.info(f"✓ [{idx}/{len(processing_args)}] {subject_id}/{session_id} completed{_peak_suffix(result)}")
                             elif result.get('skipped'):
                                 failed += 1
                                 logger.warning(f"⊙ [{idx}/{len(processing_args)}] {subject_id}/{session_id} skipped: {result.get('skip_reason', 'unknown')}")
                             else:
                                 failed += 1
-                                logger.error(f"✗ [{idx}/{len(processing_args)}] {subject_id}/{session_id} failed")
+                                logger.error(f"✗ [{idx}/{len(processing_args)}] {subject_id}/{session_id} failed{_peak_suffix(result)}")
                                 
                         except Exception as e:
                             failed += 1
