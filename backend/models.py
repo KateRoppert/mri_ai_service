@@ -408,6 +408,9 @@ class KappaBlockedSession(BaseModel):
         ..., description="name_clash | missing_files | supersedes_kappa"
     )
     message: str = Field("", description="Объяснение для оператора")
+    expert_masks: int = Field(
+        0, description="Сколько экспертных масок у сессии — они переживут замену"
+    )
 
 
 class KappaDeliveryStatus(BaseModel):

@@ -136,3 +136,70 @@ async def test_refuses_when_the_session_is_not_on_disk(monkeypatch):
             "run-1", "sub-002", "ses-001", kappa_session_id="sid", db=None)
     assert caught.value.status_code == 404
     assert "нечем заменять" in caught.value.detail
+
+
+# --- The expert-mask count shown in the confirmation ------------------------
+
+def _run_with_blocked(reason):
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    import json as _json
+    return SimpleNamespace(
+        run_id="run-1", output_path="/tmp/run", kappa_dataset_id=351,
+        kappa_upload_status="needs_attention",
+        kappa_upload_next_attempt=None,
+        kappa_upload_detail=_json.dumps({
+            "total": 1, "delivered": 0, "reason": reason,
+            "blocked": [{"session": "sub-002_ses-001", "reason": reason,
+                         "message": "msg"}],
+            "attempts": 1, "first_failure_at": None,
+            "last_attempt_at": datetime.now(timezone.utc).isoformat(),
+        }),
+    )
+
+
+def test_a_superseding_session_carries_its_expert_mask_count(monkeypatch):
+    """The operator is about to overwrite data an expert drew on. The
+    number is what makes that consequence concrete before confirming."""
+    import app
+
+    monkeypatch.setattr(app, "find_by_bids_id",
+                        lambda *a, **k: [{"kappa_entity_id": "e1"}])
+    monkeypatch.setattr("mask_service.get_mask_history",
+                        lambda eid: [{"source": "ai"}, {"source": "expert"},
+                                     {"source": "expert"}])
+
+    status = app._delivery_status(_run_with_blocked("supersedes_kappa"))
+
+    assert status.blocked[0].expert_masks == 2
+
+
+def test_other_reasons_do_not_pay_for_the_lookup(monkeypatch):
+    """Two queries per blocked row on every history page, for a number
+    nothing would display. The reason guard is load-bearing."""
+    import app
+
+    calls = []
+    monkeypatch.setattr(app, "find_by_bids_id",
+                        lambda *a, **k: calls.append(a) or [])
+
+    status = app._delivery_status(_run_with_blocked("name_clash"))
+
+    assert status.blocked[0].expert_masks == 0
+    assert calls == [], "реестр опрошен там, где счётчик не нужен"
+
+
+def test_a_failed_count_does_not_break_the_history(monkeypatch):
+    """The count decorates a confirmation. The history list is how the
+    operator finds the problem at all, so it must survive the decoration
+    failing."""
+    import app
+
+    def _boom(*a, **k):
+        raise RuntimeError("реестр недоступен")
+    monkeypatch.setattr(app, "find_by_bids_id", _boom)
+
+    status = app._delivery_status(_run_with_blocked("supersedes_kappa"))
+
+    assert status.blocked[0].expert_masks == 0
+    assert status.status == "needs_attention"

@@ -872,6 +872,30 @@ def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
     if not getattr(run, "kappa_upload_status", None):
         return None
     detail = get_kappa_delivery(run)
+
+    def _expert_masks(session_key: str) -> int:
+        """How many expert masks this session has. They survive a
+        replacement, but they were drawn on the superseded data, so the
+        operator is told before confirming."""
+        dataset_id = getattr(run, "kappa_dataset_id", None)
+        if not dataset_id or not session_key:
+            return 0
+        try:
+            from mask_service import get_mask_history
+            records = find_by_bids_id(session_key, {dataset_id}) or []
+            entity_id = next((r.get("kappa_entity_id") for r in records
+                              if r.get("kappa_entity_id")), None)
+            if not entity_id:
+                return 0
+            return sum(1 for v in get_mask_history(entity_id)
+                       if v.get("source") == "expert")
+        except Exception as e:  # noqa: BLE001
+            # Счётчик — украшение подтверждения. История запусков не должна
+            # падать из-за того, что его не удалось посчитать.
+            logger.warning("Не удалось посчитать экспертные маски %s: %s",
+                           session_key, e)
+            return 0
+
     return KappaDeliveryStatus(
         status=run.kappa_upload_status,
         delivered=detail.get("delivered", 0),
@@ -881,6 +905,12 @@ def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
                 session=b.get("session"),
                 reason=b.get("reason", "name_clash"),
                 message=b.get("message", ""),
+                # Только для вытесняющих: иначе каждая страница истории
+                # платила бы двумя запросами за строку.
+                expert_masks=(
+                    _expert_masks(b.get("session") or "")
+                    if b.get("reason") == "supersedes_kappa" else 0
+                ),
             )
             for b in (detail.get("blocked") or [])
         ],

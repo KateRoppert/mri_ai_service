@@ -380,6 +380,18 @@ export const retryKappaUpload = async (runId) => {
 };
 
 /**
+ * Заменить содержимое сущности пациента в Kappa результатами переобработки.
+ */
+export const replaceKappaEntity = async (runId, patientId, sessionId) => {
+  const response = await apiClient.post(
+    `/kappa/replace-entity/${runId}/${patientId}/${sessionId}`,
+    null,
+    { params: { kappa_session_id: localStorage.getItem('kappa_session_id') } },
+  );
+  return response.data;
+};
+
+/**
  * Отвечает ли Kappa прямо сейчас.
  */
 export const getKappaHealth = async () => {
@@ -525,6 +537,7 @@ export default {
   requeuePipelineRun,
   resumePipelineRun,
   retryKappaUpload,
+  replaceKappaEntity,
   getKappaDeliverySummary,
   getKappaHealth,
   getKappaMe,

@@ -2,7 +2,7 @@
  * Компонент для отображения истории запусков pipeline
  */
 import { useState, useEffect, useRef } from 'react';
-import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip, Alert } from 'antd';
+import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip, Alert, Popconfirm } from 'antd';
 import { 
   EyeOutlined, 
   FileTextOutlined,
@@ -18,6 +18,7 @@ import {
 import {
   getPipelineHistory,
   retryKappaUpload,
+  replaceKappaEntity,
   getKappaDeliverySummary,
 } from '../services/api';
 import { confirmAndResume } from '../utils/resumeRun';
@@ -32,6 +33,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   const [deliverySummary, setDeliverySummary] = useState(null);
   const [deliveryDetail, setDeliveryDetail] = useState(null);
   const [retrying, setRetrying] = useState(false);
+  const [replacing, setReplacing] = useState(null);
 
   /**
    * Загружаем историю при монтировании и при изменении фильтров
@@ -63,6 +65,41 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     }, 2000);
     return () => clearInterval(interval);
   }, [currentPage, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Заменить версию пациента в Kappa результатами переобработки.
+   * Идемпотентно: при частичном успехе действие можно повторить.
+   */
+  const handleReplace = async (blocked) => {
+    const [patient, session] = (blocked.session || '').split('_');
+    setReplacing(blocked.session);
+    try {
+      const r = await replaceKappaEntity(deliveryDetail.run_id, patient, session);
+      if (r.failed?.length) {
+        message.warning(
+          `Заменено ${r.patched}, но не удалось: ${r.failed.join(', ')}. `
+          + 'Можно повторить — замена идемпотентна.', 8,
+        );
+      } else if (r.delete_job === 'running') {
+        message.warning(
+          `Заменено файлов: ${r.patched}. Удаление лишних ещё идёт в Kappa — `
+          + 'проверьте сущность через минуту.', 8,
+        );
+      } else {
+        message.success(
+          `Заменено файлов: ${r.patched}, добавлено ${r.added}, `
+          + `удалено ${r.deleted}`,
+        );
+      }
+      setDeliveryDetail(null);
+      fetchHistory();
+    } catch (e) {
+      console.error('Ошибка замены в Kappa:', e);
+      message.error(e?.response?.data?.detail || 'Не удалось заменить в Kappa');
+    } finally {
+      setReplacing(null);
+    }
+  };
 
   /**
    * Получить историю запусков
@@ -517,7 +554,35 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
                 header="Требуют внимания"
                 dataSource={deliveryDetail.kappa_upload.blocked}
                 renderItem={(b) => (
-                  <List.Item>
+                  <List.Item
+                    actions={b.reason === 'supersedes_kappa' ? [
+                      <Popconfirm
+                        key="replace"
+                        title="Заменить версию в Kappa?"
+                        description={(
+                          <div style={{ maxWidth: 360 }}>
+                            Файлы пациента будут перезаписаны результатами
+                            новой обработки. Прежняя версия не сохранится.
+                            {b.expert_masks > 0 && (
+                              <div style={{ marginTop: 8 }}>
+                                У пациента есть экспертные маски
+                                {` (${b.expert_masks})`}. Они останутся, но
+                                нарисованы по прежним данным.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        okText="Заменить"
+                        cancelText="Отмена"
+                        onConfirm={() => handleReplace(b)}
+                      >
+                        <Button size="small" danger
+                                loading={replacing === b.session}>
+                          Заменить в Kappa
+                        </Button>
+                      </Popconfirm>,
+                    ] : []}
+                  >
                     <strong>{b.session}</strong>: {b.message || b.reason}
                   </List.Item>
                 )}
