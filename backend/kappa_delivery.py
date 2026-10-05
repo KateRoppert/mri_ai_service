@@ -171,6 +171,56 @@ def classify(
     return _transient(state, now, {"reason": "network", **counters})
 
 
+def mark_session_delivered(
+    state: Dict[str, Any], session_key: str, now: datetime,
+) -> Dict[str, Any]:
+    """One blocked session was resolved out of band — recompute the run.
+
+    The operator replaced a superseding patient in Kappa by hand. That
+    session has now arrived, but no upload attempt ran, so classify() has
+    nothing to classify. Without this the run keeps the verdict from before
+    the replacement, and a screen that contradicts what the operator just
+    did is indistinguishable from Kappa being down.
+
+    Idempotent: replacing twice is allowed (it is idempotent in Kappa too),
+    so the counter is capped at the number of sessions.
+    """
+    state = state or {}
+    total = int(state.get("total") or 0)
+    blocked = [
+        b for b in (state.get("blocked") or [])
+        if b.get("session") != session_key
+    ]
+    delivered = int(state.get("delivered") or 0) + 1
+    if total:
+        delivered = min(delivered, total)
+
+    counters = {"total": total, "delivered": delivered, "blocked": blocked}
+
+    if blocked:
+        return {
+            "status": "needs_attention",
+            "next_attempt": None,
+            "detail": _detail(state, now, reason=blocked[0].get("reason"),
+                              **counters),
+        }
+
+    if total and delivered >= total:
+        return {
+            "status": "done",
+            "next_attempt": None,
+            "detail": _detail(state, now, first_failure_at=None, **counters),
+        }
+
+    # Nothing is blocked any more, but not everything has arrived. Leave it
+    # to the worker rather than calling the run done on this one session.
+    return {
+        "status": "pending",
+        "next_attempt": now + timedelta(minutes=BACKOFF_MINUTES[0]),
+        "detail": _detail(state, now, **counters),
+    }
+
+
 # How long an in-flight upload holds the worker slot so a second tick
 # does not start the same run again.
 IN_FLIGHT_HOLD_MINUTES = 15

@@ -270,3 +270,70 @@ def test_a_superseding_session_alongside_a_delivered_one():
     assert out["status"] == "needs_attention"
     assert out["detail"]["delivered"] == 1
     assert len(out["detail"]["blocked"]) == 1
+
+
+# --- Resolving a supersedes blockage by replacing in Kappa ------------------
+
+def test_replacing_a_superseding_session_clears_its_blockage():
+    """The operator pressed «Заменить в Kappa» and it worked. If the run
+    still reads «требует внимания, 1 из 2», the screen contradicts what just
+    happened — which is indistinguishable from Kappa being down."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 2, "delivered": 1, "attempts": 0,
+             "blocked": [{"session": "sub-002_ses-001",
+                          "reason": "supersedes_kappa", "message": "m"}],
+             "reason": "supersedes_kappa"}
+
+    out = mark_session_delivered(state, "sub-002_ses-001", NOW)
+
+    assert out["status"] == "done"
+    assert out["detail"]["delivered"] == 2
+    assert out["detail"]["blocked"] == []
+    assert out["detail"]["reason"] is None
+    assert out["next_attempt"] is None
+
+
+def test_another_blocked_session_keeps_the_run_in_needs_attention():
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 1, "attempts": 0,
+             "blocked": [
+                 {"session": "a", "reason": "supersedes_kappa", "message": ""},
+                 {"session": "b", "reason": "name_clash", "message": ""},
+             ],
+             "reason": "supersedes_kappa"}
+
+    out = mark_session_delivered(state, "a", NOW)
+
+    assert out["status"] == "needs_attention"
+    assert out["detail"]["delivered"] == 2
+    assert [b["session"] for b in out["detail"]["blocked"]] == ["b"]
+    assert out["detail"]["reason"] == "name_clash"
+
+
+def test_delivered_never_exceeds_total():
+    """A repeated replacement is allowed — it is idempotent in Kappa — so the
+    counter must not drift past the number of sessions."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 1, "delivered": 1, "blocked": [], "attempts": 0}
+    out = mark_session_delivered(state, "sub-002_ses-001", NOW)
+
+    assert out["detail"]["delivered"] == 1
+
+
+def test_sessions_still_undelivered_keep_the_run_pending():
+    """Nothing is blocked, but not everything arrived: the worker should
+    still finish the job rather than the run reading as done."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 0, "attempts": 0,
+             "blocked": [{"session": "a", "reason": "supersedes_kappa",
+                          "message": ""}]}
+
+    out = mark_session_delivered(state, "a", NOW)
+
+    assert out["status"] == "pending"
+    assert out["next_attempt"] is not None
+    assert out["detail"]["delivered"] == 1

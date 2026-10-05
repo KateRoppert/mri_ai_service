@@ -200,7 +200,10 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
             return None
 
         state = get_kappa_delivery(run)
-        now = datetime.now(timezone.utc)
+        # The moment the attempt STARTS. Used for the in-flight hold; the
+        # verdict is stamped when the upload actually finishes, which can be
+        # many seconds later — see below.
+        started = datetime.now(timezone.utc)
         local = count_local_progress(
             run_id, run.output_path, run.kappa_dataset_id
         )
@@ -214,10 +217,10 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
 
         if session is None:
             result = NO_SESSION
-            verdict = classify(NO_SESSION, None, state, now)
+            verdict = classify(NO_SESSION, None, state, started)
         else:
             seeded = mark_in_progress(
-                state, now, state["total"], state["delivered"],
+                state, started, state["total"], state["delivered"],
             )
             set_kappa_delivery(
                 db, run_id, seeded["status"],
@@ -232,7 +235,12 @@ async def deliver_one(run_id: str) -> Optional[Dict[str, Any]]:
             except Exception as e:          # noqa: BLE001 - recorded, not raised
                 exc = e
                 logger.error("Deferred Kappa upload failed for %s: %s", run_id, e)
-            verdict = classify(result, exc, state, now)
+            # Stamp the verdict now, not when the attempt began: an upload
+            # takes seconds, and a verdict dated before its own work
+            # understates last_attempt_at, shortens the backoff by the
+            # upload's duration, and — now that set_kappa_delivery refuses
+            # stale verdicts — can get this attempt's real outcome dropped.
+            verdict = classify(result, exc, state, datetime.now(timezone.utc))
 
         set_kappa_delivery(
             db, run_id, verdict["status"],

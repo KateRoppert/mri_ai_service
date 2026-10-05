@@ -7,9 +7,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime, timezone
 from typing import List, Optional
 import json
+import logging
 import uuid
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 # Создаём движок БД
 engine = create_engine(
@@ -472,14 +475,48 @@ def set_kappa_delivery(
     next_attempt: Optional[datetime],
     detail: dict,
 ) -> None:
-    """Persist the verdict of one delivery attempt."""
+    """Persist the verdict of one delivery attempt.
+
+    Refuses a verdict older than the one already stored. Two runs in
+    production ended up with a status from one attempt and a detail from an
+    earlier one — 2af5d6ed (2026-10-05) read "0 of 2, Kappa unreachable"
+    while actually waiting for a human on 1 of 2, and e3783cbb
+    (2026-09-28) read done with a network detail. The writing mechanism was
+    never reproduced, so the guard is on the invariant rather than on a
+    suspected caller: the stored verdict only ever moves forward in time.
+    """
     run = get_pipeline_run(db, run_id)
     if run is None:
         return
+
+    stored = _attempt_stamp(get_kappa_delivery(run))
+    incoming = _attempt_stamp(detail)
+    if stored is not None and incoming is not None and incoming < stored:
+        logger.warning(
+            "Отброшен устаревший вердикт доставки для %s: пришёл %s "
+            "(%s, %s/%s), уже записан %s. Это рассогласование — см. "
+            "KI-059, нужна трасса вызова.",
+            run_id, incoming.isoformat(), detail.get("reason"),
+            detail.get("delivered"), detail.get("total"), stored.isoformat(),
+        )
+        return
+
     run.kappa_upload_status = status
     run.kappa_upload_next_attempt = _naive_utc(next_attempt)
     run.kappa_upload_detail = json.dumps(detail, ensure_ascii=False)
     db.commit()
+
+
+def _attempt_stamp(detail: dict) -> Optional[datetime]:
+    """When the attempt this detail describes was recorded, or None if the
+    blob does not say. Unknown is never treated as newer."""
+    raw = (detail or {}).get("last_attempt_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
 
 
 def get_kappa_delivery(run: PipelineRun) -> dict:
