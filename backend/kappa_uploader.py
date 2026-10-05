@@ -24,6 +24,23 @@ from preprocessing_version import compute_preprocessing_id
 logger = logging.getLogger(__name__)
 
 
+def session_file_paths(session_data: Dict[str, Any]) -> List[Path]:
+    """The files that make up one session's Kappa entity.
+
+    Both the upload and the replacement need this set. Keeping one
+    definition is what stops them drifting apart — a report added to the
+    entity has to reach a replaced entity too.
+
+    The native-space mask is deliberately excluded: it lives in the
+    patient's own geometry and is not part of what the dataset holds.
+    """
+    paths = list(session_data["preprocessed"])
+    paths.extend(m for m in session_data["masks"] if "_native_" not in m.name)
+    if session_data.get("lesion_labels_mask"):
+        paths.append(session_data["lesion_labels_mask"])
+    return paths
+
+
 class KappaUploader:
     """
     Загружает итоговые результаты пайплайна в Kappa.
@@ -499,19 +516,9 @@ class KappaUploader:
     ) -> Dict[str, Any]:
         """Загрузить одну сессию как сущность."""
 
-        # Собираем файлы: preprocessed + основная маска
-        file_paths = list(session_data["preprocessed"])
-
-        # Добавляем только основную маску (без native)
-        main_masks = [
-            m for m in session_data["masks"]
-            if "_native_" not in m.name
-        ]
-        file_paths.extend(main_masks)
-
-        # Include the labeled lesion mask so validation hover works Kappa-only
-        if session_data.get("lesion_labels_mask"):
-            file_paths.append(session_data["lesion_labels_mask"])
+        # Собираем файлы: preprocessed + основная маска + labels.
+        # Правило одно для выгрузки и для замены — см. session_file_paths.
+        file_paths = session_file_paths(session_data)
 
         if not file_paths:
             return {"session": session_key, "success": False, "error": "no files"}

@@ -140,3 +140,38 @@ def test_the_monitor_passes_the_runs_list_to_the_uploader(tmp_path, monkeypatch)
 
     assert uploader is not None, "аплоадер не создался — проводка не проверена"
     assert uploader.superseding_sessions == {"sub-002_ses-001"}
+
+
+# --- The entity's file set, defined once ------------------------------------
+
+def test_the_entity_file_rule_lives_in_one_place(tmp_path):
+    """Both the upload and the replacement must send the same set. Two
+    copies of this rule drift the moment one gains a file."""
+    from kappa_uploader import session_file_paths
+
+    session_data = {
+        "preprocessed": [tmp_path / "t1.nii.gz", tmp_path / "t2.nii.gz"],
+        "masks": [tmp_path / "sub-002_ses-001_segmask.nii.gz",
+                  tmp_path / "sub-002_ses-001_segmask_native_t1.nii.gz"],
+        "lesion_labels_mask": tmp_path / "labels.nii.gz",
+    }
+
+    names = [p.name for p in session_file_paths(session_data)]
+
+    assert "t1.nii.gz" in names and "t2.nii.gz" in names
+    assert "sub-002_ses-001_segmask.nii.gz" in names
+    assert "labels.nii.gz" in names
+    # The native mask lives in the patient's own space and is not part of
+    # the entity — it is the one thing deliberately left out.
+    assert not any("_native_" in n for n in names)
+
+
+def test_no_labels_mask_is_simply_absent(tmp_path):
+    from kappa_uploader import session_file_paths
+
+    paths = session_file_paths({
+        "preprocessed": [tmp_path / "t1.nii.gz"],
+        "masks": [],
+        "lesion_labels_mask": None,
+    })
+    assert [p.name for p in paths] == ["t1.nii.gz"]
