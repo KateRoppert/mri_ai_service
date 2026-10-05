@@ -8,6 +8,7 @@ working run is never broken.
 """
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -43,6 +44,27 @@ def cgroup_memory_limit_bytes(
     return None
 
 
+def host_available_bytes(meminfo_path: str = "/proc/meminfo") -> Optional[int]:
+    """Memory the machine can give out right now (MemAvailable), or None.
+
+    Inside a container /proc/meminfo is the host's, so this already excludes
+    what other containers (ms-seg's loaded model), the desktop and this
+    container's own baseline hold. KI-058: a cgroup cap of 20g on a 15 GiB
+    laptop let stage 07 plan against memory that did not exist.
+    """
+    try:
+        text = Path(meminfo_path).read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("MemAvailable:"):
+            try:
+                return int(line.split()[1]) * 1024  # kB
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
 def max_voxels(nifti_paths: Iterable[Path]) -> int:
     """Largest voxel count (product of header dims) among the given NIfTI files.
 
@@ -65,6 +87,11 @@ def max_voxels(nifti_paths: Iterable[Path]) -> int:
 class PlanResult:
     actual_workers: int
     reason: str
+    # True when even one worker's estimate exceeds the usable budget: the
+    # plan falls back to min_workers and the run may still OOM.
+    over_budget: bool = False
+    per_worker_bytes: float = 0.0
+    usable_bytes: Optional[int] = None
 
 
 def plan_workers(
@@ -78,8 +105,9 @@ def plan_workers(
 ) -> PlanResult:
     """Cap `requested` by CPU and by the memory budget; never below min_workers.
 
-    budget_bytes=None -> read the cgroup limit * safety_factor. If that is also
-    unavailable, memory does not cap (fail-safe to requested/CPU).
+    budget_bytes=None -> min(cgroup limit, host MemAvailable) * safety_factor;
+    either source may be missing. With neither, memory does not cap
+    (fail-safe to requested/CPU). An injected budget_bytes is used as given.
     """
     caps = [requested]
     parts = [f"requested={requested}"]
@@ -88,9 +116,21 @@ def plan_workers(
         parts.append(f"cpu={cpu_cap}")
 
     if budget_bytes is None:
-        limit = cgroup_memory_limit_bytes()
-        budget_bytes = int(limit * safety_factor) if limit is not None else None
+        sources = [
+            (name, value) for name, value in (
+                ("cgroup", cgroup_memory_limit_bytes()),
+                ("host-avail", host_available_bytes()),
+            ) if value is not None
+        ]
+        if sources:
+            budget_bytes = int(min(v for _, v in sources) * safety_factor)
+            parts.append(
+                "budget=min(" + ", ".join(f"{n} {v / 1e9:.1f}" for n, v in sources)
+                + f")GBx{safety_factor}"
+            )
 
+    over_budget = False
+    usable = None
     if budget_bytes is not None and per_worker_bytes > 0:
         usable = budget_bytes - reserve_bytes
         mem_workers = int(usable // per_worker_bytes) if usable > 0 else 0
@@ -99,11 +139,18 @@ def plan_workers(
             f"mem=({budget_bytes / 1e9:.1f}-{reserve_bytes / 1e9:.1f})GB"
             f"/{per_worker_bytes / 1e9:.2f}GB={mem_workers}"
         )
+        if per_worker_bytes > usable:
+            over_budget = True
     else:
         parts.append("mem=unbounded")
 
     actual = max(min_workers, min(caps))
-    return PlanResult(actual, f"min({', '.join(parts)}) -> {actual}")
+    reason = f"min({', '.join(parts)}) -> {actual}"
+    if over_budget:
+        reason += (f"; OVER BUDGET: one task ~{per_worker_bytes / 1e9:.1f} GB"
+                   f" > usable {max(usable, 0) / 1e9:.1f} GB")
+    return PlanResult(actual, reason, over_budget=over_budget,
+                      per_worker_bytes=per_worker_bytes, usable_bytes=usable)
 
 
 def plan_stage_workers(
@@ -148,7 +195,7 @@ def plan_stage_workers(
         if budget_bytes is not None:
             budget_bytes = int(budget_bytes * safety_factor)
 
-        return plan_workers(
+        plan = plan_workers(
             requested=requested,
             per_worker_bytes=per_worker,
             budget_bytes=budget_bytes,
@@ -157,6 +204,14 @@ def plan_stage_workers(
             reserve_bytes=int(stage_cfg.get("reserve_bytes", 1_500_000_000)),
             min_workers=int(config.get("min_workers", 1)),
         )
+        if plan.over_budget:
+            logger.warning(
+                "%s: одна задача по оценке ~%.1f ГБ (крупнейший вход %.1f Мвокс "
+                "× k=%s Б/воксель), а доступно ~%.1f ГБ — возможен OOM",
+                stage_name, per_worker / 1e9, voxels / 1e6,
+                stage_cfg["k_bytes_per_voxel"], max(plan.usable_bytes or 0, 0) / 1e9,
+            )
+        return plan
     except Exception as exc:
         # Fail-safe: plan_stage_workers must never raise into a calling stage.
         # Any problem reading/parsing the resource config, or a malformed
@@ -176,3 +231,56 @@ def plan_stage_workers(
             actual_workers,
             f"resource config error: {exc}; using requested={requested}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-task peak memory (KI-058): what a worker really used, so k_stage can be
+# checked and the next OOM explained from the log alone.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TaskPeak:
+    peak_bytes: Optional[int] = None
+
+
+def _read_vmhwm(proc_dir: str) -> Optional[int]:
+    try:
+        for line in Path(proc_dir, "status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) * 1024  # kB
+    except (OSError, IndexError, ValueError):
+        pass
+    return None
+
+
+@contextmanager
+def task_peak_meter(proc_dir: str = "/proc/self"):
+    """Measure this process' peak RSS over the `with` block.
+
+    Resets the high-water mark first (writing 5 to clear_refs), so in a
+    process-pool worker that runs many tasks each reading is that task's own
+    peak, not the worker's lifetime maximum. If the reset is not possible the
+    reading would be cumulative and misleading, so peak_bytes stays None.
+    """
+    meter = TaskPeak()
+    try:
+        Path(proc_dir, "clear_refs").write_text("5")
+        reset = True
+    except OSError:
+        reset = False
+    try:
+        yield meter
+    finally:
+        if reset:
+            meter.peak_bytes = _read_vmhwm(proc_dir)
+
+
+def format_task_peak(peak_bytes: Optional[float], voxels: int) -> Optional[str]:
+    """One log line per task; the k figure is what resource_config.yaml wants."""
+    if peak_bytes is None:
+        return None
+    line = f"peak RSS {peak_bytes / 1e9:.2f} GB"
+    if voxels:
+        line += (f" · max input {voxels / 1e6:.1f} Mvox"
+                 f" · k={peak_bytes / voxels:.1f} B/voxel")
+    return line
