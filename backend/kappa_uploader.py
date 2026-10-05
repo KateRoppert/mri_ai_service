@@ -40,6 +40,7 @@ class KappaUploader:
         lesion_type: str,
         preprocessing_config_path: str,
         dataset_id: Optional[int] = None,
+        superseding_sessions=frozenset(),
     ):
         self.run_id = run_id
         self.output_path = Path(output_path)
@@ -51,6 +52,12 @@ class KappaUploader:
         # Fixed by backend/numbering.py at run start, when the run has a Kappa
         # session. None for CLI runs, and for runs started before this existed.
         self.dataset_id = dataset_id
+
+        # Sessions rebuilt from a corrected modality set. They hash the same
+        # as what Kappa holds (study_hash covers the DICOM study, not the
+        # images), so without this they would pass as duplicates and the
+        # correction would never arrive.
+        self.superseding_sessions = set(superseding_sessions or ())
 
         # Вычисляем preprocessing_id
         self.preprocessing_id = compute_preprocessing_id(preprocessing_config_path)
@@ -108,6 +115,23 @@ class KappaUploader:
                     "message": (
                         f"В датасете уже есть {session_key} с другими данными "
                         f"— номер выдан дважды, загрузка пропущена"
+                    ),
+                })
+                continue
+
+            if (study_hash and study_hash in existing_hashes
+                    and session_key in self.superseding_sessions):
+                logger.warning(
+                    "Session %s supersedes what dataset %d holds — needs a "
+                    "human decision, not a silent skip", session_key, dataset_id,
+                )
+                results.append({
+                    "session": session_key,
+                    "success": False,
+                    "error": "supersedes",
+                    "message": (
+                        f"{session_key} пересчитан с исправленным набором "
+                        f"модальностей — в Kappa лежит прежняя версия"
                     ),
                 })
                 continue

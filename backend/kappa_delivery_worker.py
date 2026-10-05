@@ -45,6 +45,9 @@ def build_uploader(run, session: Dict[str, Any]):
     user id, because the session id the run started with is long gone.
     """
     from kappa_uploader import KappaUploader
+    # Aliased so the keyword below and the function it calls are not the
+    # same word staring at each other.
+    from database import superseding_sessions as _superseding
 
     if not PREPROCESSING_CONFIG.exists():
         logger.error("Preprocessing config not found: %s", PREPROCESSING_CONFIG)
@@ -59,6 +62,7 @@ def build_uploader(run, session: Dict[str, Any]):
         lesion_type=getattr(run, "lesion_type", None) or "glioblastoma",
         preprocessing_config_path=str(PREPROCESSING_CONFIG),
         dataset_id=run.kappa_dataset_id,
+        superseding_sessions=_superseding(run),
     )
 
 
