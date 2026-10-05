@@ -99,11 +99,23 @@ def _resolve_db_path(db_path: Optional[Union[str, Path]]) -> Path:
 
 
 def _connect(db_path: Optional[Union[str, Path]]) -> sqlite3.Connection:
-    """Open a connection with a busy timeout and ensure the tables exist."""
+    """Open a connection with a busy timeout and ensure the tables exist.
+
+    An allocation table still in the old per-lesion-type format is migrated
+    here, before anything reads it (KI-060): every user of the table — the
+    backend, stage 01 in its own process, CLI runs without a backend — comes
+    through this door. Raises MigrationConflict (a RuntimeError) without
+    changing anything if the old data cannot be split safely.
+    """
     path = _resolve_db_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # timeout lets a concurrent run wait for the write lock instead of erroring.
     conn = sqlite3.connect(str(path), timeout=30.0)
+    from utils.bids_allocation_migration import is_legacy, migrate
+    if is_legacy(conn):
+        conn.close()
+        migrate(path, dry_run=False)
+        conn = sqlite3.connect(str(path), timeout=30.0)
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_TABLE} (
