@@ -438,7 +438,7 @@ class QualityAssessor:
         # stage indefinitely with idle workers at ~0% CPU.
         try:
             with ProcessPoolExecutor(max_workers=workers) as executor:
-                results = list(executor.map(self._assess_image_wrapper, tasks))
+                results = list(executor.map(self._assess_image_metered, tasks))
         except BrokenProcessPool:
             self.logger.error(
                 f"Quality assessment aborted: a worker process was killed while "
@@ -481,7 +481,7 @@ class QualityAssessor:
             self.category_counts[category] = count
 
     @staticmethod
-    def _assess_image_wrapper(args):
+    def _assess_image_metered(args):
         """Assess one image under a peak-memory meter (KI-058).
 
         Returns (success, category, peak_bytes, voxels, file name); the parent
@@ -491,13 +491,15 @@ class QualityAssessor:
         from utils.resource_planner import max_voxels, task_peak_meter
 
         nifti_path = args[0]
-        voxels = max_voxels([nifti_path])
         with task_peak_meter() as meter:
-            success, category = QualityAssessor._assess_image_task(args)
+            success, category = QualityAssessor._assess_image_wrapper(args)
+        # After the task, and not for a skipped file: a skip must not touch
+        # the image at all, not even its header (test_stage04_fixes).
+        voxels = max_voxels([nifti_path]) if category != "SKIPPED" else 0
         return success, category, meter.peak_bytes, voxels, Path(nifti_path).name
 
     @staticmethod
-    def _assess_image_task(args):
+    def _assess_image_wrapper(args):
         """Static wrapper for multiprocessing."""
         nifti_path, patient_id, session_id, modality, output_dir, config, skip_existing = args
         
