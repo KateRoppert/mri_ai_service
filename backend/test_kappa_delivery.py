@@ -245,3 +245,28 @@ def test_count_local_progress_without_a_dataset_trusts_only_this_run(
     assert count_local_progress("any", tmp_path, dataset_id=None) == {
         "total": 1, "delivered": 0,
     }
+
+
+def test_a_superseding_session_needs_a_human_not_a_retry():
+    """Overwriting data in Kappa is not something to retry into."""
+    result = {"dataset_id": 351, "uploaded": 0, "total": 1,
+              "sessions": [_fail("sub-002_ses-001", "supersedes")]}
+    out = classify(result, None, {}, NOW)
+
+    assert out["status"] == "needs_attention"
+    assert out["detail"]["reason"] == "supersedes_kappa"
+    assert out["next_attempt"] is None
+    assert out["detail"]["blocked"][0]["session"] == "sub-002_ses-001"
+
+
+def test_a_superseding_session_alongside_a_delivered_one():
+    """One blocked session must not erase the fact that the other arrived —
+    the operator decides about the one patient, not the whole run."""
+    result = {"dataset_id": 351, "uploaded": 1, "total": 2,
+              "sessions": [_ok("sub-001_ses-001"),
+                           _fail("sub-002_ses-001", "supersedes")]}
+    out = classify(result, None, {}, NOW)
+
+    assert out["status"] == "needs_attention"
+    assert out["detail"]["delivered"] == 1
+    assert len(out["detail"]["blocked"]) == 1

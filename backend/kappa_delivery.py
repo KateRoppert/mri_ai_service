@@ -25,6 +25,9 @@ NO_SESSION: Dict[str, Any] = {"error": "no_session"}
 _BLOCKING = {
     "name_clash": "name_clash",
     "no files": "missing_files",
+    # Retrying cannot help: the upload is correctly refusing to overwrite
+    # Kappa without a human saying so.
+    "supersedes": "supersedes_kappa",
 }
 
 
