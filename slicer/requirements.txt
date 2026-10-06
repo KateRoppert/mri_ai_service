@@ -1,0 +1,6 @@
+# Slicer agent (runs on the host, see slicer_agent.py docstring).
+# httpx is imported lazily by POST /upload-mask — without it opening works
+# and sending the edited mask back fails with HTTP 500.
+fastapi
+uvicorn
+httpx
