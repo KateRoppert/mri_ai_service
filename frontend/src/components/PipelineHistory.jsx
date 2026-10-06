@@ -23,6 +23,12 @@ import {
 } from '../services/api';
 import { confirmAndResume } from '../utils/resumeRun';
 
+/**
+ * Отпечаток сводки. Пока числа те же — плашку закрыли осознанно; как только
+ * появился ещё один непоехавший прогон, она возвращается.
+ */
+const summaryKey = (s) => `${s?.needs_attention ?? 0}:${s?.pending ?? 0}`;
+
 const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses, onRunResumed }) => {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
@@ -34,6 +40,16 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   const [deliveryDetail, setDeliveryDetail] = useState(null);
   const [retrying, setRetrying] = useState(false);
   const [replacing, setReplacing] = useState(null);
+  // Закрытие сводной плашки. Ключ — сами числа, а не флаг: иначе плашка,
+  // закрытая один раз, не вернулась бы при новой проблеме, и оператор
+  // перестал бы узнавать о непоехавших прогонах вообще.
+  const [dismissedSummary, setDismissedSummary] = useState(() => {
+    try {
+      return localStorage.getItem('kappa_summary_dismissed') || '';
+    } catch {
+      return '';
+    }
+  });
 
   /**
    * Загружаем историю при монтировании и при изменении фильтров
@@ -433,10 +449,22 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   return (
     <>
     {deliverySummary
-      && (deliverySummary.pending > 0 || deliverySummary.needs_attention > 0) && (
+      && (deliverySummary.pending > 0 || deliverySummary.needs_attention > 0)
+      && summaryKey(deliverySummary) !== dismissedSummary && (
       <Alert
         type={deliverySummary.needs_attention > 0 ? 'error' : 'warning'}
         showIcon
+        closable
+        onClose={() => {
+          const key = summaryKey(deliverySummary);
+          setDismissedSummary(key);
+          try {
+            localStorage.setItem('kappa_summary_dismissed', key);
+          } catch {
+            // Приватный режим или заблокированное хранилище: плашка
+            // закроется до перезагрузки, и это нормально.
+          }
+        }}
         style={{ marginBottom: 16 }}
         message={
           deliverySummary.needs_attention > 0
