@@ -29,6 +29,15 @@ def _row(subject_session, hash_):
     return {"dsEntityName": subject_session, "dsEntityInfo": {"study_hash": hash_}}
 
 
+def _complete_gbm(session_key):
+    """A session the uploader considers ready: every GBM modality + the mask.
+    Only file names are checked, so the paths need not exist."""
+    return {
+        "preprocessed": [Path(f"{session_key}_{m}.nii.gz") for m in ("t1", "t1c", "t2", "t2fl")],
+        "masks": [Path(f"{session_key}_segmask.nii.gz")],
+    }
+
+
 def test_bind_pending_scope_moves_numbers_to_the_new_dataset(monkeypatch, tmp_path):
     """A run numbered while Kappa was unreachable keeps its numbers once
     upload finally creates the dataset."""
@@ -89,7 +98,7 @@ async def test_name_clash_is_reported_and_not_uploaded(monkeypatch, tmp_path):
     up = _uploader(dataset_id=337)
     monkeypatch.setattr(up, "_allocation_db", tmp_path / "alloc.db", raising=False)
     monkeypatch.setattr(up, "_discover_sessions",
-                        lambda: {"sub-001_ses-001": {"preprocessed": [], "masks": []}})
+                        lambda: {"sub-001_ses-001": _complete_gbm("sub-001_ses-001")})
     monkeypatch.setattr(up, "_compute_study_hash", lambda data: "hash-B")
 
     async def existing_hashes(dataset_id):
@@ -114,7 +123,7 @@ async def test_no_name_clash_when_session_key_is_new(monkeypatch, tmp_path):
     up = _uploader(dataset_id=337)
     monkeypatch.setattr(up, "_allocation_db", tmp_path / "alloc.db", raising=False)
     monkeypatch.setattr(up, "_discover_sessions",
-                        lambda: {"sub-002_ses-001": {"preprocessed": [], "masks": []}})
+                        lambda: {"sub-002_ses-001": _complete_gbm("sub-002_ses-001")})
     monkeypatch.setattr(up, "_compute_study_hash", lambda data: "hash-B")
 
     called = []

@@ -24,15 +24,15 @@ def test_stage07_memory_and_cpu_both_cap(tmp_path):
     assert hasattr(mod, "_plan_workers_for_inputs")
     big = tmp_path / "big.nii.gz"
     nib.save(nib.Nifti1Image(np.zeros((310, 864, 864), np.int16), np.eye(4)), str(big))
-    # memory: 231M * 22.5 ~= 5.2 GB/worker; 20*0.85-2 = 15 GB -> 2 workers
+    # memory (KI-058 recalibration): 231M * 37.7 ~= 8.7 GB/worker; 30*0.85-2 = 23.5 GB -> 2 workers
     plan = mod._plan_workers_for_inputs([big], requested=6, cpu_cap=5,
-                                        budget_bytes=20_000_000_000)
+                                        budget_bytes=30_000_000_000)
     assert plan.actual_workers == 2  # memory is tighter than the cpu cap of 5
     # cpu tighter than memory
     small = tmp_path / "small.nii.gz"
     nib.save(nib.Nifti1Image(np.zeros((64, 64, 40), np.int16), np.eye(4)), str(small))
     plan2 = mod._plan_workers_for_inputs([small], requested=6, cpu_cap=2,
-                                         budget_bytes=20_000_000_000)
+                                         budget_bytes=30_000_000_000)
     assert plan2.actual_workers == 2  # cpu cap wins
 
 
@@ -54,7 +54,7 @@ def test_stage07_measures_all_modalities_not_just_reference(tmp_path):
     nib.save(nib.Nifti1Image(np.zeros((64, 64, 40), np.int16), np.eye(4)), str(ref_path))
 
     # Non-reference modality (t2fl) is LARGE — same shape as the "big" fixture
-    # above (231M voxels, caps to 2 workers under a 20GB budget).
+    # above (231M voxels, caps to 2 workers under a 30GB budget).
     large_path = anat_dir / f"{subj}_{sess}_t2fl.nii.gz"
     nib.save(nib.Nifti1Image(np.zeros((310, 864, 864), np.int16), np.eye(4)), str(large_path))
 
@@ -72,7 +72,7 @@ def test_stage07_measures_all_modalities_not_just_reference(tmp_path):
     ]
 
     plan = mod._plan_workers_for_inputs(input_refs, requested=6, cpu_cap=5,
-                                        budget_bytes=20_000_000_000)
+                                        budget_bytes=30_000_000_000)
     # Must be capped as if the large t2fl file drove the estimate, not as if
     # the small reference t1 file were the only input considered.
     assert plan.actual_workers == 2
@@ -81,6 +81,6 @@ def test_stage07_measures_all_modalities_not_just_reference(tmp_path):
     # pre-fix behavior), the tiny t1 file would not trip the memory cap at
     # all, so cpu_cap=5 alone would bind.
     plan_ref_only = mod._plan_workers_for_inputs([ref_path], requested=6, cpu_cap=5,
-                                                 budget_bytes=20_000_000_000)
+                                                 budget_bytes=30_000_000_000)
     assert plan_ref_only.actual_workers == 5
     assert plan.actual_workers < plan_ref_only.actual_workers

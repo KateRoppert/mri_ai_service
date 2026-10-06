@@ -79,7 +79,9 @@ const IncompletePatientDetail = ({ runId, session, sessions = [], visible, onClo
           : 'Сохранено.',
       );
       if (result.kappa_warning) {
-        message.warning(result.kappa_warning, 8);
+        // info, не warning: замена в Kappa предусмотрена и под контролем
+        // оператора, так что это следующий шаг, а не проблема.
+        message.info(result.kappa_warning, 8);
       }
       onActionComplete();
     } catch (err) {

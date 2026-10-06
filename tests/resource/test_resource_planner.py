@@ -82,6 +82,8 @@ def test_cpu_cap_applies():
 
 def test_no_budget_means_no_memory_cap(monkeypatch):
     monkeypatch.setattr("utils.resource_planner.cgroup_memory_limit_bytes", lambda *a, **k: None)
+    # KI-058: host MemAvailable is a budget source too — "no budget" now means neither
+    monkeypatch.setattr("utils.resource_planner.host_available_bytes", lambda *a, **k: None)
     # budget_bytes None and cgroup reports no limit -> fall back to requested (capped by cpu only)
     r = plan_workers(requested=5, per_worker_bytes=4 * GB, budget_bytes=None, cpu_cap=None)
     assert r.actual_workers == 5

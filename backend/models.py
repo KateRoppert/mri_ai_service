@@ -213,6 +213,17 @@ class AssignmentResponse(BaseModel):
     )
 
 
+class ReplaceEntityResponse(BaseModel):
+    """Результат замены содержимого сущности в Kappa."""
+    patched: int = Field(0, description="Файлов заменено на месте")
+    added: int = Field(0, description="Файлов добавлено")
+    deleted: int = Field(0, description="Файлов удалено")
+    failed: List[str] = Field(default_factory=list, description="Что не удалось")
+    delete_job: Optional[str] = Field(
+        None, description="succeeded | failed | running — итог удаления"
+    )
+
+
 class DiscardSessionResponse(BaseModel):
     """Результат исключения сессии из очереди review"""
     status: str = Field(..., description="Статус сессии после исключения: discarded")
@@ -393,16 +404,28 @@ class QualityReportListResponse(BaseModel):
 class KappaBlockedSession(BaseModel):
     """Одна сессия, которую повтор не починит."""
     session: Optional[str] = Field(None, description="BIDS-ключ сессии")
-    reason: str = Field(..., description="name_clash | missing_files")
+    reason: str = Field(
+        ..., description="name_clash | missing_files | supersedes_kappa"
+    )
     message: str = Field("", description="Объяснение для оператора")
+    expert_masks: int = Field(
+        0, description="Сколько экспертных масок у сессии — они переживут замену"
+    )
+
+
+class KappaNotProcessedSession(BaseModel):
+    """Сессия, потерянная при обработке: в счёт входит, в Kappa не грузится."""
+    session: Optional[str] = Field(None, description="BIDS-ключ сессии")
+    message: str = Field("", description="Чего не хватает, например «нет t2fl и маски сегментации»")
 
 
 class KappaDeliveryStatus(BaseModel):
     """Состояние выгрузки прогона в Kappa."""
     status: str = Field(..., description="pending | done | needs_attention")
     delivered: int = Field(0, description="Сколько сессий уже в датасете")
-    total: int = Field(0, description="Сколько сессий всего")
+    total: int = Field(0, description="Сколько сессий вышло из этапа 01")
     blocked: List[KappaBlockedSession] = Field(default_factory=list)
+    not_processed: List[KappaNotProcessedSession] = Field(default_factory=list)
     next_attempt_at: Optional[datetime] = Field(
         None, description="Когда будет следующая автоматическая попытка"
     )

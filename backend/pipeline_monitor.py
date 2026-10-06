@@ -150,10 +150,12 @@ class PipelineMonitor:
             # existed; KappaUploader falls back to resolving in that case.
             from database import SessionLocal as _DBSessionLocal
             from database import get_pipeline_run as _get_pipeline_run
+            from database import superseding_sessions as _superseding
             db = _DBSessionLocal()
             try:
                 run = _get_pipeline_run(db, run_id)
                 dataset_id = run.kappa_dataset_id if run else None
+                supersedes = _superseding(run) if run else set()
             finally:
                 db.close()
 
@@ -166,6 +168,7 @@ class PipelineMonitor:
                 lesion_type=lesion_type,
                 preprocessing_config_path=config_path,
                 dataset_id=dataset_id,
+                superseding_sessions=supersedes,
             )
             logger.info("KappaUploader created for run %s (dataset_id=%s)",
                         run_id, dataset_id)

@@ -7,9 +7,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime, timezone
 from typing import List, Optional
 import json
+import logging
 import uuid
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 # Создаём движок БД
 engine = create_engine(
@@ -84,6 +87,12 @@ class PipelineRun(Base):
     kappa_upload_detail = Column(Text, nullable=True)
     kappa_user_id = Column(Integer, nullable=True)
 
+    # Sessions this run rebuilt because the doctor corrected their modality
+    # set. JSON list of "sub-NNN_ses-NNN". Their results in Kappa were
+    # computed from a set now known to be wrong, so they supersede rather
+    # than duplicate — see kappa_uploader.
+    reprocessed_sessions = Column(Text, nullable=True)
+
 
 class StageExecution(Base):
     """Модель выполнения отдельного этапа"""
@@ -125,6 +134,7 @@ def create_pipeline_run(
     run_id: Optional[str] = None,
     kappa_upload_status: Optional[str] = None,
     kappa_user_id: Optional[int] = None,
+    reprocessed_sessions: Optional[str] = None,
 ) -> PipelineRun:
     """Создать новый запуск pipeline.
 
@@ -151,6 +161,7 @@ def create_pipeline_run(
         kappa_dataset_id=kappa_dataset_id,
         kappa_upload_status=kappa_upload_status,
         kappa_user_id=kappa_user_id,
+        reprocessed_sessions=reprocessed_sessions,
     )
     
     db.add(run)
@@ -333,6 +344,7 @@ def init_db():
     _migrate_add_stop_columns()
     _migrate_add_kappa_dataset_id()
     _migrate_add_kappa_delivery()
+    _migrate_add_reprocessed_sessions()
 
 
 def _migrate_add_lesion_type():
@@ -387,6 +399,20 @@ def _migrate_add_kappa_dataset_id():
         if 'kappa_dataset_id' not in cols:
             conn.execute(__import__('sqlalchemy').text(
                 "ALTER TABLE pipeline_runs ADD COLUMN kappa_dataset_id INTEGER"
+            ))
+            conn.commit()
+
+
+def _migrate_add_reprocessed_sessions():
+    """Add pipeline_runs.reprocessed_sessions if it is not there yet."""
+    import sqlalchemy
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            sqlalchemy.text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'reprocessed_sessions' not in cols:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE pipeline_runs ADD COLUMN reprocessed_sessions TEXT"
             ))
             conn.commit()
 
@@ -449,14 +475,48 @@ def set_kappa_delivery(
     next_attempt: Optional[datetime],
     detail: dict,
 ) -> None:
-    """Persist the verdict of one delivery attempt."""
+    """Persist the verdict of one delivery attempt.
+
+    Refuses a verdict older than the one already stored. Two runs in
+    production ended up with a status from one attempt and a detail from an
+    earlier one — 2af5d6ed (2026-10-05) read "0 of 2, Kappa unreachable"
+    while actually waiting for a human on 1 of 2, and e3783cbb
+    (2026-09-28) read done with a network detail. The writing mechanism was
+    never reproduced, so the guard is on the invariant rather than on a
+    suspected caller: the stored verdict only ever moves forward in time.
+    """
     run = get_pipeline_run(db, run_id)
     if run is None:
         return
+
+    stored = _attempt_stamp(get_kappa_delivery(run))
+    incoming = _attempt_stamp(detail)
+    if stored is not None and incoming is not None and incoming < stored:
+        logger.warning(
+            "Отброшен устаревший вердикт доставки для %s: пришёл %s "
+            "(%s, %s/%s), уже записан %s. Это рассогласование — см. "
+            "KI-065, нужна трасса вызова.",
+            run_id, incoming.isoformat(), detail.get("reason"),
+            detail.get("delivered"), detail.get("total"), stored.isoformat(),
+        )
+        return
+
     run.kappa_upload_status = status
     run.kappa_upload_next_attempt = _naive_utc(next_attempt)
     run.kappa_upload_detail = json.dumps(detail, ensure_ascii=False)
     db.commit()
+
+
+def _attempt_stamp(detail: dict) -> Optional[datetime]:
+    """When the attempt this detail describes was recorded, or None if the
+    blob does not say. Unknown is never treated as newer."""
+    raw = (detail or {}).get("last_attempt_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
 
 
 def get_kappa_delivery(run: PipelineRun) -> dict:
@@ -490,3 +550,16 @@ def runs_due_for_delivery(
         .limit(limit)
         .all()
     )
+
+
+def superseding_sessions(run) -> set:
+    """Session keys whose Kappa contents this run supersedes. Never raises:
+    a corrupt value must not stop an upload."""
+    raw = getattr(run, "reprocessed_sessions", None)
+    if not raw:
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return set()
+    return {str(x) for x in parsed} if isinstance(parsed, list) else set()

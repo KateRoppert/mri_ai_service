@@ -88,8 +88,17 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
     }
 
 
-def get_session(session_id: str) -> Optional[Dict[str, Any]]:
-    """Получить данные сессии по session_id."""
+def get_session(
+    session_id: str, *, include_expired: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Получить данные сессии по session_id; None — если её нет или токен истёк.
+
+    Истёкшая сессия — не сессия: иначе /api/kappa/me отвечал «вошли», и все
+    запросы уходили в Kappa с мёртвым токеном, а вкладка валидации молча
+    показывала пустой список (2026-10-06). Правило то же, что у
+    find_live_session_for_user: NULL / неразборчивый срок считается живым.
+    include_expired=True — только для выхода из аккаунта.
+    """
     if not session_id:
         return None
 
@@ -101,6 +110,11 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
 
         if not record:
             return None
+
+        if not include_expired:
+            expiry = _parse_expiry(record.token_expiry)
+            if expiry is not None and expiry <= datetime.now(timezone.utc):
+                return None
 
         return {
             "kappa_token": record.kappa_token,

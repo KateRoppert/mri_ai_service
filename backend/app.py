@@ -75,6 +75,8 @@ from models import (
     PipelineLossesResponse,
     KappaDeliveryStatus,
     KappaBlockedSession,
+    ReplaceEntityResponse,
+    KappaNotProcessedSession,
 )
 from config_diff import diff_configs
 from database import (
@@ -95,7 +97,7 @@ from database import (
 )
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
-from pipeline_manager import PipelineManager
+from pipeline_manager import PipelineManager, wait_for_pipeline, append_master_log_note
 import numbering
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -313,11 +315,44 @@ def run_pipeline_background(
             _kill_process_tree(process)
             return
 
-        timeout = pipeline_manager.estimate_pipeline_timeout(input_path)
-        logger.info(f"Таймаут для run_id {run_id}: {timeout}s (input_path={input_path})")
+        # Killed for being stuck, not for being long — see wait_for_pipeline
+        # and KI-052. No total-duration limit: Stop covers "end it now".
+        stall_seconds = settings.pipeline_stall_timeout_seconds
+        logger.info(
+            "Порог простоя для run_id %s: %ss без изменений в %s",
+            run_id, stall_seconds, output_path,
+        )
+        waited = wait_for_pipeline(process, output_path, stall_seconds)
 
-        stdout, stderr = process.communicate(timeout=timeout)
-        return_code = process.returncode
+        if waited.stalled:
+            idle_min = int(waited.idle_seconds // 60)
+            limit_min = int(stall_seconds // 60)
+            logger.error(
+                "Pipeline %s завис: нет изменений в %s %s мин — останавливаем",
+                run_id, output_path, idle_min,
+            )
+            # Before the kill: SIGKILL gives the orchestrator no chance to
+            # log, and the master log would otherwise just stop mid-line.
+            append_master_log_note(
+                output_path,
+                f"PIPELINE KILLED BY BACKEND: no file changed under the output "
+                f"folder for {idle_min} min (stall timeout {limit_min} min)",
+            )
+            _kill_process_tree(process)
+            update_pipeline_run_if_active(
+                db,
+                run_id,
+                status="failed",
+                error_message=(
+                    f"Запуск остановлен: нет активности {idle_min} мин "
+                    f"(порог простоя {limit_min} мин)"
+                ),
+                completed_at=datetime.utcnow()
+            )
+            return
+
+        stdout, stderr = waited.stdout, waited.stderr
+        return_code = waited.returncode
 
         if return_code == 0:
             # Успешное завершение
@@ -366,19 +401,6 @@ def run_pipeline_background(
                 completed_at=datetime.utcnow()
             )
             
-    except subprocess.TimeoutExpired:
-        # Таймаут
-        logger.error(f"Таймаут выполнения pipeline для run_id: {run_id}")
-        _kill_process_tree(process)
-
-        update_pipeline_run_if_active(
-            db,
-            run_id,
-            status="failed",
-            error_message="Превышено время ожидания выполнения",
-            completed_at=datetime.utcnow()
-        )
-    
     except Exception as e:
         # Другие ошибки
         logger.error(f"Ошибка выполнения pipeline для run_id: {run_id}: {e}")
@@ -738,11 +760,18 @@ async def requeue_pipeline_run(
     # Сессии, у которых врач поменял набор модальностей, надо пересчитать.
     # skip_existing пропускает всё, у чего уже есть результаты, поэтому без
     # удаления исправление просто не дошло бы до данных.
+    purged_sessions = None
     try:
         from session_artifacts import purge_sessions_marked_for_reprocess
         purged = purge_sessions_marked_for_reprocess(original_run.output_path)
         if purged:
             logger.info("Переобработка: очищено сессий — %d", len(purged))
+            # Запоминаем на новом прогоне: к моменту выгрузки флаг
+            # needs_reprocess уже снят, и иначе никто не вспомнит, что эти
+            # сессии вытесняют лежащее в Kappa, а не дублируют его.
+            purged_sessions = json.dumps(
+                [key.replace("/", "_") for key in purged]
+            )
     except Exception as e:  # noqa: BLE001 — запуск важнее уборки
         logger.error("Не удалось очистить помеченные сессии: %s", e)
 
@@ -755,6 +784,7 @@ async def requeue_pipeline_run(
         kappa_dataset_id=original_run.kappa_dataset_id,
         kappa_upload_status=resumed_upload_status,
         kappa_user_id=resumed_upload_user_id,
+        reprocessed_sessions=purged_sessions,
     )
 
     background_tasks.add_task(
@@ -863,6 +893,30 @@ def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
     if not getattr(run, "kappa_upload_status", None):
         return None
     detail = get_kappa_delivery(run)
+
+    def _expert_masks(session_key: str) -> int:
+        """How many expert masks this session has. They survive a
+        replacement, but they were drawn on the superseded data, so the
+        operator is told before confirming."""
+        dataset_id = getattr(run, "kappa_dataset_id", None)
+        if not dataset_id or not session_key:
+            return 0
+        try:
+            from mask_service import get_mask_history
+            records = find_by_bids_id(session_key, {dataset_id}) or []
+            entity_id = next((r.get("kappa_entity_id") for r in records
+                              if r.get("kappa_entity_id")), None)
+            if not entity_id:
+                return 0
+            return sum(1 for v in get_mask_history(entity_id)
+                       if v.get("source") == "expert")
+        except Exception as e:  # noqa: BLE001
+            # Счётчик — украшение подтверждения. История запусков не должна
+            # падать из-за того, что его не удалось посчитать.
+            logger.warning("Не удалось посчитать экспертные маски %s: %s",
+                           session_key, e)
+            return 0
+
     return KappaDeliveryStatus(
         status=run.kappa_upload_status,
         delivered=detail.get("delivered", 0),
@@ -872,8 +926,21 @@ def _delivery_status(run) -> Optional[KappaDeliveryStatus]:
                 session=b.get("session"),
                 reason=b.get("reason", "name_clash"),
                 message=b.get("message", ""),
+                # Только для вытесняющих: иначе каждая страница истории
+                # платила бы двумя запросами за строку.
+                expert_masks=(
+                    _expert_masks(b.get("session") or "")
+                    if b.get("reason") == "supersedes_kappa" else 0
+                ),
             )
             for b in (detail.get("blocked") or [])
+        ],
+        not_processed=[
+            KappaNotProcessedSession(
+                session=s.get("session"),
+                message=s.get("message", ""),
+            )
+            for s in (detail.get("not_processed") or [])
         ],
         next_attempt_at=run.kappa_upload_next_attempt,
         reason=detail.get("reason"),
@@ -1385,8 +1452,11 @@ async def save_assignment(
 
     # Переобработка даёт тот же study_hash (он считается от
     # PatientID:StudyInstanceUID, а не от изображений), поэтому загрузчик
-    # сочтёт пациента дубликатом и в Kappa останется старая маска. Молчать
-    # об этом нельзя: исправление выглядело бы применённым, не будучи им.
+    # сочтёт пациента дубликатом и сам ничего не перезапишет. Но заменить
+    # данные в Kappa теперь можно — кнопкой после прогона, с подтверждением.
+    # Поэтому это сообщение описывает следующий шаг, а не тупик: пугать
+    # оператора тем, что у него под контролем, значит учить его не доверять
+    # предупреждениям вообще.
     kappa_warning = None
     if result.get("needs_reprocess") and getattr(run, "kappa_dataset_id", None):
         import kappa_run_log
@@ -1397,13 +1467,14 @@ async def save_assignment(
         records = find_by_bids_id(session_key, {run.kappa_dataset_id}) or []
         if any(r.get("kappa_entity_id") for r in records):
             kappa_warning = (
-                "Этот пациент уже выгружен в Kappa. После переобработки там "
-                "останется прежняя версия — она не обновится сама."
+                "Этот пациент уже выгружен в Kappa. После переобработки "
+                "сервис предложит заменить его там — кнопкой «Заменить в "
+                "Kappa» в истории запусков."
             )
             kappa_run_log.append(
                 run.output_path,
                 f"Набор модальностей {session_key} изменён врачом; "
-                f"в Kappa остаётся прежняя версия",
+                f"после прогона потребуется подтвердить замену в Kappa",
             )
 
     return AssignmentResponse(**result, kappa_warning=kappa_warning)
@@ -2214,9 +2285,50 @@ async def get_mask_versions(entity_id: str, session_id: str):
     history = get_mask_history(entity_id)
     current = get_current_mask(entity_id)
 
-    # Помечаем доступность и размер каждой версии
+    # Файл маски отдаётся из Каппы, а локальный путь — лишь подстраховка
+    # (см. serve_mask_version). Поэтому доступность спрашиваем у Каппы, а не
+    # у диска: у ИИ-масок kappa_file_id исторически не записывался, и когда
+    # папка прогона убиралась, версия помечалась «недоступна», хотя в Каппе
+    # лежала. Сущность 4d72111f, 05.10 — ровно этот случай.
+    #
+    # Если Каппа не ответила, остаёмся на том, что знали: это улучшение, а не
+    # зависимость, и модалка должна открываться при недоступной Каппе.
+    kappa_by_name = {}
+    if history:
+        try:
+            from kappa_client import get_entity_details
+            details = await get_entity_details(
+                token=session["kappa_token"],
+                user_id=session["user_id"],
+                user_type_id=session["user_type_id"],
+                dataset_id=history[0].get("dataset_id"),
+                entity_id=entity_id,
+            )
+            kappa_by_name = {
+                f["fileName"]: f["fileId"]
+                for f in (details or {}).get("files", [])
+                if f.get("fileName") and f.get("fileId")
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Не удалось получить файлы сущности %s из Каппы: %s",
+                entity_id, e,
+            )
+
     for v in history:
-        has_kappa = v.get("kappa_file_id") and v["kappa_file_id"] != "uploaded_no_file_id"
+        stored_id = v.get("kappa_file_id")
+        has_kappa = bool(stored_id) and stored_id != "uploaded_no_file_id"
+
+        # Запись старше, чем привычка писать fileId — лечим на месте, чтобы
+        # следующий просмотр шёл в Каппу напрямую.
+        if not has_kappa:
+            resolved = kappa_by_name.get(v.get("file_name"))
+            if resolved:
+                from mask_service import set_kappa_file_id
+                set_kappa_file_id(entity_id, v["version"], resolved)
+                v["kappa_file_id"] = resolved
+                has_kappa = True
+
         local_path = Path(v.get("file_path", "")) if v.get("file_path") else None
         has_local = local_path.exists() if local_path else False
         v["available"] = has_kappa or has_local
@@ -2833,7 +2945,8 @@ async def kappa_logout(session_id: str):
     Токен доступен только самому бэкенду; session_id из localStorage
     браузера при выходе стирается, так что интерфейс сеанс не переживает.
     """
-    session = get_session(session_id)
+    # Выход работает и с истёкшей сессией: отложенный вход надо забыть всё равно.
+    session = get_session(session_id, include_expired=True)
     if not session:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
 
@@ -2914,6 +3027,120 @@ async def retry_kappa_upload(run_id: str, session_id: str):
     return {**results, "delivery": verdict}
 
 
+@app.post(
+    "/api/kappa/replace-entity/{run_id}/{patient_id}/{session_id}",
+    response_model=ReplaceEntityResponse,
+)
+async def replace_kappa_entity(
+    run_id: str,
+    patient_id: str,
+    session_id: str,
+    kappa_session_id: str,
+    db: Session = Depends(get_db),
+):
+    """Заменить содержимое сущности пациента в Kappa результатами переобработки.
+
+    Параметр сессии Kappa называется kappa_session_id, а не session_id:
+    session_id в пути — это BIDS-сессия, и два параметра с одним именем
+    FastAPI связать не может.
+    """
+    import kappa_entity_files
+    import kappa_run_log
+    from database import superseding_sessions
+    from kappa_uploader import session_file_paths
+
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+
+    session_key = f"{patient_id}_{session_id}"
+    # Эндпоинт перезаписывает данные в чужой системе. Он должен работать
+    # только для сессии, которую переобработали, а не для любой, чей адрес
+    # удалось угадать.
+    if session_key not in superseding_sessions(run):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сессия {session_key} не помечена как вытесняющая — "
+                   f"заменять нечего",
+        )
+
+    # Тот же путь, которым пользуется retry-upload: разрешает сессию Kappa,
+    # проверяет конфиг предобработки и знает раскладку файлов прогона.
+    uploader = pipeline_monitor._create_kappa_uploader(
+        run_id, run.output_path, kappa_session_id,
+        getattr(run, "lesion_type", None) or "glioblastoma",
+    )
+    if uploader is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Сессия Kappa не найдена/истекла, или не найден конфиг "
+                   "препроцессинга. Войдите в Kappa заново.",
+        )
+
+    records = find_by_bids_id(session_key, {run.kappa_dataset_id}) or []
+    entity_id = next((r.get("kappa_entity_id") for r in records
+                      if r.get("kappa_entity_id")), None)
+    if not entity_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"В Kappa нет записи для {session_key} — заменять нечего",
+        )
+
+    session_data = uploader._discover_sessions().get(session_key)
+    files = session_file_paths(session_data) if session_data else []
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"На диске нет файлов {session_key} — нечем заменять",
+        )
+
+    result = await kappa_entity_files.replace_entity_contents(
+        token=uploader.token,
+        user_id=uploader.user_id,
+        user_type_id=uploader.user_type_id,
+        dataset_id=run.kappa_dataset_id,
+        entity_id=entity_id,
+        files=files,
+    )
+
+    kappa_run_log.append(
+        run.output_path,
+        f"Замена в Kappa для {session_key}: заменено {result['patched']}, "
+        f"добавлено {result['added']}, удалено {result['deleted']}"
+        + (f", не удалось: {', '.join(result['failed'])}"
+           if result["failed"] else ""),
+    )
+    logger.info("Kappa entity replaced for %s: %s", session_key, result)
+
+    # Сессия доехала — надо снять с прогона именно эту блокировку. Без этого
+    # оператор нажимает кнопку, замена проходит, а экран показывает прежнее
+    # «требует внимания, N из M» — что внешне не отличить от недоступной
+    # Kappa. Ровно так это и было воспринято при проверке 05.10.
+    #
+    # Частичную замену не считаем доставкой: пациент в Kappa стал смесью
+    # старого и нового, и это состояние хуже исходного — скрывать его нельзя.
+    if not result["failed"]:
+        from database import get_kappa_delivery, set_kappa_delivery
+        from kappa_delivery import mark_session_delivered
+
+        verdict = mark_session_delivered(
+            get_kappa_delivery(run), session_key,
+            datetime.now(timezone.utc),
+        )
+        set_kappa_delivery(
+            db, run_id, verdict["status"],
+            verdict["next_attempt"], verdict["detail"],
+        )
+        kappa_run_log.append(
+            run.output_path,
+            f"  Итог после замены: "
+            f"{verdict['detail'].get('delivered')} из "
+            f"{verdict['detail'].get('total')}",
+        )
+
+    return ReplaceEntityResponse(**result)
+
+
 @app.get("/api/kappa/delivery/summary")
 async def kappa_delivery_summary(db: Session = Depends(get_db)):
     """Сколько прогонов ещё не доехали до Kappa. Для предупреждения в истории.
@@ -2946,7 +3173,10 @@ async def get_kappa_entities(dataset_id: int, session_id: str):
 
     session = get_session(session_id)
     if not session:
-        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+        raise HTTPException(
+            status_code=401,
+            detail="Сессия Kappa не найдена или истекла — войдите заново",
+        )
 
     entities = await get_dataset_entities(
         token=session["kappa_token"],

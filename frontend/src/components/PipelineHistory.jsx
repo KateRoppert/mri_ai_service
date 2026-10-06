@@ -2,7 +2,7 @@
  * Компонент для отображения истории запусков pipeline
  */
 import { useState, useEffect, useRef } from 'react';
-import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip, Alert } from 'antd';
+import { Table, Tag, Space, Button, Select, Card, message, Modal, List, Tooltip, Alert, Popconfirm } from 'antd';
 import { 
   EyeOutlined, 
   FileTextOutlined,
@@ -18,9 +18,16 @@ import {
 import {
   getPipelineHistory,
   retryKappaUpload,
+  replaceKappaEntity,
   getKappaDeliverySummary,
 } from '../services/api';
 import { confirmAndResume } from '../utils/resumeRun';
+
+/**
+ * Отпечаток сводки. Пока числа те же — плашку закрыли осознанно; как только
+ * появился ещё один непоехавший прогон, она возвращается.
+ */
+const summaryKey = (s) => `${s?.needs_attention ?? 0}:${s?.pending ?? 0}`;
 
 const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClinicalReport, onShowIncompletePatients, onShowPipelineLosses, onRunResumed }) => {
   const [loading, setLoading] = useState(false);
@@ -32,6 +39,17 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   const [deliverySummary, setDeliverySummary] = useState(null);
   const [deliveryDetail, setDeliveryDetail] = useState(null);
   const [retrying, setRetrying] = useState(false);
+  const [replacing, setReplacing] = useState(null);
+  // Закрытие сводной плашки. Ключ — сами числа, а не флаг: иначе плашка,
+  // закрытая один раз, не вернулась бы при новой проблеме, и оператор
+  // перестал бы узнавать о непоехавших прогонах вообще.
+  const [dismissedSummary, setDismissedSummary] = useState(() => {
+    try {
+      return localStorage.getItem('kappa_summary_dismissed') || '';
+    } catch {
+      return '';
+    }
+  });
 
   /**
    * Загружаем историю при монтировании и при изменении фильтров
@@ -63,6 +81,41 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     }, 2000);
     return () => clearInterval(interval);
   }, [currentPage, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Заменить версию пациента в Kappa результатами переобработки.
+   * Идемпотентно: при частичном успехе действие можно повторить.
+   */
+  const handleReplace = async (blocked) => {
+    const [patient, session] = (blocked.session || '').split('_');
+    setReplacing(blocked.session);
+    try {
+      const r = await replaceKappaEntity(deliveryDetail.run_id, patient, session);
+      if (r.failed?.length) {
+        message.warning(
+          `Заменено ${r.patched}, но не удалось: ${r.failed.join(', ')}. `
+          + 'Можно повторить — замена идемпотентна.', 8,
+        );
+      } else if (r.delete_job === 'running') {
+        message.warning(
+          `Заменено файлов: ${r.patched}. Удаление лишних ещё идёт в Kappa — `
+          + 'проверьте сущность через минуту.', 8,
+        );
+      } else {
+        message.success(
+          `Заменено файлов: ${r.patched}, добавлено ${r.added}, `
+          + `удалено ${r.deleted}`,
+        );
+      }
+      setDeliveryDetail(null);
+      fetchHistory();
+    } catch (e) {
+      console.error('Ошибка замены в Kappa:', e);
+      message.error(e?.response?.data?.detail || 'Не удалось заменить в Kappa');
+    } finally {
+      setReplacing(null);
+    }
+  };
 
   /**
    * Получить историю запусков
@@ -180,6 +233,9 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   return `${minutes}м ${seconds}с`;
   };
 
+  /** Сессии, потерянные при обработке: входят в счёт, в Kappa не грузятся. */
+  const notProcessed = (d) => d.not_processed || [];
+
   /** Человеческая подпись к состоянию выгрузки в Kappa. */
   const deliveryLabel = (d) => {
     const have = `${d.delivered ?? 0} из ${d.total ?? 0}`;
@@ -187,7 +243,13 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
     // «отправлять нечего». Показывать «0 из 0» — врать оператору, будто
     // работы нет, тогда как её просто ещё не пересчитали.
     const counted = (d.total ?? 0) > 0;
-    if (d.status === 'done') return `Kappa ${d.delivered}/${d.total}`;
+    if (d.status === 'done') {
+      const lost = notProcessed(d).length;
+      if (lost > 0) {
+        return `Kappa ${d.delivered}/${d.total} · ${lost} ${lost === 1 ? 'не обработана' : 'не обработаны'}`;
+      }
+      return `Kappa ${d.delivered}/${d.total}`;
+    }
     if (d.status === 'needs_attention') {
       if (!counted) return 'нужна проверка';
       return d.reason === 'stuck'
@@ -212,7 +274,12 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   };
 
   const deliveryHint = (d) => {
-    if (d.status === 'done') return 'Все сессии этого запуска есть в Kappa';
+    if (d.status === 'done') {
+      return notProcessed(d).length > 0
+        ? 'Все обработанные сессии есть в Kappa. Остальные не дошли до конца '
+          + 'обработки и не загружались — причины в «Потерянных пациентах».'
+        : 'Все сессии этого запуска есть в Kappa';
+    }
     if (d.reason === 'no_session') {
       return 'Нет входа в Kappa. Данные уйдут, как только вход будет выполнен.';
     }
@@ -304,7 +371,7 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
         const d = record.kappa_upload;
         if (!d) return <span style={{ color: '#bbb' }}>—</span>;
         const color = d.status === 'done'
-          ? 'success'
+          ? (notProcessed(d).length > 0 ? 'warning' : 'success')
           : d.status === 'needs_attention' ? 'error' : 'processing';
         const icon = d.status === 'needs_attention'
           ? <WarningOutlined />
@@ -396,10 +463,22 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
   return (
     <>
     {deliverySummary
-      && (deliverySummary.pending > 0 || deliverySummary.needs_attention > 0) && (
+      && (deliverySummary.pending > 0 || deliverySummary.needs_attention > 0)
+      && summaryKey(deliverySummary) !== dismissedSummary && (
       <Alert
         type={deliverySummary.needs_attention > 0 ? 'error' : 'warning'}
         showIcon
+        closable
+        onClose={() => {
+          const key = summaryKey(deliverySummary);
+          setDismissedSummary(key);
+          try {
+            localStorage.setItem('kappa_summary_dismissed', key);
+          } catch {
+            // Приватный режим или заблокированное хранилище: плашка
+            // закроется до перезагрузки, и это нормально.
+          }
+        }}
         style={{ marginBottom: 16 }}
         message={
           deliverySummary.needs_attention > 0
@@ -517,9 +596,58 @@ const PipelineHistory = ({ onShowVisualization, onShowQualityReport, onShowClini
                 header="Требуют внимания"
                 dataSource={deliveryDetail.kappa_upload.blocked}
                 renderItem={(b) => (
-                  <List.Item>
+                  <List.Item
+                    actions={b.reason === 'supersedes_kappa' ? [
+                      <Popconfirm
+                        key="replace"
+                        title="Заменить версию в Kappa?"
+                        description={(
+                          <div style={{ maxWidth: 360 }}>
+                            Файлы пациента будут перезаписаны результатами
+                            новой обработки. Прежняя версия не сохранится.
+                            {b.expert_masks > 0 && (
+                              <div style={{ marginTop: 8 }}>
+                                У пациента есть экспертные маски
+                                {` (${b.expert_masks})`}. Они останутся, но
+                                нарисованы по прежним данным.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        okText="Заменить"
+                        cancelText="Отмена"
+                        onConfirm={() => handleReplace(b)}
+                      >
+                        <Button size="small" danger
+                                loading={replacing === b.session}>
+                          Заменить в Kappa
+                        </Button>
+                      </Popconfirm>,
+                    ] : []}
+                  >
                     <strong>{b.session}</strong>: {b.message || b.reason}
                   </List.Item>
+                )}
+              />
+            )}
+            {notProcessed(deliveryDetail.kappa_upload).length > 0 && (
+              <List
+                size="small"
+                header="Не обработаны — в Kappa не загружались"
+                dataSource={notProcessed(deliveryDetail.kappa_upload)}
+                renderItem={(s) => (
+                  <List.Item>
+                    <strong>{s.session}</strong>: {s.message}
+                  </List.Item>
+                )}
+                footer={onShowPipelineLosses && (
+                  <Button
+                    type="link"
+                    style={{ padding: 0 }}
+                    onClick={() => onShowPipelineLosses(deliveryDetail.run_id)}
+                  >
+                    На каком этапе и почему — «Потерянные пациенты»
+                  </Button>
                 )}
               />
             )}

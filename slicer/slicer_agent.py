@@ -3,9 +3,10 @@
 Slicer Agent — лёгкий HTTP-сервис на хост-машине.
 Принимает команды на запуск 3D Slicer с данными пациента.
 
-Запуск:
-    pip install fastapi uvicorn
-    python slicer_agent.py
+Запуск (на хосте, не в Docker — агент запускает GUI Slicer):
+    python3 -m venv ~/.venvs/slicer-agent
+    ~/.venvs/slicer-agent/bin/pip install -r slicer/requirements.txt
+    ~/.venvs/slicer-agent/bin/python slicer/slicer_agent.py
 
 По умолчанию слушает localhost:8001.
 """
@@ -290,9 +291,11 @@ def _load_patient_data():
             # Slicer создаёт сегменты в порядке возрастания label values,
             # пропуская отсутствующие классы
             if lesion_type == "multiple_sclerosis":
-                # РС: бинарная маска, один класс — очаг (зелёный)
+                # РС: бинарная маска, один класс — очаг. Красный, как во
+                # встроенном просмотрщике (NIfTIViewer.createMsColormap):
+                # очаги РС мелкие, зелёный на сером МРТ плохо видно.
                 segment_config = {{
-                    1: ("Очаг РС", (0.32, 0.77, 0.10)),
+                    1: ("Очаг РС", (1.0, 0.0, 0.0)),
                 }}
             else:
                 # Глио: 4 класса

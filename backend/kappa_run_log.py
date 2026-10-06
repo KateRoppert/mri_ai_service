@@ -26,6 +26,7 @@ _SESSION_ERRORS = {
     "no files": "нет файлов для выгрузки",
     "upload failed": "Kappa не приняла файлы",
     "duplicate": "уже в датасете, локальная запись не восстановлена",
+    "supersedes": "в Kappa прежняя версия — нужно подтвердить замену",
 }
 
 _VERDICTS = {
@@ -40,6 +41,7 @@ _REASONS = {
     "name_clash": "номер занят другими данными",
     "missing_files": "нет файлов",
     "stuck": "не удаётся выгрузить больше суток",
+    "supersedes_kappa": "в Kappa прежняя версия",
 }
 
 

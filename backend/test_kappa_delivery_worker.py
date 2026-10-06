@@ -164,3 +164,59 @@ async def test_tick_skips_runs_that_are_not_due(monkeypatch):
     finally:
         _cleanup(db, run_id)
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_the_verdict_is_stamped_when_the_upload_finished(monkeypatch):
+    """`now` was captured before the upload and reused for the verdict, so
+    last_attempt_at reported the attempt's START and the backoff window was
+    short by however long the upload took.
+
+    Since set_kappa_delivery refuses a verdict older than the stored one,
+    this also meant a slow attempt's result could be thrown away: its own
+    in-flight seed, written with the same stamp, is not older — but any
+    verdict written meanwhile is newer, and the real outcome lost to it.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    db = SessionLocal()
+    run_id = "test_worker_fresh_stamp"
+    try:
+        _make_run(db, run_id)
+        monkeypatch.setattr(
+            worker, "find_live_session_for_user",
+            lambda user_id, now=None: {
+                "kappa_token": "t", "user_id": 26, "user_type_id": 1,
+            },
+        )
+
+        started = datetime.now(timezone.utc)
+
+        class _SlowUploader:
+            async def upload_results(self):
+                # Stands in for a multi-second upload without spending them.
+                import asyncio
+                await asyncio.sleep(0.05)
+                return {"dataset_id": 350, "uploaded": 1, "total": 1,
+                        "sessions": [{"session": "sub-001_ses-001",
+                                      "success": True, "entity_id": "e1"}]}
+
+        monkeypatch.setattr(worker, "build_uploader",
+                            lambda run, session: _SlowUploader())
+
+        await worker.deliver_one(run_id)
+
+        db.expire_all()
+        run = db_mod.get_pipeline_run(db, run_id)
+        stamp = datetime.fromisoformat(
+            json.loads(run.kappa_upload_detail)["last_attempt_at"]
+        )
+        assert stamp >= started, "вердикт помечен временем до начала попытки"
+        assert (stamp - started).total_seconds() >= 0.05, (
+            "метка взята до выгрузки, а не после — "
+            f"прошло {(stamp - started).total_seconds():.3f}с"
+        )
+    finally:
+        _cleanup(db, run_id)
+        db.close()

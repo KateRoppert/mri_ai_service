@@ -167,6 +167,42 @@ def process_one_mask(
     modalities: List[str],
     lesion_type: str,
 ) -> Dict:
+    """Process a single mask under a peak-memory meter (KI-058).
+
+    The largest native image of the session is the warp target that drives
+    memory, so its voxel count goes with the peak into the result.
+    """
+    from utils.resource_planner import format_task_peak, max_voxels, task_peak_meter
+
+    voxels = max_voxels(
+        nifti_dir / subject_id / session_id / "anat" / f"{subject_id}_{session_id}_{m}.nii.gz"
+        for m in modalities
+    )
+    with task_peak_meter() as meter:
+        result = _process_one_mask(
+            mask_path, subject_id, session_id, nifti_dir, transform_dir,
+            output_dir, reference_modality, modalities, lesion_type,
+        )
+    result["peak_line"] = format_task_peak(meter.peak_bytes, voxels)
+    return result
+
+
+def _peak_suffix(result: Dict) -> str:
+    line = result.get("peak_line") if isinstance(result, dict) else None
+    return f" — {line}" if line else ""
+
+
+def _process_one_mask(
+    mask_path: Path,
+    subject_id: str,
+    session_id: str,
+    nifti_dir: Path,
+    transform_dir: Path,
+    output_dir: Path,
+    reference_modality: str,
+    modalities: List[str],
+    lesion_type: str,
+) -> Dict:
     """Process a single mask — wrapper for parallel execution."""
     try:
         result = inverse_transform_subject_masks(
@@ -394,10 +430,10 @@ def main():
             all_results.append(result)
             if result["success"]:
                 successful += 1
-                logger.info(f"  ✓ {result['modalities_ok']}/{result['modalities_total']} modalities")
+                logger.info(f"  ✓ {result['modalities_ok']}/{result['modalities_total']} modalities{_peak_suffix(result)}")
             else:
                 failed += 1
-                logger.error(f"  ✗ Failed: {result.get('error', 'unknown')}")
+                logger.error(f"  ✗ Failed: {result.get('error', 'unknown')}{_peak_suffix(result)}")
     else:
         with ProcessPoolExecutor(max_workers=actual_workers) as executor:
             future_map = {
@@ -418,10 +454,10 @@ def main():
                     all_results.append(result)
                     if result["success"]:
                         successful += 1
-                        logger.info(f"✓ [{idx}/{len(masks)}] {subj}/{sess}")
+                        logger.info(f"✓ [{idx}/{len(masks)}] {subj}/{sess}{_peak_suffix(result)}")
                     else:
                         failed += 1
-                        logger.error(f"✗ [{idx}/{len(masks)}] {subj}/{sess}")
+                        logger.error(f"✗ [{idx}/{len(masks)}] {subj}/{sess}{_peak_suffix(result)}")
                 except Exception as e:
                     failed += 1
                     logger.error(f"✗ [{idx}/{len(masks)}] {subj}/{sess}: {e}")

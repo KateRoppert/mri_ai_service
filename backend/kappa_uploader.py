@@ -20,8 +20,29 @@ from kappa_client import (
 )
 from kappa_dataset_mapping import get_dataset_id
 from preprocessing_version import compute_preprocessing_id
+from utils.config_loader import load_lesion_type_config
 
 logger = logging.getLogger(__name__)
+
+# Same fallback as pipeline_manager when lesion_types.yaml has no entry.
+_DEFAULT_REQUIRED_MODALITIES = ["t1", "t1c", "t2", "t2fl"]
+
+
+def session_file_paths(session_data: Dict[str, Any]) -> List[Path]:
+    """The files that make up one session's Kappa entity.
+
+    Both the upload and the replacement need this set. Keeping one
+    definition is what stops them drifting apart — a report added to the
+    entity has to reach a replaced entity too.
+
+    The native-space mask is deliberately excluded: it lives in the
+    patient's own geometry and is not part of what the dataset holds.
+    """
+    paths = list(session_data["preprocessed"])
+    paths.extend(m for m in session_data["masks"] if "_native_" not in m.name)
+    if session_data.get("lesion_labels_mask"):
+        paths.append(session_data["lesion_labels_mask"])
+    return paths
 
 
 class KappaUploader:
@@ -40,6 +61,7 @@ class KappaUploader:
         lesion_type: str,
         preprocessing_config_path: str,
         dataset_id: Optional[int] = None,
+        superseding_sessions=frozenset(),
     ):
         self.run_id = run_id
         self.output_path = Path(output_path)
@@ -51,6 +73,12 @@ class KappaUploader:
         # Fixed by backend/numbering.py at run start, when the run has a Kappa
         # session. None for CLI runs, and for runs started before this existed.
         self.dataset_id = dataset_id
+
+        # Sessions rebuilt from a corrected modality set. They hash the same
+        # as what Kappa holds (study_hash covers the DICOM study, not the
+        # images), so without this they would pass as duplicates and the
+        # correction would never arrive.
+        self.superseding_sessions = set(superseding_sessions or ())
 
         # Вычисляем preprocessing_id
         self.preprocessing_id = compute_preprocessing_id(preprocessing_config_path)
@@ -74,11 +102,38 @@ class KappaUploader:
         # touches the dataset, so a name-clash check below sees the true state.
         self._bind_pending_scope(dataset_id)
 
-        # 2. Находим все сессии
+        # 2. Находим все сессии. Знаменатель — всё, что вышло из этапа 01, а
+        # загружается только готовое: сессия, потерянная на 05/06, не должна
+        # ни уехать в Kappa без маски, ни выпасть из счёта.
         sessions = self._discover_sessions()
-        if not sessions:
+        universe = self._session_universe(sessions)
+        if not universe:
             logger.warning("No sessions found in %s", self.output_path)
             return {"uploaded": 0, "sessions": []}
+
+        results = []
+        ready_sessions: Dict[str, Dict[str, Any]] = {}
+        for session_key in universe:
+            ready, reason = self._readiness(session_key, sessions.get(session_key))
+            if ready:
+                ready_sessions[session_key] = sessions[session_key]
+                continue
+            logger.warning("Not uploading %s: %s", session_key, reason)
+            results.append({
+                "session": session_key,
+                "success": False,
+                "error": "not_processed",
+                "message": reason,
+            })
+        sessions = ready_sessions
+
+        if not sessions:
+            return {
+                "dataset_id": dataset_id,
+                "uploaded": 0,
+                "total": len(universe),
+                "sessions": results,
+            }
 
         # 3. Проверяем дубликаты
         existing_hashes = await self._get_existing_study_hashes(dataset_id)
@@ -88,8 +143,7 @@ class KappaUploader:
         # silently pairing a number with the wrong patient's files.
         existing_names = await self._get_existing_entity_names(dataset_id)
 
-        # 4. Загружаем каждую сессию
-        results = []
+        # 4. Загружаем каждую готовую сессию
         for session_key, session_data in sessions.items():
             self._reconciled_name = None
             # Вычисляем study_hash для дедупликации
@@ -108,6 +162,23 @@ class KappaUploader:
                     "message": (
                         f"В датасете уже есть {session_key} с другими данными "
                         f"— номер выдан дважды, загрузка пропущена"
+                    ),
+                })
+                continue
+
+            if (study_hash and study_hash in existing_hashes
+                    and session_key in self.superseding_sessions):
+                logger.warning(
+                    "Session %s supersedes what dataset %d holds — needs a "
+                    "human decision, not a silent skip", session_key, dataset_id,
+                )
+                results.append({
+                    "session": session_key,
+                    "success": False,
+                    "error": "supersedes",
+                    "message": (
+                        f"{session_key} пересчитан с исправленным набором "
+                        f"модальностей — в Kappa лежит прежняя версия"
                     ),
                 })
                 continue
@@ -155,13 +226,13 @@ class KappaUploader:
         uploaded = sum(1 for r in results if r.get("success"))
         logger.info(
             "Upload complete: %d/%d sessions, run=%s",
-            uploaded, len(results), self.run_id,
+            uploaded, len(universe), self.run_id,
         )
 
         return {
             "dataset_id": dataset_id,
             "uploaded": uploaded,
-            "total": len(results),
+            "total": len(universe),
             "sessions": results,
         }
 
@@ -335,6 +406,58 @@ class KappaUploader:
 
         return sessions
 
+    def _session_universe(self, discovered: Dict[str, Dict[str, Any]]) -> List[str]:
+        """Every session this run was supposed to deliver, sorted.
+
+        That is every complete session stage 01 produced
+        (bids_organized/sub-*/ses-*), plus anything found downstream (layouts
+        without bids_organized/, e.g. old or CLI runs). bids_organized/
+        _incomplete/ is left out: those sessions wait in the doctor's
+        incomplete-patients queue and never entered processing.
+        """
+        keys = set(discovered)
+        bids_dir = self.output_path / "bids_organized"
+        if bids_dir.is_dir():
+            for sub in bids_dir.glob("sub-*"):
+                if not sub.is_dir():
+                    continue
+                for ses in sub.glob("ses-*"):
+                    if ses.is_dir():
+                        keys.add(f"{sub.name}_{ses.name}")
+        return sorted(keys)
+
+    def _readiness(
+        self, session_key: str, session_data: Optional[Dict[str, Any]]
+    ) -> Tuple[bool, Optional[str]]:
+        """Is the session complete enough for Kappa, and if not, why not.
+
+        Complete = every required modality of the lesion type is preprocessed
+        and the main (atlas-space) segmentation mask exists. Checked by file
+        name only, so it costs no disk access.
+        """
+        preprocessed = (session_data or {}).get("preprocessed") or []
+        if not preprocessed:
+            return False, "нет данных после предобработки"
+
+        try:
+            required = load_lesion_type_config(self.lesion_type)["required_modalities"]
+        except KeyError:
+            required = _DEFAULT_REQUIRED_MODALITIES
+        names = {p.name for p in preprocessed}
+        missing = [m for m in required if f"{session_key}_{m}.nii.gz" not in names]
+        has_mask = any(
+            "_native_" not in m.name for m in (session_data.get("masks") or [])
+        )
+
+        if not missing and has_mask:
+            return True, None
+        parts = []
+        if missing:
+            parts.append(", ".join(missing))
+        if not has_mask:
+            parts.append("маски сегментации")
+        return False, "нет " + " и ".join(parts)
+
     def _extract_session_key(self, filepath: Path) -> Optional[str]:
         """Извлечь session_key (sub-XXX_ses-XXX) из пути или имени файла."""
         # Ищем в частях пути, ИСКЛЮЧАЯ имя файла (последний элемент)
@@ -475,19 +598,9 @@ class KappaUploader:
     ) -> Dict[str, Any]:
         """Загрузить одну сессию как сущность."""
 
-        # Собираем файлы: preprocessed + основная маска
-        file_paths = list(session_data["preprocessed"])
-
-        # Добавляем только основную маску (без native)
-        main_masks = [
-            m for m in session_data["masks"]
-            if "_native_" not in m.name
-        ]
-        file_paths.extend(main_masks)
-
-        # Include the labeled lesion mask so validation hover works Kappa-only
-        if session_data.get("lesion_labels_mask"):
-            file_paths.append(session_data["lesion_labels_mask"])
+        # Собираем файлы: preprocessed + основная маска + labels.
+        # Правило одно для выгрузки и для замены — см. session_file_paths.
+        file_paths = session_file_paths(session_data)
 
         if not file_paths:
             return {"session": session_key, "success": False, "error": "no files"}

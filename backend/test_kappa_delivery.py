@@ -245,3 +245,133 @@ def test_count_local_progress_without_a_dataset_trusts_only_this_run(
     assert count_local_progress("any", tmp_path, dataset_id=None) == {
         "total": 1, "delivered": 0,
     }
+
+
+def test_a_superseding_session_needs_a_human_not_a_retry():
+    """Overwriting data in Kappa is not something to retry into."""
+    result = {"dataset_id": 351, "uploaded": 0, "total": 1,
+              "sessions": [_fail("sub-002_ses-001", "supersedes")]}
+    out = classify(result, None, {}, NOW)
+
+    assert out["status"] == "needs_attention"
+    assert out["detail"]["reason"] == "supersedes_kappa"
+    assert out["next_attempt"] is None
+    assert out["detail"]["blocked"][0]["session"] == "sub-002_ses-001"
+
+
+def test_a_superseding_session_alongside_a_delivered_one():
+    """One blocked session must not erase the fact that the other arrived —
+    the operator decides about the one patient, not the whole run."""
+    result = {"dataset_id": 351, "uploaded": 1, "total": 2,
+              "sessions": [_ok("sub-001_ses-001"),
+                           _fail("sub-002_ses-001", "supersedes")]}
+    out = classify(result, None, {}, NOW)
+
+    assert out["status"] == "needs_attention"
+    assert out["detail"]["delivered"] == 1
+    assert len(out["detail"]["blocked"]) == 1
+
+
+# --- Resolving a supersedes blockage by replacing in Kappa ------------------
+
+def test_replacing_a_superseding_session_clears_its_blockage():
+    """The operator pressed «Заменить в Kappa» and it worked. If the run
+    still reads «требует внимания, 1 из 2», the screen contradicts what just
+    happened — which is indistinguishable from Kappa being down."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 2, "delivered": 1, "attempts": 0,
+             "blocked": [{"session": "sub-002_ses-001",
+                          "reason": "supersedes_kappa", "message": "m"}],
+             "reason": "supersedes_kappa"}
+
+    out = mark_session_delivered(state, "sub-002_ses-001", NOW)
+
+    assert out["status"] == "done"
+    assert out["detail"]["delivered"] == 2
+    assert out["detail"]["blocked"] == []
+    assert out["detail"]["reason"] is None
+    assert out["next_attempt"] is None
+
+
+def test_another_blocked_session_keeps_the_run_in_needs_attention():
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 1, "attempts": 0,
+             "blocked": [
+                 {"session": "a", "reason": "supersedes_kappa", "message": ""},
+                 {"session": "b", "reason": "name_clash", "message": ""},
+             ],
+             "reason": "supersedes_kappa"}
+
+    out = mark_session_delivered(state, "a", NOW)
+
+    assert out["status"] == "needs_attention"
+    assert out["detail"]["delivered"] == 2
+    assert [b["session"] for b in out["detail"]["blocked"]] == ["b"]
+    assert out["detail"]["reason"] == "name_clash"
+
+
+def test_delivered_never_exceeds_total():
+    """A repeated replacement is allowed — it is idempotent in Kappa — so the
+    counter must not drift past the number of sessions."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 1, "delivered": 1, "blocked": [], "attempts": 0}
+    out = mark_session_delivered(state, "sub-002_ses-001", NOW)
+
+    assert out["detail"]["delivered"] == 1
+
+
+def test_sessions_still_undelivered_keep_the_run_pending():
+    """Nothing is blocked, but not everything arrived: the worker should
+    still finish the job rather than the run reading as done."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 0, "attempts": 0,
+             "blocked": [{"session": "a", "reason": "supersedes_kappa",
+                          "message": ""}]}
+
+    out = mark_session_delivered(state, "a", NOW)
+
+    assert out["status"] == "pending"
+    assert out["next_attempt"] is not None
+    assert out["detail"]["delivered"] == 1
+
+
+def test_a_replacement_completes_a_run_that_also_lost_a_session():
+    """Sessions lost in processing count toward completion (classify's own
+    rule), so the replacement of the last blocked one has to finish the run.
+
+    Without this the run stays pending on a total it can never reach, and
+    the worker retries it forever. Found by merging this work onto main,
+    where not_processed had been added meanwhile.
+    """
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 1, "attempts": 0,
+             "not_processed": [{"session": "c", "message": "нет данных"}],
+             "blocked": [{"session": "b", "reason": "supersedes_kappa",
+                          "message": ""}]}
+
+    out = mark_session_delivered(state, "b", NOW)
+
+    assert out["status"] == "done"
+    assert out["detail"]["delivered"] == 2
+    assert len(out["detail"]["not_processed"]) == 1
+
+
+def test_a_lost_session_is_not_counted_as_delivered():
+    """It is reported separately, and conflating the two would tell the
+    operator a patient reached Kappa when nothing was ever uploadable."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 0, "attempts": 0,
+             "not_processed": [{"session": "c", "message": "нет данных"}],
+             "blocked": [{"session": "b", "reason": "supersedes_kappa",
+                          "message": ""}]}
+
+    out = mark_session_delivered(state, "b", NOW)
+
+    assert out["detail"]["delivered"] == 1
+    assert out["status"] == "pending"      # 1 + 1 < 3, one still owed
