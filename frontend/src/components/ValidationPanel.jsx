@@ -178,7 +178,13 @@ const ValidationPanel = () => {
       setEntities(sortEntitiesByPatientSession(data.entities || []));
     } catch (err) {
       console.error('Ошибка загрузки сессий:', err);
-      if (!silent) setError('Не удалось загрузить список сессий');
+      // 401 = сессия Kappa истекла (или её нет): скажем, что делать, а не
+      // «не удалось» — иначе это выглядит как пустой или сломанный датасет.
+      if (!silent) {
+        setError(err.response?.status === 401
+          ? (err.response.data?.detail || 'Сессия Kappa истекла — войдите заново')
+          : 'Не удалось загрузить список сессий');
+      }
     } finally {
       if (!silent) setLoading(false);
     }
