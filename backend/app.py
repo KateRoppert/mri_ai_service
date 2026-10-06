@@ -3037,6 +3037,33 @@ async def replace_kappa_entity(
            if result["failed"] else ""),
     )
     logger.info("Kappa entity replaced for %s: %s", session_key, result)
+
+    # Сессия доехала — надо снять с прогона именно эту блокировку. Без этого
+    # оператор нажимает кнопку, замена проходит, а экран показывает прежнее
+    # «требует внимания, N из M» — что внешне не отличить от недоступной
+    # Kappa. Ровно так это и было воспринято при проверке 05.10.
+    #
+    # Частичную замену не считаем доставкой: пациент в Kappa стал смесью
+    # старого и нового, и это состояние хуже исходного — скрывать его нельзя.
+    if not result["failed"]:
+        from database import get_kappa_delivery, set_kappa_delivery
+        from kappa_delivery import mark_session_delivered
+
+        verdict = mark_session_delivered(
+            get_kappa_delivery(run), session_key,
+            datetime.now(timezone.utc),
+        )
+        set_kappa_delivery(
+            db, run_id, verdict["status"],
+            verdict["next_attempt"], verdict["detail"],
+        )
+        kappa_run_log.append(
+            run.output_path,
+            f"  Итог после замены: "
+            f"{verdict['detail'].get('delivered')} из "
+            f"{verdict['detail'].get('total')}",
+        )
+
     return ReplaceEntityResponse(**result)
 
 
