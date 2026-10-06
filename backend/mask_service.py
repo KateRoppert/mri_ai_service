@@ -1,7 +1,11 @@
 """
 Сервис версионирования масок сегментации.
 Хранит историю всех версий масок (от ИИ и от экспертов).
-В Каппе всегда лежит актуальная (последняя) маска.
+
+В Каппе остаются ВСЕ версии: загрузка файла там добавляет, а не заменяет
+(проверено на живом API). Поэтому Каппа — основной источник файла маски, а
+локальный путь лишь подстраховка: он может указывать в папку прогона,
+которую уже убрали.
 """
 import logging
 import shutil
@@ -34,7 +38,26 @@ def register_ai_mask(
         ).first()
 
         if existing:
-            logger.debug("AI mask already registered for entity %s", entity_id)
+            # Освежаем, а не пропускаем. Идемпотентность здесь — «не плодить
+            # вторую версию 1», а не «заморозить то, что записали первыми».
+            # Переобработка перекладывает маску в другую папку прогона, и
+            # замороженный путь начинает указывать на данные, которых уже
+            # нет: во вкладке валидации маска становилась «недоступна»,
+            # хотя в Kappa она есть (сущность 4d72111f, 05.10).
+            if file_path and existing.file_path != file_path:
+                logger.info(
+                    "AI mask path refreshed: entity=%s, %s -> %s",
+                    entity_id, existing.file_path, file_path,
+                )
+                existing.file_path = file_path
+                existing.file_name = Path(file_path).name
+            # Пустой kappa_file_id не затираем уже известный: иначе
+            # повторная регистрация отняла бы путь в Kappa, который и есть
+            # лечение.
+            if kappa_file_id and existing.kappa_file_id != kappa_file_id:
+                existing.kappa_file_id = kappa_file_id
+            db.commit()
+            db.refresh(existing)
             return _to_dict(existing)
 
         record = MaskVersion(
@@ -210,3 +233,31 @@ def _to_dict(record: MaskVersion) -> Dict[str, Any]:
         "kappa_file_id": record.kappa_file_id,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
+
+
+def set_kappa_file_id(entity_id: str, version: int, kappa_file_id: str) -> bool:
+    """Record where this version lives in Kappa. True if a row was updated.
+
+    Heals rows written before the id was recorded: it is resolved from the
+    entity's own file list by name, so the next view proxies from Kappa and
+    stops depending on a local file that may be long gone.
+    """
+    if not kappa_file_id:
+        return False
+    db = SessionLocal()
+    try:
+        record = db.query(MaskVersion).filter(
+            MaskVersion.entity_id == entity_id,
+            MaskVersion.version == version,
+        ).first()
+        if record is None:
+            return False
+        record.kappa_file_id = kappa_file_id
+        db.commit()
+        logger.info(
+            "Mask version healed: entity=%s, v=%d, kappa_file_id=%s",
+            entity_id, version, kappa_file_id,
+        )
+        return True
+    finally:
+        db.close()

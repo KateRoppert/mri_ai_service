@@ -1424,8 +1424,11 @@ async def save_assignment(
 
     # Переобработка даёт тот же study_hash (он считается от
     # PatientID:StudyInstanceUID, а не от изображений), поэтому загрузчик
-    # сочтёт пациента дубликатом и в Kappa останется старая маска. Молчать
-    # об этом нельзя: исправление выглядело бы применённым, не будучи им.
+    # сочтёт пациента дубликатом и сам ничего не перезапишет. Но заменить
+    # данные в Kappa теперь можно — кнопкой после прогона, с подтверждением.
+    # Поэтому это сообщение описывает следующий шаг, а не тупик: пугать
+    # оператора тем, что у него под контролем, значит учить его не доверять
+    # предупреждениям вообще.
     kappa_warning = None
     if result.get("needs_reprocess") and getattr(run, "kappa_dataset_id", None):
         import kappa_run_log
@@ -1436,13 +1439,14 @@ async def save_assignment(
         records = find_by_bids_id(session_key, {run.kappa_dataset_id}) or []
         if any(r.get("kappa_entity_id") for r in records):
             kappa_warning = (
-                "Этот пациент уже выгружен в Kappa. После переобработки там "
-                "останется прежняя версия — она не обновится сама."
+                "Этот пациент уже выгружен в Kappa. После переобработки "
+                "сервис предложит заменить его там — кнопкой «Заменить в "
+                "Kappa» в истории запусков."
             )
             kappa_run_log.append(
                 run.output_path,
                 f"Набор модальностей {session_key} изменён врачом; "
-                f"в Kappa остаётся прежняя версия",
+                f"после прогона потребуется подтвердить замену в Kappa",
             )
 
     return AssignmentResponse(**result, kappa_warning=kappa_warning)
@@ -2253,9 +2257,50 @@ async def get_mask_versions(entity_id: str, session_id: str):
     history = get_mask_history(entity_id)
     current = get_current_mask(entity_id)
 
-    # Помечаем доступность и размер каждой версии
+    # Файл маски отдаётся из Каппы, а локальный путь — лишь подстраховка
+    # (см. serve_mask_version). Поэтому доступность спрашиваем у Каппы, а не
+    # у диска: у ИИ-масок kappa_file_id исторически не записывался, и когда
+    # папка прогона убиралась, версия помечалась «недоступна», хотя в Каппе
+    # лежала. Сущность 4d72111f, 05.10 — ровно этот случай.
+    #
+    # Если Каппа не ответила, остаёмся на том, что знали: это улучшение, а не
+    # зависимость, и модалка должна открываться при недоступной Каппе.
+    kappa_by_name = {}
+    if history:
+        try:
+            from kappa_client import get_entity_details
+            details = await get_entity_details(
+                token=session["kappa_token"],
+                user_id=session["user_id"],
+                user_type_id=session["user_type_id"],
+                dataset_id=history[0].get("dataset_id"),
+                entity_id=entity_id,
+            )
+            kappa_by_name = {
+                f["fileName"]: f["fileId"]
+                for f in (details or {}).get("files", [])
+                if f.get("fileName") and f.get("fileId")
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Не удалось получить файлы сущности %s из Каппы: %s",
+                entity_id, e,
+            )
+
     for v in history:
-        has_kappa = v.get("kappa_file_id") and v["kappa_file_id"] != "uploaded_no_file_id"
+        stored_id = v.get("kappa_file_id")
+        has_kappa = bool(stored_id) and stored_id != "uploaded_no_file_id"
+
+        # Запись старше, чем привычка писать fileId — лечим на месте, чтобы
+        # следующий просмотр шёл в Каппу напрямую.
+        if not has_kappa:
+            resolved = kappa_by_name.get(v.get("file_name"))
+            if resolved:
+                from mask_service import set_kappa_file_id
+                set_kappa_file_id(entity_id, v["version"], resolved)
+                v["kappa_file_id"] = resolved
+                has_kappa = True
+
         local_path = Path(v.get("file_path", "")) if v.get("file_path") else None
         has_local = local_path.exists() if local_path else False
         v["available"] = has_kappa or has_local
