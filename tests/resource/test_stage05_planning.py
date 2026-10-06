@@ -27,6 +27,6 @@ def test_stage05_uses_plan_stage_workers(tmp_path):
         "stage 05 should expose a thin _plan_workers_for_inputs helper"
     big = tmp_path / "big.nii.gz"
     nib.save(nib.Nifti1Image(np.zeros((310, 864, 864), np.int16), np.eye(4)), str(big))
-    # 231M * 17.7 ~= 4.1 GB/worker; 20*0.85-2 = 15 GB -> 3 workers
-    plan = mod._plan_workers_for_inputs([big], requested=6, budget_bytes=20_000_000_000)
+    # KI-058 recalibration: 231M * 35.0 ~= 8.1 GB/worker; 32*0.85-2 = 25.2 GB -> 3 workers
+    plan = mod._plan_workers_for_inputs([big], requested=6, budget_bytes=32_000_000_000)
     assert plan.actual_workers == 3

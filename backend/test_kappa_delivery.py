@@ -337,3 +337,41 @@ def test_sessions_still_undelivered_keep_the_run_pending():
     assert out["status"] == "pending"
     assert out["next_attempt"] is not None
     assert out["detail"]["delivered"] == 1
+
+
+def test_a_replacement_completes_a_run_that_also_lost_a_session():
+    """Sessions lost in processing count toward completion (classify's own
+    rule), so the replacement of the last blocked one has to finish the run.
+
+    Without this the run stays pending on a total it can never reach, and
+    the worker retries it forever. Found by merging this work onto main,
+    where not_processed had been added meanwhile.
+    """
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 1, "attempts": 0,
+             "not_processed": [{"session": "c", "message": "нет данных"}],
+             "blocked": [{"session": "b", "reason": "supersedes_kappa",
+                          "message": ""}]}
+
+    out = mark_session_delivered(state, "b", NOW)
+
+    assert out["status"] == "done"
+    assert out["detail"]["delivered"] == 2
+    assert len(out["detail"]["not_processed"]) == 1
+
+
+def test_a_lost_session_is_not_counted_as_delivered():
+    """It is reported separately, and conflating the two would tell the
+    operator a patient reached Kappa when nothing was ever uploadable."""
+    from kappa_delivery import mark_session_delivered
+
+    state = {"total": 3, "delivered": 0, "attempts": 0,
+             "not_processed": [{"session": "c", "message": "нет данных"}],
+             "blocked": [{"session": "b", "reason": "supersedes_kappa",
+                          "message": ""}]}
+
+    out = mark_session_delivered(state, "b", NOW)
+
+    assert out["detail"]["delivered"] == 1
+    assert out["status"] == "pending"      # 1 + 1 < 3, one still owed

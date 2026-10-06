@@ -14,8 +14,9 @@ docker compose --profile full up --build
 source venv/bin/activate
 python orchestrator.py --config pipeline_config.yaml
 
-# Slicer-агент (экспертное редактирование масок)
-cd slicer && python slicer_agent.py
+# Slicer-агент (экспертное редактирование масок) — на хосте, свой venv (fastapi, uvicorn, httpx)
+python3 -m venv ~/.venvs/slicer-agent && ~/.venvs/slicer-agent/bin/pip install -r slicer/requirements.txt
+~/.venvs/slicer-agent/bin/python slicer/slicer_agent.py
 
 # Тесты (файлы лежат рядом с кодом, не в tests/ — эта папка в .gitignore)
 source venv/bin/activate

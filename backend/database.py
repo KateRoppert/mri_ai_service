@@ -495,7 +495,7 @@ def set_kappa_delivery(
         logger.warning(
             "Отброшен устаревший вердикт доставки для %s: пришёл %s "
             "(%s, %s/%s), уже записан %s. Это рассогласование — см. "
-            "KI-059, нужна трасса вызова.",
+            "KI-065, нужна трасса вызова.",
             run_id, incoming.isoformat(), detail.get("reason"),
             detail.get("delivered"), detail.get("total"), stored.isoformat(),
         )

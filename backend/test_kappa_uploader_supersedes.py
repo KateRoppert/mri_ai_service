@@ -34,12 +34,28 @@ def _uploader(tmp_path, superseding=frozenset()):
     )
 
 
-def _stub_discovery(monkeypatch, up):
+def _ready_session(key="sub-002_ses-001", lesion="glioblastoma"):
+    """A session complete enough to upload.
+
+    _readiness checks that every required modality is preprocessed and that
+    a main (atlas-space) mask exists — by file name, so these need not be
+    real files. An incomplete stub would be rejected as `not_processed`
+    before any duplicate or supersedes check runs, which is correct
+    behaviour and would make these tests prove nothing.
+    """
+    required = ("t1", "t1c", "t2", "t2fl") if lesion == "glioblastoma" \
+        else ("t1", "t2", "t2fl")
+    return {
+        "preprocessed": [Path(f"/out/{key}_{m}.nii.gz") for m in required],
+        "masks": [Path(f"/out/{key}_t1_segmask.nii.gz")],
+    }
+
+
+def _stub_discovery(monkeypatch, up, session=None):
     monkeypatch.setattr(up, "_resolve_dataset_id", _async(351))
     monkeypatch.setattr(up, "_bind_pending_scope", lambda ds: None)
     monkeypatch.setattr(up, "_discover_sessions",
-                        lambda: {"sub-002_ses-001": {"preprocessed": [],
-                                                     "masks": []}})
+                        lambda: {"sub-002_ses-001": session or _ready_session()})
     monkeypatch.setattr(up, "_compute_study_hash", lambda data: "h1")
     monkeypatch.setattr(up, "_get_existing_study_hashes", _async({"h1"}))
     monkeypatch.setattr(up, "_get_existing_entity_names",
@@ -175,3 +191,23 @@ def test_no_labels_mask_is_simply_absent(tmp_path):
         "lesion_labels_mask": None,
     })
     assert [p.name for p in paths] == ["t1.nii.gz"]
+
+
+@pytest.mark.asyncio
+async def test_a_superseding_session_that_lost_its_data_is_not_processed(tmp_path, monkeypatch):
+    """Precedence between two features that met in a merge.
+
+    A reprocessed session whose preprocessing failed has nothing to send, so
+    offering «Заменить в Kappa» would mean replacing good data with a set
+    that does not exist. The readiness check runs first and the session is
+    reported as not_processed — the honest state.
+    """
+    up = _uploader(tmp_path, superseding={"sub-002_ses-001"})
+    _stub_discovery(monkeypatch, up,
+                    session={"preprocessed": [], "masks": []})
+
+    result = await up.upload_results()
+
+    entry = result["sessions"][0]
+    assert entry["error"] == "not_processed"
+    assert entry["error"] != "supersedes"

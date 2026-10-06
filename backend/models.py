@@ -413,12 +413,19 @@ class KappaBlockedSession(BaseModel):
     )
 
 
+class KappaNotProcessedSession(BaseModel):
+    """Сессия, потерянная при обработке: в счёт входит, в Kappa не грузится."""
+    session: Optional[str] = Field(None, description="BIDS-ключ сессии")
+    message: str = Field("", description="Чего не хватает, например «нет t2fl и маски сегментации»")
+
+
 class KappaDeliveryStatus(BaseModel):
     """Состояние выгрузки прогона в Kappa."""
     status: str = Field(..., description="pending | done | needs_attention")
     delivered: int = Field(0, description="Сколько сессий уже в датасете")
-    total: int = Field(0, description="Сколько сессий всего")
+    total: int = Field(0, description="Сколько сессий вышло из этапа 01")
     blocked: List[KappaBlockedSession] = Field(default_factory=list)
+    not_processed: List[KappaNotProcessedSession] = Field(default_factory=list)
     next_attempt_at: Optional[datetime] = Field(
         None, description="Когда будет следующая автоматическая попытка"
     )

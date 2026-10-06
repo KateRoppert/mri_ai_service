@@ -36,11 +36,13 @@ const createSegmentationColormap = () => {
   return colors;
 };
 
-// Binary colormap for MS: 0=transparent background, 1=green lesion
+// Binary colormap for MS: 0=transparent background, 1=red lesion.
+// Red, not green: MS lesions are a few voxels across and green on grey MRI
+// was hard to spot. GBM keeps its own palette (createSegmentationColormap).
 const createMsColormap = () => ({
-  R: [0, 82],
-  G: [0, 196],
-  B: [0, 26],
+  R: [0, 255],
+  G: [0, 0],
+  B: [0, 0],
   A: [0, 255],
 });
 
@@ -286,7 +288,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         throw new Error(`Не удалось загрузить маску: ${maskResponse.status}`);
       }
       
-      // Colormap: binary green for MS, multi-class for GBM
+      // Colormap: binary red for MS, multi-class for GBM
       const segColormap = lesionType === 'multiple_sclerosis'
         ? createMsColormap()
         : createSegmentationColormap();
@@ -297,7 +299,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
       // The labeled mask exists only in atlas space — in native space it would
       // be misaligned, so there we keep the (native) binary mask and disable
       // hover. Visual output is unchanged because cal_max:1 clamps all labels
-      // ≥1 to the single green colormap entry. GBM always uses the binary mask.
+      // ≥1 to the single red colormap entry. GBM always uses the binary mask.
       const useLabeled =
         lesionType === 'multiple_sclerosis' &&
         !!file.mask_labels_url &&
@@ -492,7 +494,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
         throw new Error(`Не удалось загрузить маску v${versionInfo.version}: ${maskResponse.status}`);
       }
 
-      // Создаём colormap: binary green for MS, multi-class for GBM
+      // Создаём colormap: binary red for MS, multi-class for GBM
       const segColormap = lesionType === 'multiple_sclerosis'
         ? createMsColormap()
         : createSegmentationColormap();
@@ -765,7 +767,7 @@ const NIfTIViewer = ({ runId, visible, onClose, customFiles = null, validationRe
             <Space size="large" style={{ fontSize: 13 }}>
               {(lesionType === 'multiple_sclerosis'
                 ? [
-                    { color: 'rgb(82, 196, 26)', label: 'Очаги РС' },
+                    { color: 'rgb(255, 0, 0)', label: 'Очаги РС' },
                   ]
                 : modelClasses?.merged_ncr_net
                 ? [
