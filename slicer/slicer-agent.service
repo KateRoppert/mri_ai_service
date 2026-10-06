@@ -1,0 +1,37 @@
+# systemd user unit: start the 3D Slicer agent with the desktop session.
+#
+# Install (once per machine, no sudo):
+#   python3 -m venv ~/.venvs/slicer-agent
+#   ~/.venvs/slicer-agent/bin/pip install -r ~/mri_ai_service/slicer/requirements.txt
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/mri_ai_service/slicer/slicer-agent.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now slicer-agent.service
+#
+# Logs:   journalctl --user -u slicer-agent -f
+# Status: systemctl --user status slicer-agent
+#
+# Paths assume the repo is reachable as ~/mri_ai_service (true on the main
+# workstation; on the demob laptop it is a symlink into /media/storage).
+#
+# Tied to graphical-session.target: the agent launches Slicer windows, which
+# need the session's DISPLAY / WAYLAND_DISPLAY / XAUTHORITY — GNOME exports
+# them to the user manager at login, so a unit started with the session
+# inherits them.
+
+[Unit]
+Description=MRI AI Service - 3D Slicer agent (localhost:8001)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+WorkingDirectory=%h/mri_ai_service/slicer
+ExecStart=%h/.venvs/slicer-agent/bin/python %h/mri_ai_service/slicer/slicer_agent.py
+Restart=on-failure
+RestartSec=5
+# Restarting or stopping the agent must not close Slicer windows a doctor is
+# editing a mask in: only the agent process itself is signalled.
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

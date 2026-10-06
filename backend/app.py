@@ -2861,7 +2861,8 @@ async def kappa_logout(session_id: str):
     Токен доступен только самому бэкенду; session_id из localStorage
     браузера при выходе стирается, так что интерфейс сеанс не переживает.
     """
-    session = get_session(session_id)
+    # Выход работает и с истёкшей сессией: отложенный вход надо забыть всё равно.
+    session = get_session(session_id, include_expired=True)
     if not session:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
 
@@ -2974,7 +2975,10 @@ async def get_kappa_entities(dataset_id: int, session_id: str):
 
     session = get_session(session_id)
     if not session:
-        raise HTTPException(status_code=401, detail="Сессия Kappa не найдена")
+        raise HTTPException(
+            status_code=401,
+            detail="Сессия Kappa не найдена или истекла — войдите заново",
+        )
 
     entities = await get_dataset_entities(
         token=session["kappa_token"],
