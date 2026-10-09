@@ -26,9 +26,34 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 import numbering
-from database import PipelineRun, create_pipeline_run
+from database import PipelineRun, SessionLocal, create_pipeline_run
 
 logger = logging.getLogger(__name__)
+
+# A bare create_task is only weakly referenced, so a fire-and-forget launch
+# can be garbage-collected mid-flight. Keep a strong reference until it ends.
+_background: set = set()
+
+
+def _spawn(coro, what: str) -> None:
+    """Run `coro` detached, and make sure a failure is not swallowed.
+
+    BackgroundTasks logged what went wrong; a bare task does not, and a
+    pipeline that failed to launch in silence looks exactly like one that is
+    still starting.
+    """
+    task = asyncio.ensure_future(coro)
+    _background.add(task)
+
+    def _done(t: asyncio.Future) -> None:
+        _background.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.error("Не удалось выполнить %s: %r", what, exc)
+
+    task.add_done_callback(_done)
 
 
 def _purge_and_record(output_path: str) -> Optional[str]:
@@ -102,18 +127,37 @@ async def start_requeue(
     from app import run_pipeline_background
     from pipeline_monitor import pipeline_monitor
 
-    run_pipeline_background(
-        run.run_id,
-        run.input_path,
-        run.output_path,
-        db,
-        lesion_type=run.lesion_type,
-        snapshot_runtime_config=snapshot_runtime_config,
-        preprocessing_snapshot=preprocessing_snapshot,
-        numbering_scope=numbering.scope_from_dataset_id(
-            original_run.kappa_dataset_id, lesion_type
-        ),
+    scope = numbering.scope_from_dataset_id(
+        original_run.kappa_dataset_id, lesion_type
     )
+
+    def _launch() -> None:
+        # Its own session, not the caller's. The launcher holds one for the
+        # whole pipeline — minutes — to publish status and notice a stop,
+        # while the caller's is closed as soon as the response is sent (the
+        # endpoint) or the moment start_requeue returns (the queue).
+        launch_db = SessionLocal()
+        try:
+            run_pipeline_background(
+                run.run_id,
+                run.input_path,
+                run.output_path,
+                launch_db,
+                lesion_type=run.lesion_type,
+                snapshot_runtime_config=snapshot_runtime_config,
+                preprocessing_snapshot=preprocessing_snapshot,
+                numbering_scope=scope,
+            )
+        finally:
+            launch_db.close()
+
+    # To a thread, and not awaited. run_pipeline_background waits out the
+    # whole pipeline (wait_for_pipeline), so calling it inline from an async
+    # caller freezes the event loop until the run ends — no API responses, no
+    # WebSocket progress. The endpoint used to hand it to FastAPI's
+    # BackgroundTasks, which ran it in a threadpool; this keeps that property
+    # and gives the queue the same one.
+    _spawn(asyncio.to_thread(_launch), f"launch {run.run_id}")
 
     # Pass the Kappa session through: without it the monitor never builds an
     # uploader, and the run completes having silently never reached Kappa.

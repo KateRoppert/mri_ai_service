@@ -170,9 +170,106 @@ async def test_a_failed_purge_does_not_stop_the_run():
              patch("pipeline_monitor.pipeline_monitor.start_monitoring",
                    new=AsyncMock()):
             new_run = await requeue_service.start_requeue(db, original)
+            # The launch is dispatched now, so give the loop a turn.
+            import asyncio
+            await asyncio.sleep(0.1)
 
         assert new_run is not None
         assert launch.called
         assert get_pipeline_run(db, new_run.run_id) is not None
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_the_launch_is_dispatched_to_a_thread_not_run_inline():
+    """run_pipeline_background waits for the whole pipeline
+    (wait_for_pipeline), so calling it inline from an async caller freezes
+    the event loop until the run ends — no API responses, no WebSocket
+    progress, nothing.
+
+    That shipped: resuming a stopped run froze the backend for minutes and
+    read as "resume does not work". The earlier tests here missed it because
+    they asserted the launcher was CALLED, never that it was DISPATCHED.
+
+    Asserted by thread identity rather than by a timeout: a blocked event
+    loop cannot be detected from inside that same loop, because a sync call
+    never yields and asyncio.wait_for has no point at which to cancel. A
+    timeout-based version of this test passed while the bug was present.
+
+    FastAPI's BackgroundTasks, which the endpoint used before, ran it in a
+    threadpool; this has to keep that property.
+    """
+    import asyncio
+    import threading
+
+    db = SessionLocal()
+    launched_on = {}
+    entered = threading.Event()
+
+    def _record_thread(*a, **k):
+        launched_on["ident"] = threading.get_ident()
+        entered.set()
+
+    try:
+        original = _original(db, output_path="/out/svc-noblock")
+        with patch("session_artifacts.purge_sessions_marked_for_reprocess",
+                   return_value={}), \
+             patch("app.run_pipeline_background", _record_thread), \
+             patch("pipeline_monitor.pipeline_monitor.start_monitoring",
+                   new=AsyncMock()):
+            new_run = await requeue_service.start_requeue(db, original)
+
+            # In another thread: Event.wait() on the loop's own thread would
+            # starve the task we are waiting for — the same class of mistake
+            # as the bug under test.
+            assert await asyncio.to_thread(entered.wait, 5.0), \
+                "запуск не был отправлен вообще"
+
+        assert new_run is not None
+        assert launched_on["ident"] != threading.get_ident(), (
+            "pipeline запущен в том же потоке, что и event loop — "
+            "бэкенд замрёт на всё время прогона"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_the_launch_gets_its_own_session():
+    """The launcher uses its session for the whole pipeline — minutes — to
+    update status and check for a stop. It must not borrow the caller's.
+
+    The endpoint's session is closed by FastAPI once the response is sent,
+    and the queue's caller (_start_queued_requeue) closes its own in a
+    finally the moment start_requeue returns. Either way the borrowed
+    session would be closed out from under a thread still using it.
+    BackgroundTasks hid this before, because FastAPI tore the dependency
+    down after background tasks had run.
+    """
+    import asyncio
+    import threading
+
+    db = SessionLocal()
+    seen = {}
+    entered = threading.Event()
+
+    def _record_session(run_id, input_path, output_path, session, **k):
+        seen["session"] = session
+        entered.set()
+
+    try:
+        original = _original(db, output_path="/out/svc-session")
+        with patch("session_artifacts.purge_sessions_marked_for_reprocess",
+                   return_value={}), \
+             patch("app.run_pipeline_background", _record_session), \
+             patch("pipeline_monitor.pipeline_monitor.start_monitoring",
+                   new=AsyncMock()):
+            await requeue_service.start_requeue(db, original)
+            assert await asyncio.to_thread(entered.wait, 5.0)
+
+        assert seen["session"] is not db, (
+            "pipeline получил сессию вызывающего — её закроют у него под руками"
+        )
     finally:
         db.close()
