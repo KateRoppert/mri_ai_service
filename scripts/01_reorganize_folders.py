@@ -222,6 +222,12 @@ class ModalityDetector:
         self._anatomy_exclude_keywords: List[str] = (
             (scoring_config or {}).get('anatomy_exclude', {}).get('keywords', [])
         )
+        # Non-anatomical sequences (diffusion, perfusion). Separate list
+        # from anatomy so the log line and the config key each say what they
+        # mean, but the same hard filter — see _is_excluded_sequence.
+        self._sequence_exclude_keywords: List[str] = (
+            (scoring_config or {}).get('sequence_exclude', {}).get('keywords', [])
+        )
 
     def detect_modality(self, series_path: Path) -> Tuple[Optional[str], str, Dict]:
         """
@@ -313,6 +319,19 @@ class ModalityDetector:
                 self.logger.info(
                     f"    {series_path.name}: EXCLUDED "
                     f"[non-brain anatomy: '{excluded_keyword}'] ({readable_desc})")
+                return None, readable_desc, {}
+
+            # Hard sequence exclusion — diffusion/DTI/perfusion are brain
+            # series but not anatomical acquisitions. Must come before
+            # _detect_by_technical_params below, which would otherwise call
+            # them t2 on TR/TE alone (UPENN-GBM: TR 4200-5800, TE 83-91).
+            excluded_sequence = self._is_excluded_sequence(combined_text)
+            if excluded_sequence:
+                self._cache[series_path] = (None, readable_desc, {})
+                self.logger.info(
+                    f"    {series_path.name}: EXCLUDED "
+                    f"[non-anatomical sequence: '{excluded_sequence}'] "
+                    f"({readable_desc})")
                 return None, readable_desc, {}
 
             # Derived reconstructions (e.g. multi-planar reformats) should
@@ -468,6 +487,22 @@ class ModalityDetector:
         over a more generic one like 'spine'.
         """
         matches = [kw for kw in self._anatomy_exclude_keywords if kw in combined_text]
+        if not matches:
+            return None
+        return max(matches, key=len)
+
+    def _is_excluded_sequence(self, combined_text: str) -> Optional[str]:
+        """
+        Check whether combined_text indicates a non-anatomical sequence this
+        pipeline must never treat as t1/t1c/t2/t2fl (diffusion, DTI,
+        perfusion). Returns the matched keyword, or None.
+
+        Kept apart from _is_excluded_anatomy because the two answer different
+        questions — wrong body part versus wrong kind of image — and the
+        operator reading the log needs to know which. Longest match wins, as
+        there too, so a more specific keyword is reported over a generic one.
+        """
+        matches = [kw for kw in self._sequence_exclude_keywords if kw in combined_text]
         if not matches:
             return None
         return max(matches, key=len)

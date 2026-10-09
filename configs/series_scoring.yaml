@@ -9,6 +9,28 @@ anatomy_exclude:
   # never becomes a candidate for any brain modality. No fallback.
   keywords: [spine, cervical, c-spine, pituitary, orbit, neck]
 
+sequence_exclude:
+  # Same hard filter, different reason: these are brain series, but not
+  # anatomical acquisitions — diffusion, DTI and perfusion. They must never
+  # be candidates for t1/t1c/t2/t2fl.
+  #
+  # Why a hard filter and not a modality 'exclude' list: those only gate the
+  # name-matching path, and these names match no modality keyword at all.
+  # Detection therefore falls through to _detect_by_technical_params, which
+  # calls anything with TR > 2000 and TE > 70 a t2 — and diffusion EPI
+  # always is (measured on UPENN-GBM: TR 4200-5800, TE 83-91). Only a filter
+  # ahead of every detection path can refuse them.
+  #
+  # Perfusion was escaping by luck, not by design: its TR is exactly 2000
+  # and the rule is strictly greater.
+  #
+  # Each keyword was checked against all 252 distinct series descriptions in
+  # data/ (five datasets) — none matches an anatomical series. Keywords with
+  # no occurrence anywhere in that data (trace, tensor, bold, asl, spectro)
+  # are deliberately NOT here: adding substrings that cannot be tested is
+  # how 'mpr' came to match inside primary 'mprage'.
+  keywords: [diff, dti, dwi, adc, perf, bolus]
+
 failure_markers:
   keywords: [failed, repeat, redo, retry, motion, artifact, incomplete]
   penalty: 0.5
