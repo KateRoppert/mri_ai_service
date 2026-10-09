@@ -30,11 +30,15 @@ from pipeline_validator import InputOutputValidator
 from preprocessing_steps.reorient import process_subject_reorient
 from preprocessing_steps.bias_correction import process_subject_bias_correction
 from preprocessing_steps.registration import (
+    resolve_brain_template,
+    warp_mask_to_atlas,
     download_sri24_atlas,
     process_subject_registration,
     load_ants_image
 )
 from preprocessing_steps.skull_stripping import (
+    create_native_brain_mask,
+    skull_strip_position,
     setup_fsl_environment,
     check_fsl_installed,
     process_subject_skull_stripping
@@ -437,6 +441,40 @@ def process_single_subject(
             logger.info("Step 2/4: Bias Correction - SKIPPED (disabled in config)")
             temp_bias_corrected = None
         
+        # STEP 2.5 (KI-062 experiment): skull strip BEFORE registration.
+        # The skull-on t1 -> MNI152 registration lands wrong; registering the
+        # stripped brain to the brain template does not. Default position is
+        # after_registration, i.e. today's order, and skips all of this.
+        ss_cfg = steps_config.get("skull_stripping", {})
+        ss_params = ss_cfg.get("params", {}) or {}
+        ss_position = (skull_strip_position(ss_params)
+                       if ss_cfg.get("enabled", True) else "after_registration")
+        native_mask = None
+        atlas_overrides = None
+        if ss_position == "before_registration":
+            logger.info("Step 2.5/4: Skull Stripping in native space (before registration)")
+            step_start = time.time()
+            reg_ref = steps_config.get("registration", {}).get("params", {}).get(
+                "reference_modality", reference_modality)
+            src_root = temp_bias_corrected if temp_bias_corrected else temp_reoriented
+            native_ref = (src_root / subject_id / session_id / "anat"
+                          / f"{subject_id}_{session_id}_{reg_ref}.nii.gz")
+            native = create_native_brain_mask(
+                native_ref, temp_dir / "native_brain" / subject_id / session_id,
+                ss_params, gpu_pool=gpu_pool)
+            results['steps']['skull_stripping_native'] = {**native, "time": time.time() - step_start}
+            if not native.get("success"):
+                raise RuntimeError(f"Native skull stripping failed: {native.get('error')}")
+            native_mask = Path(native["mask_path"])
+            atlas_overrides = {
+                "moving_override": Path(native["brain_path"]),
+                "atlas_override": resolve_brain_template(atlas_path),
+                "random_seed": int(ss_params.get("random_seed", 42)),
+            }
+            logger.info(f"✓ Native skull stripping ({native.get('method')}) in "
+                        f"{time.time() - step_start:.1f}s; registering brain to "
+                        f"{atlas_overrides['atlas_override'].name}")
+
         # STEP 3: Registration to Atlas
         step_name = "registration"
         if steps_config.get(step_name, {}).get('enabled', True):
@@ -455,7 +493,8 @@ def process_single_subject(
                 atlas_path=atlas_path,
                 modalities=modalities,
                 params=step_params,
-                bias_corrected_dir=temp_bias_corrected if temp_bias_corrected else None
+                bias_corrected_dir=temp_bias_corrected if temp_bias_corrected else None,
+                atlas_registration_overrides=atlas_overrides,
             )
             
             results['steps']['registration'] = {
@@ -515,14 +554,22 @@ def process_single_subject(
             # Get registered data
             registered_anat = output_dir / subject_id / session_id / "anat"
             
-            skull_strip_results = process_subject_skull_stripping(
-                subject_dir=registered_anat,
-                output_dir=output_dir,
-                transform_dir=transform_dir,
-                modalities=modalities,
-                params=step_params,
-                gpu_pool=gpu_pool,
-            )
+            if native_mask is not None:
+                # Before-registration mode: the mask exists already, in native
+                # space. Carry it to the atlas grid with the reference's
+                # transform and apply it — no second stripper run.
+                skull_strip_results = _apply_native_mask(
+                    native_mask, atlas_path, transform_dir, output_dir,
+                    subject_id, session_id, modalities, reg_ref)
+            else:
+                skull_strip_results = process_subject_skull_stripping(
+                    subject_dir=registered_anat,
+                    output_dir=output_dir,
+                    transform_dir=transform_dir,
+                    modalities=modalities,
+                    params=step_params,
+                    gpu_pool=gpu_pool,
+                )
             
             results['steps']['skull_stripping'] = {
                 "success": all(r.get('success', False) for r in skull_strip_results.values()),
@@ -565,6 +612,31 @@ def process_single_subject(
         results['success'] = False
     
     return results
+
+def _apply_native_mask(native_mask, atlas_path, transform_dir, output_dir,
+                       subject_id, session_id, modalities, reference_modality):
+    """Warp the native brain mask to the atlas and apply it to every modality
+    (skull_stripping.position: before_registration). Same output names and
+    mask location as the after-registration step."""
+    from preprocessing_steps.skull_stripping import apply_brain_mask
+
+    anat = Path(output_dir) / subject_id / session_id / "anat"
+    tdir = Path(transform_dir) / subject_id / session_id / "anat"
+    ref_transform = tdir / f"{subject_id}_{session_id}_{reference_modality}_to_atlas.mat"
+    mask_path = tdir / f"{subject_id}_{session_id}_brain_mask.nii.gz"
+    warp_mask_to_atlas(native_mask, atlas_path, ref_transform, mask_path)
+    logger.info(f"Brain mask carried to atlas space: {mask_path.name}")
+
+    results = {}
+    for modality in modalities:
+        image = anat / f"{subject_id}_{session_id}_{modality}.nii.gz"
+        if not image.exists():
+            results[modality] = {"success": False, "error": "File not found"}
+            continue
+        results[modality] = apply_brain_mask(input_path=image, mask_path=mask_path,
+                                             output_path=image)
+    return results
+
 
 def process_subject_wrapper(args_tuple):
     """Run one session under a peak-memory meter (KI-058).
