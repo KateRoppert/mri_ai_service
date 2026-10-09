@@ -85,6 +85,9 @@ from database import (
     create_pipeline_run,
     get_pipeline_run,
     get_active_run_by_output_path,
+    queue_requeue,
+    clear_queued_requeue,
+    clear_all_queued_requeues,
     update_pipeline_run,
     update_pipeline_run_if_active,
     get_stage_executions,
@@ -98,6 +101,7 @@ from database import (
 from websocket_manager import ws_manager
 from pipeline_monitor import pipeline_monitor, PREPROCESSING_CONFIG
 from pipeline_manager import PipelineManager, wait_for_pipeline, append_master_log_note
+import requeue_service
 import numbering
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -175,6 +179,22 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Реконсиляция: {n} осиротевших прогонов помечены failed")
     finally:
         _reco_db.close()
+
+    # A run is a subprocess of this backend, so anything it was waiting for
+    # is gone after a restart. Starting a queued requeue automatically would
+    # be unsafe — the orchestrator may have died midway through writing
+    # dataset_mapping.json — so the intent is dropped and the doctor clicks
+    # again, with the history showing why.
+    _q_db = SessionLocal()
+    try:
+        n_queued = clear_all_queued_requeues(_q_db)
+        if n_queued:
+            logger.warning(
+                "Сняты с очереди %d запуск(ов): прогон, которого они ждали, "
+                "не пережил перезапуск бэкенда", n_queued,
+            )
+    finally:
+        _q_db.close()
 
     from kappa_delivery_worker import start_delivery_worker
     _delivery_task = start_delivery_worker()
@@ -634,7 +654,7 @@ async def stop_pipeline_run(
 @app.post("/api/pipeline-runs/{run_id}/requeue", response_model=PipelineStartResponse)
 async def requeue_pipeline_run(
     run_id: str,
-    background_tasks: BackgroundTasks,
+    response: Response,
     body: RequeueRequest = Body(default_factory=RequeueRequest),
     db: Session = Depends(get_db),
 ):
@@ -647,22 +667,46 @@ async def requeue_pipeline_run(
     if not original_run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
 
-    if original_run.status in (PipelineStatus.PENDING, PipelineStatus.RUNNING):
-        raise HTTPException(
-            status_code=409,
-            detail="Запуск ещё выполняется — дождитесь завершения перед повторным запуском",
-        )
-
-    # A DIFFERENT run row (e.g. an earlier requeue-child of this same run) may
-    # already be actively writing to this output_path. Requeuing again would
-    # start a second orchestrator subprocess over the same
-    # bids_organized/dataset_mapping.json concurrently — check by path, not
-    # just by this run's own status.
+    # Another run may be writing to this output_path right now — either this
+    # very run, or an earlier requeue-child of it. Two orchestrator
+    # subprocesses over one bids_organized/dataset_mapping.json must never
+    # exist, so we do not start; but refusing outright used to mean the
+    # doctor had to come back later and remember to click again. The request
+    # is remembered instead and starts itself when the path frees up.
+    #
+    # The flag goes on the run occupying the path, not on the one clicked
+    # from: those are routinely different (a completed run's review is open
+    # while its requeue-child still works), and it is the occupant's
+    # completion that releases the path.
     active_on_path = get_active_run_by_output_path(db, original_run.output_path)
-    if active_on_path:
+    if active_on_path and not body.queue_if_busy:
+        # Unchanged refusal for callers that did not ask to be queued —
+        # notably resuming a stopped run, which shares this endpoint and
+        # makes no sense for a run that is still working.
         raise HTTPException(
             status_code=409,
-            detail="На этом пути уже выполняется другая обработка — дождитесь её завершения",
+            detail=(
+                "Запуск ещё выполняется — дождитесь завершения перед "
+                "повторным запуском"
+                if active_on_path.run_id == original_run.run_id
+                else "На этом пути уже выполняется другая обработка — "
+                     "дождитесь её завершения"
+            ),
+        )
+    if active_on_path:
+        queue_requeue(db, active_on_path.run_id)
+        response.status_code = 202
+        logger.info(
+            "Requeue поставлен в очередь на %s: ждём завершения %s",
+            original_run.output_path, active_on_path.run_id,
+        )
+        return PipelineStartResponse(
+            run_id=active_on_path.run_id,
+            status=active_on_path.status,
+            message="Запуск поставлен в очередь — начнётся после завершения текущего",
+            created_at=active_on_path.created_at,
+            lesion_type=active_on_path.lesion_type,
+            queued=True,
         )
 
     # A stopped run may be resumed, but not blindly: resuming adopts current
@@ -741,72 +785,15 @@ async def requeue_pipeline_run(
     # No Kappa call here — resume/requeue inherits the parent run's already-
     # fixed dataset rather than resolving one, matching how the rest of this
     # path (no kappa_session_id below) already avoids Kappa on resume.
-    resumed_lesion_type = original_run.lesion_type or "glioblastoma"
-    resumed_numbering_scope = numbering.scope_from_dataset_id(
-        original_run.kappa_dataset_id, resumed_lesion_type
-    )
-
-    # Same upload-intent recording as the start endpoint: a requeue/resume
-    # carrying a Kappa session owes delivery from birth too.
-    resumed_upload_status = None
-    resumed_upload_user_id = None
-    if body.kappa_session_id:
-        from kappa_auth import get_session as _get_kappa_session
-        _session = _get_kappa_session(body.kappa_session_id)
-        if _session:
-            resumed_upload_status = "pending"
-            resumed_upload_user_id = _session.get("user_id")
-
-    # Сессии, у которых врач поменял набор модальностей, надо пересчитать.
-    # skip_existing пропускает всё, у чего уже есть результаты, поэтому без
-    # удаления исправление просто не дошло бы до данных.
-    purged_sessions = None
-    try:
-        from session_artifacts import purge_sessions_marked_for_reprocess
-        purged = purge_sessions_marked_for_reprocess(original_run.output_path)
-        if purged:
-            logger.info("Переобработка: очищено сессий — %d", len(purged))
-            # Запоминаем на новом прогоне: к моменту выгрузки флаг
-            # needs_reprocess уже снят, и иначе никто не вспомнит, что эти
-            # сессии вытесняют лежащее в Kappa, а не дублируют его.
-            purged_sessions = json.dumps(
-                [key.replace("/", "_") for key in purged]
-            )
-    except Exception as e:  # noqa: BLE001 — запуск важнее уборки
-        logger.error("Не удалось очистить помеченные сессии: %s", e)
-
-    run = create_pipeline_run(
-        db,
-        input_path=original_run.input_path,
-        output_path=original_run.output_path,
-        lesion_type=resumed_lesion_type,
-        parent_run_id=run_id,
-        kappa_dataset_id=original_run.kappa_dataset_id,
-        kappa_upload_status=resumed_upload_status,
-        kappa_user_id=resumed_upload_user_id,
-        reprocessed_sessions=purged_sessions,
-    )
-
-    background_tasks.add_task(
-        run_pipeline_background,
-        run.run_id,
-        run.input_path,
-        run.output_path,
-        db,
-        lesion_type=run.lesion_type,
+    # Everything from here is shared with the queue, which starts a run from
+    # pipeline_monitor when a path frees up. It lives in requeue_service so
+    # the purge and the superseding-session list are produced at the moment
+    # of the actual start, never at click time.
+    run = await requeue_service.start_requeue(
+        db, original_run, body.kappa_session_id,
         snapshot_runtime_config=snapshot_runtime_config,
         preprocessing_snapshot=preprocessing_snapshot,
-        numbering_scope=resumed_numbering_scope,
     )
-
-    # Pass the caller's Kappa session through: without it the monitor never
-    # builds an uploader, so a requeued/resumed run completes and silently
-    # never reaches Kappa (that was the behaviour until 2026-09-22).
-    asyncio.create_task(pipeline_monitor.start_monitoring(
-        run.run_id, run.output_path, body.kappa_session_id, run.lesion_type
-    ))
-
-    logger.info(f"Requeue: новый run_id {run.run_id} на тех же путях, что и {run_id}")
 
     return PipelineStartResponse(
         run_id=run.run_id,
@@ -815,6 +802,28 @@ async def requeue_pipeline_run(
         created_at=run.created_at,
         lesion_type=run.lesion_type,
     )
+
+
+@app.delete("/api/pipeline-runs/{run_id}/requeue")
+async def cancel_queued_requeue(run_id: str, db: Session = Depends(get_db)):
+    """Снять запуск с очереди на пути этого прогона.
+
+    Врач мог нажать по ошибке или ещё не доразметить — ждать час, чтобы
+    потом отменять уже начавшуюся обработку, значит заставлять его
+    торопиться там, где спешка не нужна.
+    """
+    run = get_pipeline_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+
+    # Флаг лежит на занимающем путь прогоне, а не на этом — снимаем там же,
+    # где ставили.
+    active_on_path = get_active_run_by_output_path(db, run.output_path)
+    target = active_on_path or run
+    cancelled = clear_queued_requeue(db, target.run_id)
+    if cancelled:
+        logger.info("Requeue снят с очереди на %s", run.output_path)
+    return {"cancelled": cancelled}
 
 
 @app.get("/api/pipeline/status/{run_id}", response_model=PipelineStatusResponse)

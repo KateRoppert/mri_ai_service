@@ -107,6 +107,11 @@ class PipelineMonitor:
                         # Left pending it would haunt the summary banner
                         # forever: the worker only looks at completed runs.
                         self._abandon_delivery(run_id, "прогон завершился ошибкой")
+
+                    # The path is free now. If the doctor asked for another
+                    # run while this one held it, start it — after the Kappa
+                    # dispatch above, so delivery is not delayed by it.
+                    await self._start_queued_requeue(run_id, kappa_session_id)
                     break
 
                 await self._send_update(run_id, output_path, db)
@@ -215,6 +220,49 @@ class PipelineMonitor:
                 verdict["detail"].get("reason"),
             )
             return verdict
+        finally:
+            db.close()
+
+    async def _start_queued_requeue(self, run_id: str, kappa_session_id):
+        """Start the run the doctor queued while this one held the path.
+
+        Only on success. Auto-starting after a failure would hide the
+        failure, and a pipeline broken by its environment would loop; the
+        doctor's correction is on disk, so the next run picks it up and
+        nothing is lost by asking for a deliberate click.
+
+        The flag is cleared either way, before the attempt — a queue that
+        survives its own failed start would retry forever.
+        """
+        from database import clear_queued_requeue
+
+        db = SessionLocal()
+        try:
+            run = get_pipeline_run(db, run_id)
+            if run is None or run.queued_requeue_at is None:
+                return
+            clear_queued_requeue(db, run_id)
+            if run.status != "completed":
+                logger.warning(
+                    "Запуск из очереди на %s отменён: прогон %s завершился "
+                    "со статусом %s", run.output_path, run_id, run.status,
+                )
+                return
+
+            logger.info(
+                "Путь %s освободился — запускаем отложенный прогон",
+                run.output_path,
+            )
+            try:
+                import requeue_service
+                await requeue_service.start_requeue(db, run, kappa_session_id)
+            except Exception as exc:  # noqa: BLE001
+                # This loop also delivers to Kappa and pushes progress; a
+                # queued run that cannot start must not take those down.
+                logger.exception(
+                    "Не удалось запустить отложенный прогон на %s: %s",
+                    run.output_path, exc,
+                )
         finally:
             db.close()
 

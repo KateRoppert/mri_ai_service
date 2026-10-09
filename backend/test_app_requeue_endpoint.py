@@ -21,15 +21,18 @@ def _fake_original_run(run_id="orig-run", input_path="/in", output_path="/out", 
         kappa_dataset_id=kappa_dataset_id,
         lesion_type=lesion_type,
         status=status,
+        created_at=datetime.now(timezone.utc),
     )
 
 
-def _fake_new_run(run_id="new-run", input_path="/in", output_path="/out", lesion_type="glioblastoma"):
+def _fake_new_run(run_id="new-run", input_path="/in", output_path="/out",
+                  lesion_type="glioblastoma", status="running"):
     return SimpleNamespace(
         run_id=run_id,
         input_path=input_path,
         output_path=output_path,
         lesion_type=lesion_type,
+        status=status,
         created_at=datetime.now(timezone.utc),
     )
 
@@ -40,51 +43,76 @@ def test_404_when_run_not_found():
     assert response.status_code == 404
 
 
-def test_409_when_original_run_is_still_running():
+def test_queues_instead_of_refusing_while_a_run_is_working():
+    """The doctor used to be told to come back later. Now the request is
+    remembered and starts itself when the path frees up — but a second
+    orchestrator must still never start over the same
+    bids_organized/dataset_mapping.json.
+    """
     original = _fake_original_run(status="running")
+    queued = {}
 
     with patch("app.get_pipeline_run", return_value=original), \
-         patch("app.create_pipeline_run") as mock_create, \
-         patch("app.run_pipeline_background") as mock_bg, \
-         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
-        response = client.post("/api/pipeline-runs/orig-run/requeue")
+         patch("app.get_active_run_by_output_path", return_value=original), \
+         patch("app.queue_requeue",
+               side_effect=lambda db, rid: queued.setdefault("run_id", rid) or True), \
+         patch("requeue_service.start_requeue", new=AsyncMock()) as start, \
+         patch("app.run_pipeline_background") as mock_bg:
+        response = client.post("/api/pipeline-runs/orig-run/requeue",
+                               json={"queue_if_busy": True})
 
-    assert response.status_code == 409
-    assert "выполняется" in response.json()["detail"]
+    assert response.status_code == 202
+    body = response.json()
+    assert body["queued"] is True
+    assert body["run_id"] == "orig-run"      # the run being waited on
 
-    # must not start a second orchestrator over the same output_path
-    mock_create.assert_not_called()
+    # The flag goes on the run occupying the path, and nothing starts now.
+    assert queued["run_id"] == "orig-run"
+    start.assert_not_called()
     mock_bg.assert_not_called()
-    mock_monitor.assert_not_called()
 
 
-def test_409_when_original_run_is_pending():
+def test_queues_while_the_run_is_still_pending():
     original = _fake_original_run(status="pending")
 
     with patch("app.get_pipeline_run", return_value=original), \
-         patch("app.create_pipeline_run") as mock_create:
-        response = client.post("/api/pipeline-runs/orig-run/requeue")
+         patch("app.get_active_run_by_output_path", return_value=original), \
+         patch("app.queue_requeue", return_value=True), \
+         patch("requeue_service.start_requeue", new=AsyncMock()) as start:
+        response = client.post("/api/pipeline-runs/orig-run/requeue",
+                               json={"queue_if_busy": True})
 
-    assert response.status_code == 409
-    mock_create.assert_not_called()
+    assert response.status_code == 202
+    assert response.json()["queued"] is True
+    start.assert_not_called()
 
 
-def test_409_when_a_different_run_is_active_on_the_same_output_path():
+def test_queues_when_a_different_run_is_active_on_the_same_output_path():
     # Run A completed, but run B (its own earlier requeue-child) is still
     # running on the SAME output_path. Reopening A's review and requeuing it
     # again must not start a third orchestrator process over that path.
     original = _fake_original_run(run_id="run-a", status="completed")
     other_active_run = _fake_new_run(run_id="run-b", output_path=original.output_path)
+    queued = {}
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=other_active_run) as mock_active, \
-         patch("app.create_pipeline_run") as mock_create, \
+         patch("app.queue_requeue",
+               side_effect=lambda db, rid: queued.setdefault("run_id", rid) or True), \
+         patch("requeue_service.create_pipeline_run") as mock_create, \
          patch("app.run_pipeline_background") as mock_bg, \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
-        response = client.post("/api/pipeline-runs/run-a/requeue")
+        response = client.post("/api/pipeline-runs/run-a/requeue",
+                               json={"queue_if_busy": True})
 
-    assert response.status_code == 409
-    assert "пут" in response.json()["detail"]
+    assert response.status_code == 202
+    body = response.json()
+    assert body["queued"] is True
+    # The flag belongs on run B — the one actually occupying the path, whose
+    # completion is what will release it. Putting it on A would mean waiting
+    # for a run that has already finished.
+    assert body["run_id"] == "run-b"
+    assert queued["run_id"] == "run-b"
 
     mock_active.assert_called_once_with(mock_active.call_args[0][0], original.output_path)
 
@@ -99,7 +127,7 @@ def test_creates_new_run_with_same_paths_and_does_not_run_pipeline_synchronously
     new_run = _fake_new_run()
 
     with patch("app.get_pipeline_run", return_value=original), \
-         patch("app.create_pipeline_run", return_value=new_run) as mock_create, \
+         patch("requeue_service.create_pipeline_run", return_value=new_run) as mock_create, \
          patch("app.run_pipeline_background") as mock_bg, \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
         response = client.post("/api/pipeline-runs/orig-run/requeue")
@@ -136,7 +164,7 @@ def test_requeue_passes_parent_run_id_to_create_pipeline_run():
     new_run = _fake_new_run()
 
     with patch("app.get_pipeline_run", return_value=original), \
-         patch("app.create_pipeline_run", return_value=new_run) as mock_create, \
+         patch("requeue_service.create_pipeline_run", return_value=new_run) as mock_create, \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()):
         response = client.post("/api/pipeline-runs/orig-run/requeue")
@@ -158,7 +186,7 @@ def test_requeue_passes_kappa_session_to_monitoring():
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("requeue_service.create_pipeline_run", return_value=new_run), \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
         response = client.post("/api/pipeline-runs/orig-run/requeue",
@@ -178,7 +206,7 @@ def test_requeue_without_a_session_still_works():
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("requeue_service.create_pipeline_run", return_value=new_run), \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()) as mock_monitor:
         response = client.post("/api/pipeline-runs/orig-run/requeue")
@@ -196,7 +224,7 @@ def test_requeue_rebuilds_sessions_whose_set_changed():
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("requeue_service.create_pipeline_run", return_value=new_run), \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
          patch("session_artifacts.purge_sessions_marked_for_reprocess",
@@ -215,7 +243,7 @@ def test_a_failed_purge_does_not_block_the_run():
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.create_pipeline_run", return_value=new_run), \
+         patch("requeue_service.create_pipeline_run", return_value=new_run), \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
          patch("session_artifacts.purge_sessions_marked_for_reprocess",
@@ -240,7 +268,7 @@ def test_requeue_records_what_it_purged_on_the_new_run():
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.create_pipeline_run", side_effect=_create), \
+         patch("requeue_service.create_pipeline_run", side_effect=_create), \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
          patch("session_artifacts.purge_sessions_marked_for_reprocess",
@@ -264,7 +292,7 @@ def test_requeue_without_a_purge_records_nothing():
 
     with patch("app.get_pipeline_run", return_value=original), \
          patch("app.get_active_run_by_output_path", return_value=None), \
-         patch("app.create_pipeline_run", side_effect=_create), \
+         patch("requeue_service.create_pipeline_run", side_effect=_create), \
          patch("app.run_pipeline_background"), \
          patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()), \
          patch("session_artifacts.purge_sessions_marked_for_reprocess",
@@ -272,3 +300,82 @@ def test_requeue_without_a_purge_records_nothing():
         client.post("/api/pipeline-runs/orig-run/requeue")
 
     assert captured.get("reprocessed_sessions") is None
+
+
+def test_a_caller_that_did_not_ask_to_queue_is_still_refused():
+    """This endpoint also serves resuming a stopped run (api.js
+    resumePipelineRun posts here with use_snapshot). Resuming a run that is
+    still working is meaningless, so queueing is opt-in per call rather than
+    inferred from the body's shape."""
+    original = _fake_original_run(status="running")
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=original), \
+         patch("app.queue_requeue") as queue, \
+         patch("requeue_service.start_requeue", new=AsyncMock()) as start:
+        response = client.post("/api/pipeline-runs/orig-run/requeue",
+                               json={"use_snapshot": False})
+
+    assert response.status_code == 409
+    assert "выполняется" in response.json()["detail"]
+    queue.assert_not_called()
+    start.assert_not_called()
+
+
+def test_queueing_twice_is_accepted_and_changes_nothing():
+    """The doctor clicks again because the first click gave no visible
+    progress. One queue per path, so this confirms rather than stacks."""
+    original = _fake_original_run(status="running")
+    calls = []
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=original), \
+         patch("app.queue_requeue",
+               side_effect=lambda db, rid: calls.append(rid) or True), \
+         patch("requeue_service.start_requeue", new=AsyncMock()) as start:
+        for _ in range(2):
+            response = client.post("/api/pipeline-runs/orig-run/requeue",
+                                   json={"queue_if_busy": True})
+            assert response.status_code == 202
+
+    assert calls == ["orig-run", "orig-run"]
+    start.assert_not_called()
+
+
+def test_cancel_clears_the_flag_on_the_run_holding_the_path():
+    """Cancel has to look where queueing put it: on the occupying run, which
+    is routinely not the one whose review is open."""
+    original = _fake_original_run(run_id="run-a", status="completed")
+    occupying = _fake_new_run(run_id="run-b", output_path=original.output_path)
+    cleared = {}
+
+    def _clear(db, run_id):
+        cleared["run_id"] = run_id
+        return True
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=occupying), \
+         patch("app.clear_queued_requeue", side_effect=_clear):
+        response = client.delete("/api/pipeline-runs/run-a/requeue")
+
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": True}
+    assert cleared["run_id"] == "run-b"
+
+
+def test_cancel_reports_when_there_was_nothing_queued():
+    original = _fake_original_run(status="completed")
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.clear_queued_requeue", return_value=False):
+        response = client.delete("/api/pipeline-runs/orig-run/requeue")
+
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": False}
+
+
+def test_cancel_on_a_missing_run_is_404():
+    with patch("app.get_pipeline_run", return_value=None):
+        response = client.delete("/api/pipeline-runs/nope/requeue")
+    assert response.status_code == 404

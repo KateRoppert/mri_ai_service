@@ -295,6 +295,15 @@ class RequeueRequest(BaseModel):
         False,
         description="Использовать настройки остановленного запуска, а не текущие",
     )
+    queue_if_busy: bool = Field(
+        False,
+        description=(
+            "Если путь занят другим прогоном — поставить запуск в очередь "
+            "вместо отказа. Этот же эндпоинт обслуживает возобновление "
+            "остановленного прогона, а возобновлять идущий бессмысленно, "
+            "поэтому намерение указывает вызывающий, а не угадываем мы."
+        ),
+    )
     kappa_session_id: Optional[str] = Field(
         None,
         description=(
@@ -311,6 +320,13 @@ class PipelineStartResponse(BaseModel):
     message: str = Field(..., description="Информационное сообщение")
     created_at: datetime = Field(..., description="Время создания задачи")
     lesion_type: Optional[str] = Field(None, description="Тип поражения")
+    queued: bool = Field(
+        False,
+        description=(
+            "Запуск не начат, а поставлен в очередь: путь занят. run_id — "
+            "это прогон, чьего завершения ждём, а не новый."
+        ),
+    )
 
 
 # ============================================
