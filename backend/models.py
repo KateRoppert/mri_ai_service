@@ -175,6 +175,21 @@ class IncompletePatientsResponse(BaseModel):
     """Список неполных сессий текущего запуска"""
     total: int = Field(..., description="Количество неполных сессий")
     sessions: List[IncompletePatientSession] = Field(..., description="Список неполных сессий")
+    queued_requeue: bool = Field(
+        False,
+        description=(
+            "На этом пути уже стоит отложенный запуск. Нужно, чтобы состояние "
+            "переживало перезагрузку страницы, а не жило в одной вкладке."
+        ),
+    )
+    path_busy: bool = Field(
+        False,
+        description=(
+            "На этом пути прямо сейчас работает прогон, поэтому запуск встанет "
+            "в очередь. Считается по факту занятости пути, а не по статусу "
+            "этого прогона: остановленный прогон путь не занимает."
+        ),
+    )
 
 
 class RelabelSeriesRequest(BaseModel):

@@ -1385,9 +1385,18 @@ async def get_incomplete_patients(
         run.output_path, lesion_type=run.lesion_type or 'glioblastoma', current_run_id=run_id,
     )
 
+    # Флаг лежит на прогоне, занимающем путь, — там же его и спрашиваем.
+    active_on_path = get_active_run_by_output_path(db, run.output_path)
+    queued = bool(
+        active_on_path is not None
+        and getattr(active_on_path, "queued_requeue_at", None) is not None
+    )
+
     return IncompletePatientsResponse(
         total=len(sessions),
-        sessions=sessions
+        sessions=sessions,
+        queued_requeue=queued,
+        path_busy=active_on_path is not None,
     )
 
 @app.post(

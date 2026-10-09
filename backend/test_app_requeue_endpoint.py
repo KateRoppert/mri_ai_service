@@ -379,3 +379,46 @@ def test_cancel_on_a_missing_run_is_404():
     with patch("app.get_pipeline_run", return_value=None):
         response = client.delete("/api/pipeline-runs/nope/requeue")
     assert response.status_code == 404
+
+
+def test_the_review_list_reports_whether_a_run_is_queued():
+    """So the state survives a page reload. Without it the banner would
+    exist only in the browser tab that clicked, and a doctor who refreshed
+    would click again — harmless, but they would have no way to know the
+    request was already standing."""
+    original = _fake_original_run(status="running")
+    occupying = _fake_new_run(run_id="run-b", output_path=original.output_path)
+    occupying.queued_requeue_at = datetime.now(timezone.utc)
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=occupying), \
+         patch("app.pipeline_manager.get_incomplete_patients", return_value=[]):
+        response = client.get("/api/incomplete-patients/orig-run")
+
+    assert response.status_code == 200
+    assert response.json()["queued_requeue"] is True
+
+
+def test_the_review_list_says_not_queued_when_nothing_is():
+    original = _fake_original_run(status="completed")
+
+    with patch("app.get_pipeline_run", return_value=original), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.pipeline_manager.get_incomplete_patients", return_value=[]):
+        response = client.get("/api/incomplete-patients/orig-run")
+
+    assert response.json()["queued_requeue"] is False
+
+
+def test_path_busy_is_about_the_path_not_this_runs_status():
+    """A stopped run is not terminal, so canRequeue on the client is false
+    for it — but it does not occupy the path, and the button must not
+    promise a queue and then start immediately."""
+    stopped = _fake_original_run(status="stopped")
+
+    with patch("app.get_pipeline_run", return_value=stopped), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.pipeline_manager.get_incomplete_patients", return_value=[]):
+        response = client.get("/api/incomplete-patients/orig-run")
+
+    assert response.json()["path_busy"] is False
