@@ -93,6 +93,13 @@ class PipelineRun(Base):
     # than duplicate — see kappa_uploader.
     reprocessed_sessions = Column(Text, nullable=True)
 
+    # Set when the doctor asked for another run on this output_path while
+    # THIS run was still occupying it. The monitor starts the queued run when
+    # this one completes. It lives here rather than as a second 'pending' row
+    # because get_active_run_by_output_path treats pending as active — a
+    # queue stored that way would count as the run it is waiting for.
+    queued_requeue_at = Column(DateTime, nullable=True)
+
 
 class StageExecution(Base):
     """Модель выполнения отдельного этапа"""
@@ -345,6 +352,7 @@ def init_db():
     _migrate_add_kappa_dataset_id()
     _migrate_add_kappa_delivery()
     _migrate_add_reprocessed_sessions()
+    _migrate_add_queued_requeue()
 
 
 def _migrate_add_lesion_type():
@@ -399,6 +407,20 @@ def _migrate_add_kappa_dataset_id():
         if 'kappa_dataset_id' not in cols:
             conn.execute(__import__('sqlalchemy').text(
                 "ALTER TABLE pipeline_runs ADD COLUMN kappa_dataset_id INTEGER"
+            ))
+            conn.commit()
+
+
+def _migrate_add_queued_requeue():
+    """Add pipeline_runs.queued_requeue_at if it is not there yet."""
+    import sqlalchemy
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            sqlalchemy.text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'queued_requeue_at' not in cols:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE pipeline_runs ADD COLUMN queued_requeue_at DATETIME"
             ))
             conn.commit()
 
@@ -563,3 +585,47 @@ def superseding_sessions(run) -> set:
     except (ValueError, TypeError):
         return set()
     return {str(x) for x in parsed} if isinstance(parsed, list) else set()
+
+
+def queue_requeue(db: Session, run_id: str) -> bool:
+    """Remember that another run is wanted on this run's output_path.
+
+    Idempotent: a second request keeps the first timestamp. One queue per
+    path is the whole model — two consecutive runs would do the same work,
+    because skip_existing reads the disk when it starts, not when the doctor
+    clicked.
+    """
+    run = get_pipeline_run(db, run_id)
+    if run is None:
+        return False
+    if run.queued_requeue_at is None:
+        run.queued_requeue_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+    return True
+
+
+def clear_queued_requeue(db: Session, run_id: str) -> bool:
+    """Drop the queued request. False if there was nothing queued, so a
+    caller can tell "cancelled" from "nothing to cancel"."""
+    run = get_pipeline_run(db, run_id)
+    if run is None or run.queued_requeue_at is None:
+        return False
+    run.queued_requeue_at = None
+    db.commit()
+    return True
+
+
+def clear_all_queued_requeues(db: Session) -> int:
+    """Drop every queued request. Called at startup: a run is a subprocess of
+    this backend, so after a restart the run a request was waiting for is
+    gone. Starting it automatically is unsafe — the orchestrator may have
+    died midway through writing dataset_mapping.json — so the doctor
+    re-clicks. Returns how many were dropped."""
+    runs = db.query(PipelineRun).filter(
+        PipelineRun.queued_requeue_at.isnot(None)
+    ).all()
+    for run in runs:
+        run.queued_requeue_at = None
+    if runs:
+        db.commit()
+    return len(runs)

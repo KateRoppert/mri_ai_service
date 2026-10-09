@@ -350,7 +350,19 @@ export const mergeSessions = async (runId, patientId, primarySessionId, donorSes
 export const requeuePipelineRun = async (runId) => {
   const response = await apiClient.post(`/pipeline-runs/${runId}/requeue`, {
     kappa_session_id: localStorage.getItem('kappa_session_id'),
+    // Путь может быть занят идущим прогоном — тогда запуск надо поставить
+    // в очередь, а не получить отказ. Возобновление остановленного прогона
+    // ходит в этот же эндпоинт и такого не просит.
+    queue_if_busy: true,
   });
+  return response.data;
+};
+
+/**
+ * Снять отложенный запуск с очереди.
+ */
+export const cancelQueuedRequeue = async (runId) => {
+  const response = await apiClient.delete(`/pipeline-runs/${runId}/requeue`);
   return response.data;
 };
 
@@ -535,6 +547,7 @@ export default {
   discardSession,
   mergeSessions,
   requeuePipelineRun,
+  cancelQueuedRequeue,
   resumePipelineRun,
   retryKappaUpload,
   replaceKappaEntity,

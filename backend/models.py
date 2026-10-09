@@ -175,6 +175,21 @@ class IncompletePatientsResponse(BaseModel):
     """Список неполных сессий текущего запуска"""
     total: int = Field(..., description="Количество неполных сессий")
     sessions: List[IncompletePatientSession] = Field(..., description="Список неполных сессий")
+    queued_requeue: bool = Field(
+        False,
+        description=(
+            "На этом пути уже стоит отложенный запуск. Нужно, чтобы состояние "
+            "переживало перезагрузку страницы, а не жило в одной вкладке."
+        ),
+    )
+    path_busy: bool = Field(
+        False,
+        description=(
+            "На этом пути прямо сейчас работает прогон, поэтому запуск встанет "
+            "в очередь. Считается по факту занятости пути, а не по статусу "
+            "этого прогона: остановленный прогон путь не занимает."
+        ),
+    )
 
 
 class RelabelSeriesRequest(BaseModel):
@@ -295,6 +310,15 @@ class RequeueRequest(BaseModel):
         False,
         description="Использовать настройки остановленного запуска, а не текущие",
     )
+    queue_if_busy: bool = Field(
+        False,
+        description=(
+            "Если путь занят другим прогоном — поставить запуск в очередь "
+            "вместо отказа. Этот же эндпоинт обслуживает возобновление "
+            "остановленного прогона, а возобновлять идущий бессмысленно, "
+            "поэтому намерение указывает вызывающий, а не угадываем мы."
+        ),
+    )
     kappa_session_id: Optional[str] = Field(
         None,
         description=(
@@ -311,6 +335,13 @@ class PipelineStartResponse(BaseModel):
     message: str = Field(..., description="Информационное сообщение")
     created_at: datetime = Field(..., description="Время создания задачи")
     lesion_type: Optional[str] = Field(None, description="Тип поражения")
+    queued: bool = Field(
+        False,
+        description=(
+            "Запуск не начат, а поставлен в очередь: путь занят. run_id — "
+            "это прогон, чьего завершения ждём, а не новый."
+        ),
+    )
 
 
 # ============================================
