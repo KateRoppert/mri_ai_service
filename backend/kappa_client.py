@@ -2,6 +2,7 @@
 Клиент для работы с Kappa Data API.
 Создание датасетов и загрузка сущностей (файлов).
 """
+import asyncio
 import json
 import logging
 import tempfile
@@ -449,6 +450,69 @@ async def replace_entity_file(
     return "uploaded_no_file_id"
 
 
+# Reading from Kappa: retry a hung connection, not a refusal.
+#
+# Measured against the live server on 2026-10-12, three identical requests
+# for one dataset's entities: TLS 33.4s then a 200; TLS 1.2s then nothing;
+# TLS 0.13s then a 200 in 1.5s. The hang is in the handshake, and when the
+# handshake is fast the whole request is fast — so a NEW CONNECTION is the
+# fix, not a longer wait. A flat 15s timeout did neither: a hung handshake
+# ate the whole budget and the call then gave up for good. 27 of 32 listing
+# calls failed that way, and the validation tab showed it as "не удалось
+# загрузить список сессий".
+READ_RETRY_ATTEMPTS = 3
+READ_RETRY_PAUSE_SECONDS = 0.5
+
+# connect short, read long. The point of the short connect is that a hung
+# handshake fails fast and leaves time for another attempt inside a wait the
+# operator will sit through; a healthy Kappa handshakes in 0.13s.
+READ_TIMEOUT = httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=5.0)
+
+
+async def _get_json_with_retry(
+    url: str, headers: Dict[str, str], what: str
+) -> Optional[Any]:
+    """GET `url` and return the parsed JSON, or None.
+
+    Retries only a transport failure — a timeout or a dropped connection.
+    An HTTP status is an ANSWER: 403 and 404 do not change on a second ask,
+    and retrying them would only triple how long the operator waits for the
+    same refusal.
+    """
+    for attempt in range(1, READ_RETRY_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(
+                timeout=READ_TIMEOUT, verify=False
+            ) as client:
+                response = await client.get(url, headers=headers)
+        except Exception as exc:  # noqa: BLE001 — callers get None, see docstring
+            if attempt < READ_RETRY_ATTEMPTS:
+                logger.warning(
+                    "%s: попытка %d из %d не удалась (%s), пробуем снова",
+                    what, attempt, READ_RETRY_ATTEMPTS, type(exc).__name__,
+                )
+                await asyncio.sleep(READ_RETRY_PAUSE_SECONDS)
+                continue
+            logger.error(
+                "%s: все %d попытки не удались, последняя — %r",
+                what, READ_RETRY_ATTEMPTS, exc,
+            )
+            return None
+
+        if response.is_success:
+            if attempt > 1:
+                logger.info("%s: получено с попытки %d", what, attempt)
+            return response.json()
+
+        logger.warning(
+            "%s: Kappa ответила status=%s, body=%s",
+            what, response.status_code, response.text[:300],
+        )
+        return None
+
+    return None
+
+
 async def get_dataset_entities(
     token: str,
     user_id: int,
@@ -464,24 +528,16 @@ async def get_dataset_entities(
     )
     headers = {"Authorization": f"Bearer {token}"}
 
-    try:
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
-            response = await client.get(url, headers=headers)
-
-        if response.is_success:
-            data = response.json()
-            logger.debug("Got %d entities for dataset %d", len(data) if isinstance(data, list) else 0, dataset_id)
-            return data if isinstance(data, list) else []
-        else:
-            logger.warning(
-                "Failed to get entities: status=%s, body=%s",
-                response.status_code,
-                response.text[:300],
-            )
-            return None
-    except Exception as exc:
-        logger.exception("Error getting dataset entities: %s", exc)
+    data = await _get_json_with_retry(
+        url, headers, f"Список сущностей датасета {dataset_id}"
+    )
+    if data is None:
         return None
+    logger.debug(
+        "Got %d entities for dataset %d",
+        len(data) if isinstance(data, list) else 0, dataset_id,
+    )
+    return data if isinstance(data, list) else []
 
 async def get_entity_details(
     token: str,
@@ -499,22 +555,9 @@ async def get_entity_details(
     )
     headers = {"Authorization": f"Bearer {token}"}
 
-    try:
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
-            response = await client.get(url, headers=headers)
-
-        if response.is_success:
-            return response.json()
-        else:
-            logger.warning(
-                "Failed to get entity details: status=%s, body=%s",
-                response.status_code,
-                response.text[:300],
-            )
-            return None
-    except Exception as exc:
-        logger.exception("Error getting entity details: %s", exc)
-        return None
+    return await _get_json_with_retry(
+        url, headers, f"Детали сущности {entity_id}"
+    )
 
 async def download_entity_file(
     token: str,
