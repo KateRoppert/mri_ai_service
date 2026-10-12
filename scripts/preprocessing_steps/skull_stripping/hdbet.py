@@ -11,6 +11,11 @@ nnunetv2 and configures torch at import time, and doing that inside the
 preprocessing worker process would drag GPU/CUDA state into a stage that
 is otherwise pure CPU. A subprocess keeps that contained, and matches how
 BET is already called here.
+
+The subprocess is `hdbet_runner.py` run by the interpreter of the installed
+`hd-bet` CLI, not the CLI itself: the CLI starts ~13 torch processes for one
+file (5.1 GB); the runner uses the same predictor with one worker (~2 GB),
+same outputs. See hdbet_runner.py.
 """
 
 import logging
@@ -33,6 +38,30 @@ _MASK_SUFFIX = "_bet.nii.gz"
 # has to accommodate the slow path, not just the GPU one.
 _TIMEOUT_SEC = 1800
 
+_RUNNER = Path(__file__).with_name("hdbet_runner.py")
+
+
+def _hdbet_python() -> Optional[str]:
+    """Interpreter HD-BET is installed in, from the `hd-bet` script's shebang
+    (in the image HD-BET lives in FSL's Python, not the pipeline's)."""
+    cli = shutil.which("hd-bet")
+    if cli is None:
+        return None
+    try:
+        with open(cli, "rb") as f:
+            first = f.readline().decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    parts = first[2:].split()
+    if not parts:
+        return None
+    # "#!/usr/bin/env python3" -> resolve the named interpreter
+    if os.path.basename(parts[0]) == "env" and len(parts) > 1:
+        return shutil.which(parts[1])
+    return parts[0] if os.access(parts[0], os.X_OK) else None
+
 
 class HdBetStripper(SkullStripperBase):
     """HD-BET — deep learning brain extraction."""
@@ -41,8 +70,8 @@ class HdBetStripper(SkullStripperBase):
     uses_gpu = True
 
     def is_available(self) -> bool:
-        """HD-BET is usable if its CLI is on PATH."""
-        return shutil.which("hd-bet") is not None
+        """HD-BET is usable if its CLI is on PATH and its interpreter is known."""
+        return _hdbet_python() is not None
 
     def strip(self,
               input_path: Path,
@@ -65,21 +94,18 @@ class HdBetStripper(SkullStripperBase):
             # Note: HD-BET 1.x took a bare GPU index ("0"); 2.x rejects that
             # with "Invalid device string".
             device = str(params.get("device", "cuda"))
+            # The runner always keeps the brain mask (the CLI needed
+            # --save_bet_mask): the remaining modalities need it.
             cmd = [
-                "hd-bet",
+                _hdbet_python(), str(_RUNNER),
                 "-i", str(input_path),
                 "-o", str(output_path),
                 "-device", device,
-                # Without this HD-BET deletes the brain mask when it finishes,
-                # and the mask is exactly what the remaining modalities need.
-                "--save_bet_mask",
             ]
             # Test-time augmentation: better masks, several times slower.
             # HD-BET recommends disabling it on CPU; keep that choice explicit.
             if params.get("disable_tta", device.startswith("cpu")):
                 cmd.append("--disable_tta")
-            if params.get("verbose"):
-                cmd.append("--verbose")
 
             logger.info("Running HD-BET on %s (device=%s)", input_path.name, device)
             logger.debug("HD-BET command: %s", " ".join(cmd))
@@ -95,7 +121,7 @@ class HdBetStripper(SkullStripperBase):
             if result.returncode != 0:
                 raise RuntimeError(
                     f"HD-BET failed with return code {result.returncode}: "
-                    f"{(result.stderr or result.stdout or '')[:500]}"
+                    f"{(result.stderr or result.stdout or '')[-1500:]}"
                 )
 
             if not output_path.exists():
