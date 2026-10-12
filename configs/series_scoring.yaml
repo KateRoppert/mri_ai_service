@@ -9,6 +9,28 @@ anatomy_exclude:
   # never becomes a candidate for any brain modality. No fallback.
   keywords: [spine, cervical, c-spine, pituitary, orbit, neck]
 
+sequence_exclude:
+  # Same hard filter, different reason: these are brain series, but not
+  # anatomical acquisitions — diffusion, DTI and perfusion. They must never
+  # be candidates for t1/t1c/t2/t2fl.
+  #
+  # Why a hard filter and not a modality 'exclude' list: those only gate the
+  # name-matching path, and these names match no modality keyword at all.
+  # Detection therefore falls through to _detect_by_technical_params, which
+  # calls anything with TR > 2000 and TE > 70 a t2 — and diffusion EPI
+  # always is (measured on UPENN-GBM: TR 4200-5800, TE 83-91). Only a filter
+  # ahead of every detection path can refuse them.
+  #
+  # Perfusion was escaping by luck, not by design: its TR is exactly 2000
+  # and the rule is strictly greater.
+  #
+  # Each keyword was checked against all 252 distinct series descriptions in
+  # data/ (five datasets) — none matches an anatomical series. Keywords with
+  # no occurrence anywhere in that data (trace, tensor, bold, asl, spectro)
+  # are deliberately NOT here: adding substrings that cannot be tested is
+  # how 'mpr' came to match inside primary 'mprage'.
+  keywords: [diff, dti, dwi, adc, perf, bolus]
+
 failure_markers:
   keywords: [failed, repeat, redo, retry, motion, artifact, incomplete]
   penalty: 0.5
@@ -18,7 +40,29 @@ failure_markers:
 # per-modality text_weights 'mpr' keyword, which had the same substring
 # flaw MODALITY_PATTERNS['exclude'] used to have (matched inside primary
 # "mprage" too, wrongly penalizing it against non-mprage-named candidates).
-derived_reconstruction_penalty: 0.1
+#
+# A tie-break, not a decider. The intent is that among candidates for the
+# same modality a direct acquisition beats a reconstruction of one — which
+# only needs to settle a tie.
+#
+# It was 0.1, which is ten times the whole dynamic range of
+# resolution_scoring below (0.5-2.0 spans 4x), so wherever it applied it
+# decided alone and overruled the one real quality signal here. Measured
+# over the six datasets in data/: of 52 modality slots with more than one
+# candidate it changed the winner in two, and picked the worse series in
+# both — in dropbox_33 a 4 mm 2D T1 beat a 1 mm isotropic MPRAGE, because
+# that MPRAGE's distortion-uncorrected variant is tagged DERIVED.
+#
+# The flaw was applying it BETWEEN DIFFERENT acquisitions. It assumes the
+# competing primary is a counterpart of the same scan; in dropbox_33 and in
+# UPENN-GBM it was not. 0.8 keeps the ND-versus-DIS2D case it was written
+# for and lets resolution win everywhere else.
+#
+# Note this cannot affect a modality whose only candidate is derived — with
+# one candidate there is nothing to compare. That case (clinical_dicom/BO-1,
+# t1c resolving from a lone reconstruction) was fixed by e4f592d dropping
+# the hard exclusion, not by this number.
+derived_reconstruction_penalty: 0.8
 
 text_weights:
   t1:
