@@ -18,6 +18,7 @@ from kappa_client import (
     update_entity_status,
     upload_entity,
 )
+import session_identity
 from kappa_dataset_mapping import get_dataset_id
 from preprocessing_version import compute_preprocessing_id
 from utils.config_loader import load_lesion_type_config
@@ -486,39 +487,16 @@ class KappaUploader:
         return None
 
     def _compute_study_hash(self, session_data: Dict[str, Any]) -> Optional[str]:
+        """Стабильный хэш сессии: sha256 от PatientID:StudyInstanceUID.
+
+        Делегирует в session_identity: этот же хэш считает локальный
+        регистратор при завершении прогона, а register_patient апсертит по
+        нему. Две реализации разошлись бы молча и раздвоили каждую сессию в
+        реестре.
         """
-        Вычислить стабильный хэш сессии из DICOM-метаданных.
-        Используем PatientID + StudyInstanceUID.
-        """
-        metadata_dir = self.output_path / "metadata"
-        if not metadata_dir.exists():
-            return None
-
-        # Ищем JSON в metadata по той же структуре sub/ses
-        for prep_file in session_data.get("preprocessed", []):
-            session_key = self._extract_session_key(prep_file)
-            if not session_key:
-                continue
-            sub, ses = session_key.split("_", 1)
-            modality = prep_file.stem.replace(".nii", "").split("_")[-1]
-
-            meta_pattern = metadata_dir / sub / ses / "anat" / modality
-            if meta_pattern.exists():
-                for meta_file in meta_pattern.glob("*.json"):
-                    try:
-                        with open(meta_file, "r") as f:
-                            meta = json.load(f)
-                        ident = meta.get("identification", {})
-                        patient_id = ident.get("PatientID", "")
-                        study_uid = ident.get("StudyInstanceUID", "")
-                        if patient_id and study_uid:
-                            raw = f"{patient_id}:{study_uid}"
-                            return hashlib.sha256(raw.encode()).hexdigest()[:16]
-                    except Exception as e:
-                        logger.warning("Failed to read metadata %s: %s", meta_file, e)
-                        continue
-
-        return None
+        return session_identity.study_hash(
+            self.output_path, session_data.get("preprocessed", [])
+        )
 
     def _bind_pending_scope(self, dataset_id: int) -> None:
         """Move numbers issued under pending:<run_id> onto the real dataset.
@@ -1005,35 +983,7 @@ class KappaUploader:
             logger.error("Failed to register patient: %s", e, exc_info=True)
 
     def _read_session_metadata(self, session_data: Dict[str, Any]) -> Dict[str, str]:
-        """Прочитать DICOM-метаданные сессии из папки metadata/."""
-        metadata_dir = self.output_path / "metadata"
-        if not metadata_dir.exists():
-            return {}
-
-        for prep_file in session_data.get("preprocessed", []):
-            session_key = self._extract_session_key(prep_file)
-            if not session_key:
-                continue
-            sub, ses = session_key.split("_", 1)
-            modality = prep_file.stem.replace(".nii", "").split("_")[-1]
-
-            meta_dir = metadata_dir / sub / ses / "anat" / modality
-            if meta_dir.exists():
-                for meta_file in meta_dir.glob("*.json"):
-                    try:
-                        with open(meta_file, "r") as f:
-                            meta = json.load(f)
-                        ident = meta.get("identification", {})
-                        # PatientName может быть списком символов
-                        patient_name = ident.get("PatientName", "")
-                        if isinstance(patient_name, list):
-                            patient_name = "".join(str(c) for c in patient_name)
-                        return {
-                            "PatientID": ident.get("PatientID", ""),
-                            "PatientName": patient_name,
-                            "StudyDate": ident.get("StudyDate", ""),
-                            "StudyInstanceUID": ident.get("StudyInstanceUID", ""),
-                        }
-                    except Exception:
-                        continue
-        return {}
+        """Поля DICOM-метаданных сессии. См. session_identity."""
+        return session_identity.registry_fields(
+            self.output_path, session_data.get("preprocessed", [])
+        )
