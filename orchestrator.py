@@ -50,11 +50,22 @@ def build_command(
     log_file = logs_dir / f"{stage_name}.log"
     cmd.extend(['--log_file', str(log_file)])
     
-    # Global max-subjects — only inject if the stage does not declare its own.
-    # A stage with max_subjects: null in its args section explicitly means "no limit"
-    # and should override the global setting.
+    # Global max-subjects — stage 01 only. The limit says how many patients
+    # ENTER the pipeline; everything downstream then processes what stage 01
+    # admitted, which is the same set by construction.
+    #
+    # Injecting it everywhere was wrong twice over. Each stage applied it to
+    # whatever it happened to iterate, and stage 05 iterates (subject,
+    # session) pairs — so a limit of 1 on an MS patient with two sessions
+    # took one SESSION, and the second never reached preprocessing,
+    # segmentation or the longitudinal view. And even where the counting was
+    # per-patient it was redundant, re-deciding downstream a question stage
+    # 01 had already answered.
+    #
+    # The per-stage --max-subjects flags stay: they are still how you limit a
+    # single stage run by hand.
     stage_args = stage_config.get('args', {})
-    if 'max_subjects' not in stage_args:
+    if stage_name == 'stage_01_reorganize' and 'max_subjects' not in stage_args:
         max_subjects = config['general'].get('max_subjects')
         if max_subjects is not None:
             cmd.extend(['--max-subjects', str(max_subjects)])
