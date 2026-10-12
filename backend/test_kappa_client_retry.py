@@ -162,3 +162,57 @@ async def test_entity_details_gets_the_same_treatment(monkeypatch):
 
     assert out == {"files": [{"fileId": "f1", "fileName": "a.nii.gz"}]}
     assert len(log) == 2
+
+
+# --- Two defects found by review of the first version of this helper -------
+
+@pytest.mark.asyncio
+async def test_a_non_json_body_returns_none_instead_of_raising(monkeypatch):
+    """The contract is 'parsed JSON, or None'. The first version called
+    .json() outside the try, so a 200 carrying HTML raised and escaped —
+    and a degraded Kappa behind a proxy serves exactly that. Before the
+    retry was introduced this case returned None, so it was a regression.
+    """
+    class _Html(_Resp):
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    log, _ = _install(monkeypatch, [_Html(200, None, "<html>502 Bad Gateway</html>")])
+
+    out = await kappa_client.get_dataset_entities("tok", 26, 3, 351)
+
+    assert out is None
+    assert len(log) == 1, "мусор в теле — это ответ, повторять его незачем"
+
+
+@pytest.mark.asyncio
+async def test_the_total_wait_is_bounded(monkeypatch):
+    """Per-attempt timeouts alone do not bound the call: three attempts that
+    each hang on the READ are 3x30s plus pauses, about 94s. The validation
+    tab polls every 10 seconds, so those pile up — nine overlapping requests
+    holding connections open against a server that is already struggling.
+    """
+    clock = {"t": 0.0}
+
+    def _fake_monotonic():
+        return clock["t"]
+
+    async def _slow_sleep(_seconds):
+        clock["t"] += 30.0          # stands in for an attempt that hung
+
+    log = []
+
+    def _factory(**kw):
+        return _Client([httpx.ReadTimeout("hung")] * 10, log)
+
+    monkeypatch.setattr(kappa_client.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(kappa_client.time, "monotonic", _fake_monotonic)
+    monkeypatch.setattr(kappa_client.asyncio, "sleep", _slow_sleep)
+
+    out = await kappa_client.get_dataset_entities("tok", 26, 3, 351)
+
+    assert out is None
+    assert len(log) < kappa_client.READ_RETRY_ATTEMPTS, (
+        f"сделано {len(log)} попыток — бюджет "
+        f"{kappa_client.READ_TOTAL_BUDGET_SECONDS}s не остановил их"
+    )

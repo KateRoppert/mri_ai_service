@@ -5,6 +5,7 @@
 import asyncio
 import json
 import logging
+import time
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -463,6 +464,13 @@ async def replace_entity_file(
 READ_RETRY_ATTEMPTS = 3
 READ_RETRY_PAUSE_SECONDS = 0.5
 
+# A wall-clock ceiling on the WHOLE call, not just on one attempt. Per-attempt
+# timeouts do not bound it: three attempts that each hang on the read are
+# 3x30s plus pauses, about 94s. The validation tab polls every 10 seconds, so
+# those pile up — nine overlapping requests holding connections open against a
+# server that is already struggling, which is the opposite of helping.
+READ_TOTAL_BUDGET_SECONDS = 25.0
+
 # connect short, read long. The point of the short connect is that a hung
 # handshake fails fast and leaves time for another attempt inside a wait the
 # operator will sit through; a healthy Kappa handshakes in 0.13s.
@@ -479,6 +487,8 @@ async def _get_json_with_retry(
     and retrying them would only triple how long the operator waits for the
     same refusal.
     """
+    started = time.monotonic()
+
     for attempt in range(1, READ_RETRY_ATTEMPTS + 1):
         try:
             async with httpx.AsyncClient(
@@ -486,7 +496,9 @@ async def _get_json_with_retry(
             ) as client:
                 response = await client.get(url, headers=headers)
         except Exception as exc:  # noqa: BLE001 — callers get None, see docstring
-            if attempt < READ_RETRY_ATTEMPTS:
+            spent = time.monotonic() - started
+            budget_left = READ_TOTAL_BUDGET_SECONDS - spent
+            if attempt < READ_RETRY_ATTEMPTS and budget_left > 0:
                 logger.warning(
                     "%s: попытка %d из %d не удалась (%s), пробуем снова",
                     what, attempt, READ_RETRY_ATTEMPTS, type(exc).__name__,
@@ -494,21 +506,35 @@ async def _get_json_with_retry(
                 await asyncio.sleep(READ_RETRY_PAUSE_SECONDS)
                 continue
             logger.error(
-                "%s: все %d попытки не удались, последняя — %r",
-                what, READ_RETRY_ATTEMPTS, exc,
+                "%s: сдались после %d попыт(ки/ок) за %.0fс, последняя — %r",
+                what, attempt, spent, exc,
             )
             return None
 
-        if response.is_success:
-            if attempt > 1:
-                logger.info("%s: получено с попытки %d", what, attempt)
-            return response.json()
+        if not response.is_success:
+            logger.warning(
+                "%s: Kappa ответила status=%s, body=%s",
+                what, response.status_code, response.text[:300],
+            )
+            return None
 
-        logger.warning(
-            "%s: Kappa ответила status=%s, body=%s",
-            what, response.status_code, response.text[:300],
-        )
-        return None
+        # Inside the guard, not outside it: a degraded Kappa behind a proxy
+        # serves an HTML error page with a 200, and .json() then raises. The
+        # contract here is "parsed JSON, or None" — an exception escaping
+        # would reach the API as a 500. Not retried: a body we cannot parse
+        # is an answer, and asking again yields the same one.
+        try:
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "%s: Kappa ответила 200, но тело не JSON (%s): %s",
+                what, type(exc).__name__, response.text[:200],
+            )
+            return None
+
+        if attempt > 1:
+            logger.info("%s: получено с попытки %d", what, attempt)
+        return payload
 
     return None
 
