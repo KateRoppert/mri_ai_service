@@ -85,6 +85,14 @@ class PipelineMonitor:
                     logger.info(f"Pipeline {run_id} завершён со статусом: {run.status}")
                     await self._send_update(run_id, output_path, db)
 
+                    # Реестр до выгрузки и независимо от неё: сессия
+                    # существует потому, что её посчитал пайплайн, а id в
+                    # Kappa — приобретаемый позже атрибут. Без этого
+                    # динамика между сессиями МС не появлялась вовсе, пока
+                    # выгрузка не прошла (KI-059).
+                    if run.status == "completed":
+                        self._register_sessions_locally(run)
+
                     # Kappa uploader is built here, at completion, not at the
                     # top of the loop: a long run would otherwise finish
                     # holding a token snapshotted hours earlier.
@@ -222,6 +230,19 @@ class PipelineMonitor:
             return verdict
         finally:
             db.close()
+
+    def _register_sessions_locally(self, run) -> None:
+        """Write this run's sessions into patient_registry. Never raises:
+        bookkeeping must not be reported as a pipeline failure, and the Kappa
+        upload below has to run either way."""
+        try:
+            import session_registry
+            session_registry.register_run_sessions(run)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Не удалось записать сессии прогона %s в реестр: %s",
+                getattr(run, "run_id", "?"), exc,
+            )
 
     async def _start_queued_requeue(self, run_id: str, kappa_session_id):
         """Start the run the doctor queued while this one held the path.
