@@ -427,7 +427,12 @@ def process_single_subject(
                 output_dir=temp_bias_corrected,
                 modalities=modalities,
                 params=step_params,
-                temp_dir=temp_bias_corrected
+                temp_dir=temp_bias_corrected,
+                # The N4 output only feeds registration, which works on
+                # copies no finer than this anyway; running N4 at native
+                # 0.35 mm took ~7 GB on SibBMS 3D sessions.
+                max_spacing_mm=steps_config.get("registration", {}).get(
+                    "params", {}).get("max_registration_spacing_mm", 1.0),
             )
             
             results['steps']['bias_correction'] = {
