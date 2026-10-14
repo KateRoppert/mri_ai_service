@@ -5,7 +5,8 @@ Today stage 05 registers the skull-on t1 to MNI152 and strips afterwards.
 That registration lands wrong and differs between runs (up to 63 mm on 2D
 sessions). Registering the stripped brain to the brain template was the
 most even fix in a side experiment; `position: before_registration` lets
-stage 05 do that while the default keeps today's behaviour byte for byte.
+stage 05 do that; it is the default since 2026-10-14, and
+`position: after_registration` keeps the old order.
 """
 import sys
 from pathlib import Path
@@ -31,9 +32,14 @@ from preprocessing_steps.skull_stripping import (  # noqa: E402
 
 # --- the switch ---------------------------------------------------------------
 
-def test_default_position_is_today():
-    assert skull_strip_position({}) == "after_registration"
-    assert skull_strip_position(None) == "after_registration"
+def test_default_position_is_before_registration():
+    """Default since 2026-10-14 (KI-062): better and repeatable registration."""
+    assert skull_strip_position({}) == "before_registration"
+    assert skull_strip_position(None) == "before_registration"
+
+
+def test_after_registration_is_still_accepted():
+    assert skull_strip_position({"position": "after_registration"}) == "after_registration"
 
 
 def test_before_registration_is_accepted():

@@ -82,12 +82,13 @@ steps:
       # null = one job per usable card.
       gpu_pool_size: null
       # Where skull stripping runs (KI-062):
-      #   after_registration  — today: register the skull-on t1 to MNI152, strip after (default)
       #   before_registration — strip in native space, register brain -> MNI152 brain
-      #                         template, carry the mask to atlas space. Experiment
-      #                         2026-10-07: better and repeatable registration on GBM and MS,
-      #                         see docs/experiments/2026-10-07-ss-order.md
-      # position: after_registration
+      #                         template, carry the mask to atlas space (default since
+      #                         2026-10-14). Experiment 2026-10-07: better and repeatable
+      #                         registration on GBM and MS, see docs/experiments/2026-10-07-ss-order.md
+      #   after_registration  — old order: register the skull-on t1 to MNI152, strip after.
+      #                         Only to reproduce results computed before 2026-10-14.
+      position: before_registration
       # Test-time augmentation: better masks, slower + more VRAM. Left to the
       # tool default (on for GPU, off for CPU) unless set here.
       # disable_tta: false

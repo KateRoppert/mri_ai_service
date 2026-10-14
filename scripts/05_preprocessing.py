@@ -481,8 +481,8 @@ def process_single_subject(
         
         # STEP 2.5 (KI-062 experiment): skull strip BEFORE registration.
         # The skull-on t1 -> MNI152 registration lands wrong; registering the
-        # stripped brain to the brain template does not. Default position is
-        # after_registration, i.e. today's order, and skips all of this.
+        # stripped brain to the brain template does not. This is the default
+        # since 2026-10-14; position: after_registration restores the old order.
         ss_cfg = steps_config.get("skull_stripping", {})
         ss_params = ss_cfg.get("params", {}) or {}
         ss_position = (skull_strip_position(ss_params)

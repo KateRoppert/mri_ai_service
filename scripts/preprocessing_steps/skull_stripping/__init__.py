@@ -66,13 +66,17 @@ SKULL_STRIP_POSITIONS = ("after_registration", "before_registration")
 
 
 def skull_strip_position(params: Optional[dict]) -> str:
-    """Where stage 05 strips the skull. Default: after registration (today).
+    """Where stage 05 strips the skull. Default: before registration (KI-062).
 
-    before_registration (KI-062 experiment): strip the reference modality in
-    native space, register brain to the brain template, then carry the mask
-    into atlas space instead of stripping a second time.
+    before_registration: strip the reference modality in native space,
+    register brain to the brain template, then carry the mask into atlas
+    space instead of stripping a second time. The skull-on t1 -> MNI152
+    registration landed wrong and differed between runs; the experiment of
+    2026-10-07 (docs/experiments/2026-10-07-ss-order.md) made this the
+    default on 2026-10-14.
+    after_registration: the old order, kept to reproduce earlier results.
     """
-    position = (params or {}).get("position", "after_registration")
+    position = (params or {}).get("position", "before_registration")
     if position not in SKULL_STRIP_POSITIONS:
         raise ValueError(
             f"skull_stripping.position must be one of {SKULL_STRIP_POSITIONS}, got {position!r}"
