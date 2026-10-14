@@ -176,6 +176,37 @@ def test_invalid_max_subjects_type(tmp_path):
         load_config(config_file)
 
 
+def test_max_subjects_below_one_is_refused(tmp_path):
+    """0 and negatives are rejected at config load, not per stage.
+
+    Every stage applies the limit with a falsy test (`if max_subjects`), so a
+    cap of 0 read as "no limit" and ran the whole dataset — the opposite of
+    what it asks for, and the shape a typo of 0 for 10 takes. Validating here
+    means no stage is ever handed the value and the run fails before any work
+    starts."""
+    create_script_files(tmp_path)
+
+    for bad in (0, -5):
+        config_dict = create_minimal_valid_config()
+        config_dict['general']['max_subjects'] = bad
+        config_file = create_test_config(tmp_path, config_dict)
+
+        with pytest.raises(ConfigValidationError, match="max_subjects"):
+            load_config(config_file)
+
+
+def test_max_subjects_one_and_null_are_accepted(tmp_path):
+    """The boundary itself is valid: 1 is the smallest useful cap."""
+    create_script_files(tmp_path)
+
+    for good in (1, None):
+        config_dict = create_minimal_valid_config()
+        config_dict['general']['max_subjects'] = good
+        config_file = create_test_config(tmp_path, config_dict)
+
+        assert load_config(config_file)['general']['max_subjects'] == good
+
+
 def test_missing_stage(tmp_path):
     """Тест отсутствия обязательного этапа."""
     create_script_files(tmp_path)

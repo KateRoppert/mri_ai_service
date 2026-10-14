@@ -85,6 +85,18 @@ def _validate_general_section(general: Dict[str, Any]) -> None:
     # Проверка типов
     if not isinstance(general.get('max_subjects'), (int, type(None))):
         raise ConfigValidationError("'max_subjects' must be an integer or null")
+
+    # Rejected here, once, rather than per stage. Every stage applies the limit
+    # with a falsy test (`if max_subjects`), so a 0 reads as "no limit" and
+    # quietly runs the whole dataset — the opposite of what a cap of 0 asks
+    # for, and the shape a typo of 0 for 10 takes. A negative keeps nothing.
+    # Validating the config means no stage is ever handed either value, and
+    # the run fails before any work starts instead of mid-pipeline.
+    if isinstance(general.get('max_subjects'), int) and general['max_subjects'] < 1:
+        raise ConfigValidationError(
+            f"'max_subjects' must be >= 1 or null, got {general['max_subjects']} "
+            f"(use null for no limit)"
+        )
     
     if not isinstance(general.get('skip_existing'), bool):
         raise ConfigValidationError("'skip_existing' must be a boolean")

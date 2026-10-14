@@ -14,7 +14,7 @@ import time
 import json
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import yaml
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -138,13 +138,50 @@ def load_config(config_path: Path) -> dict:
     return config
 
 
+def limit_to_patients(
+    subjects: List[Tuple[Path, str, str]], max_subjects: Optional[int]
+) -> List[Tuple[Path, str, str]]:
+    """The first `max_subjects` PATIENTS, with all of their sessions.
+
+    The list holds one entry per (subject, session), so slicing it counted
+    sessions: a limit of 1 on an MS patient with two visits took one visit
+    and the second never reached preprocessing, segmentation or the
+    longitudinal view — while the log said "Limited to first 1 subjects".
+    Every other stage counts patients; so does this now.
+
+    Raises ValueError on a limit below 1. `if not max_subjects` treated 0 as
+    "no limit", so a cap of 0 — or a typo of 0 for 10 — opened the gate on
+    the whole dataset instead of closing it, and a negative silently kept
+    nothing at all. Neither value has a use, and a limiter must not fail in
+    the permissive direction.
+    """
+    if max_subjects is None:
+        return subjects
+    if max_subjects < 1:
+        raise ValueError(
+            f"max_subjects must be >= 1 or null, got {max_subjects!r}"
+        )
+
+    keep = []
+    seen = []
+    for entry in subjects:
+        subject_id = entry[1]
+        if subject_id not in seen:
+            if len(seen) >= max_subjects:
+                continue
+            seen.append(subject_id)
+        keep.append(entry)
+    return keep
+
+
 def find_subjects(input_dir: Path, max_subjects: int = None) -> List[Tuple[Path, str, str]]:
     """
     Find all subjects and sessions in input directory.
     
     Args:
         input_dir: Input directory with BIDS structure
-        max_subjects: Maximum number of subjects to process
+        max_subjects: Maximum number of PATIENTS to process (all their
+            sessions are kept)
     
     Returns:
         List of tuples: (anat_dir, subject_id, session_id)
@@ -174,16 +211,12 @@ def find_subjects(input_dir: Path, max_subjects: int = None) -> List[Tuple[Path,
                 continue
             
             subjects.append((anat_dir, subject_id, session_id))
-            
-            if max_subjects and len(subjects) >= max_subjects:
-                break
-        
-        if max_subjects and len(subjects) >= max_subjects:
-            break
-    
+
     logger.info(f"Found {len(subjects)} subject/session pairs")
-    
-    return subjects
+
+    # Through the same helper as the CLI flag, so the parameter cannot come
+    # to mean something different from the flag that feeds it.
+    return limit_to_patients(subjects, max_subjects)
 
 
 # Named presets for atlas.name — maps the human-picked label to the
@@ -840,9 +873,15 @@ def main():
             logger.error("No subjects found to process")
             return 1
 
-        if args.max_subjects and len(subjects) > args.max_subjects:
-            subjects = subjects[:args.max_subjects]
-            logger.info(f"Limited to first {args.max_subjects} subjects (--max-subjects)")
+        if args.max_subjects:
+            before = len(subjects)
+            subjects = limit_to_patients(subjects, args.max_subjects)
+            if len(subjects) != before:
+                logger.info(
+                    f"Limited to first {args.max_subjects} patient(s) "
+                    f"(--max-subjects): {len(subjects)} of {before} "
+                    f"subject/session pairs"
+                )
         
         # Process each subject
         all_results = []
