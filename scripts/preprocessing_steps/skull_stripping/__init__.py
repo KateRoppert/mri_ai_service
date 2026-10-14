@@ -16,7 +16,7 @@ Existing imports keep working:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import nibabel as nib
 import numpy as np
@@ -60,6 +60,94 @@ __all__ = [
     "process_subject_skull_stripping",
     "compare_before_after_stripping",
 ]
+
+
+SKULL_STRIP_POSITIONS = ("after_registration", "before_registration")
+
+
+def skull_strip_position(params: Optional[dict]) -> str:
+    """Where stage 05 strips the skull. Default: after registration (today).
+
+    before_registration (KI-062 experiment): strip the reference modality in
+    native space, register brain to the brain template, then carry the mask
+    into atlas space instead of stripping a second time.
+    """
+    position = (params or {}).get("position", "after_registration")
+    if position not in SKULL_STRIP_POSITIONS:
+        raise ValueError(
+            f"skull_stripping.position must be one of {SKULL_STRIP_POSITIONS}, got {position!r}"
+        )
+    return position
+
+
+def _strip_reference(stripper, params, tool_params, gpu_pool, input_path, output_path, mask_path):
+    """Run the stripper once, pinned to a GPU when it needs one."""
+    def _run(tool_params_local):
+        return stripper.strip(
+            input_path=input_path,
+            output_path=output_path,
+            mask_path=mask_path,
+            params=tool_params_local,
+        )
+
+    if getattr(stripper, "uses_gpu", False):
+        # A GPU tool: pin it to a device. With a pool (Stage 05) acquire a
+        # slot so only pool-size jobs share the GPUs at once; without one
+        # (direct callers / sequential resolve) pick a device inline.
+        extra = {}
+        if "disable_tta" in params:
+            extra["disable_tta"] = params["disable_tta"]
+        if gpu_pool is not None:
+            with acquire_device(gpu_pool) as device:
+                logger.info("Skull stripping on device %s", device)
+                return _run({**tool_params, "device": device, **extra})
+        device = resolve_devices(params)[0]
+        logger.info("Skull stripping on device %s", device)
+        return _run({**tool_params, "device": device, **extra})
+    return _run(tool_params)
+
+
+def create_native_brain_mask(ref_file: Path, work_dir: Path, params: dict,
+                             gpu_pool=None) -> Dict[str, Any]:
+    """Brain mask of the reference modality in native space, for
+    skull_stripping.position: before_registration.
+
+    Made on a <=1 mm copy: the atlas grid is 1 mm, so finer input adds nothing
+    to the registration it feeds, and a 0.35 mm 3D volume (231 Mvox) would
+    cost the stripper gigabytes for no gain. Same tool, fallback and GPU
+    pinning as the after-registration step.
+    """
+    import ants
+
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        stripper = get_stripper(params)
+    except SkullStripperUnavailable as e:
+        return {"success": False, "error": str(e)}
+    tool_params = get_tool_params(params, stripper)
+
+    img = ants.image_read(str(ref_file))
+    target = tuple(max(float(x), 1.0) for x in img.spacing)
+    if target != tuple(float(x) for x in img.spacing):
+        img = ants.resample_image(img, target, use_voxels=False, interp_type=0)
+    stem = Path(ref_file).name.replace(".nii.gz", "").replace(".nii", "")
+    copy_path = work_dir / f"{stem}_1mm.nii.gz"
+    ants.image_write(img, str(copy_path))
+    del img
+
+    brain_path = work_dir / f"{stem}_brain.nii.gz"
+    mask_path = work_dir / f"{stem}_brain_mask.nii.gz"
+    logger.info("Creating native-space brain mask on %s using %s", copy_path.name, stripper.name)
+    result = _strip_reference(stripper, params, tool_params, gpu_pool,
+                              copy_path, brain_path, mask_path)
+    result.setdefault("method", stripper.name)
+    if not result.get("success"):
+        result.setdefault("error", "skull stripping failed")
+        return result
+    result["brain_path"] = str(brain_path)
+    result["mask_path"] = str(mask_path)
+    return result
 
 
 def process_subject_skull_stripping(
@@ -130,31 +218,8 @@ def process_subject_skull_stripping(
     mask_pattern = f"{subject_id}_{session_id}_brain_mask.nii.gz"
     mask_path = transform_dir / subject_id / session_id / "anat" / mask_pattern
 
-    def _run_strip(tool_params_local):
-        return stripper.strip(
-            input_path=ref_file,
-            output_path=ref_output,
-            mask_path=mask_path,
-            params=tool_params_local,
-        )
-
-    if getattr(stripper, "uses_gpu", False):
-        # A GPU tool: pin it to a device. With a pool (Stage 05) acquire a
-        # slot so only pool-size jobs share the GPUs at once; without one
-        # (direct callers / sequential resolve) pick a device inline.
-        extra = {}
-        if "disable_tta" in params:
-            extra["disable_tta"] = params["disable_tta"]
-        if gpu_pool is not None:
-            with acquire_device(gpu_pool) as device:
-                logger.info("Skull stripping on device %s", device)
-                strip_result = _run_strip({**tool_params, "device": device, **extra})
-        else:
-            device = resolve_devices(params)[0]
-            logger.info("Skull stripping on device %s", device)
-            strip_result = _run_strip({**tool_params, "device": device, **extra})
-    else:
-        strip_result = _run_strip(tool_params)
+    strip_result = _strip_reference(stripper, params, tool_params, gpu_pool,
+                                    ref_file, ref_output, mask_path)
 
     # Record which tool produced this, so a run's provenance survives a
     # later config change.

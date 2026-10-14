@@ -119,10 +119,18 @@ def register_to_atlas(
     convergence_window_size: int = 10,
     smoothing_sigmas: list = [3, 2, 1, 0],
     shrink_factors: list = [8, 4, 2, 1],
-    use_histogram_matching: bool = True
+    use_histogram_matching: bool = True,
+    moving_override: Optional[Path] = None,
+    atlas_override: Optional[Path] = None,
+    random_seed: Optional[int] = None,
 ) -> dict:
     """
     Register moving image to atlas using ANTsPy.
+
+    Skull stripping before registration (KI-062 experiment): pass the
+    stripped brain as `moving_override` and the brain template as
+    `atlas_override`; the transform is computed brain-to-brain. With the
+    defaults (None) the call is exactly today's skull-on registration.
     
     Args:
         moving_path: Path to moving image (will be registered to atlas)
@@ -150,8 +158,9 @@ def register_to_atlas(
         logger.info(f"Registering {moving_path.name} to atlas")
         
         # Load images with ANTs
-        fixed = load_ants_image(str(atlas_path))
-        moving = load_ants_image(str(moving_path))
+        fixed = load_ants_image(str(atlas_override or atlas_path))
+        moving = load_ants_image(str(moving_override or moving_path))
+        extra = {} if random_seed is None else {"random_seed": int(random_seed)}
         
         logger.debug(f"Fixed (atlas) shape: {fixed.shape}, spacing: {fixed.spacing}")
         logger.debug(f"Moving image shape: {moving.shape}, spacing: {moving.spacing}")
@@ -174,7 +183,8 @@ def register_to_atlas(
             aff_iterations=(number_of_iterations,) * len(shrink_factors),
             aff_shrink_factors=tuple(shrink_factors),
             aff_smoothing_sigmas=tuple(smoothing_sigmas),
-            verbose=False
+            verbose=False,
+            **extra,
         )
         
         # Get registered image
@@ -324,6 +334,51 @@ def _downsample_for_registration(img, max_mm: float):
     return ants.resample_image(img, target, use_voxels=False, interp_type=0)
 
 
+def resolve_brain_template(atlas_path: Path) -> Path:
+    """The skull-stripped version of the atlas: `<name>_brain.nii.gz` next to
+    it, else FSL's `data/standard` copy (MNI152 ships there), else an error."""
+    import os
+    atlas_path = Path(atlas_path)
+    stem = atlas_path.name
+    for ext in (".nii.gz", ".nii"):
+        if stem.endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    name = f"{stem}_brain.nii.gz"
+    candidates = [atlas_path.with_name(name)]
+    fsl = os.environ.get("FSLDIR")
+    if fsl:
+        candidates.append(Path(fsl) / "data" / "standard" / name)
+    for c in candidates:
+        if c.exists():
+            return c
+    raise FileNotFoundError(
+        f"Brain template {name} not found (looked in: "
+        + ", ".join(str(c.parent) for c in candidates)
+        + "). Needed for skull_stripping.position: before_registration."
+    )
+
+
+def warp_mask_to_atlas(native_mask: Path, atlas_path: Path, transform_path: Path,
+                       output_path: Path) -> Path:
+    """Carry a native-space binary brain mask onto the atlas grid with the
+    reference's atlas transform.
+
+    Linear interpolation + 0.5 threshold, not nearest neighbour: a mask made
+    on 6 mm 2D slices, carried voxel-by-voxel, comes out as slice-thick stair
+    steps in atlas space (seen on SibBMS P000067 ses-001, 2026-10-07). The
+    threshold keeps it binary with a smooth edge."""
+    atlas = load_ants_image(str(atlas_path))
+    mask = load_ants_image(str(native_mask))
+    warped = ants.apply_transforms(fixed=atlas, moving=mask,
+                                   transformlist=[str(transform_path)],
+                                   interpolator="linear")
+    warped = warped.new_image_like((warped.numpy() > 0.5).astype("float32"))
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    save_ants_image(warped, str(output_path))
+    return Path(output_path)
+
+
 def register_modalities(
     reference_path: Path,
     moving_path: Path,
@@ -411,10 +466,17 @@ def process_subject_registration(
     atlas_path: Path,
     modalities: list,
     params: dict,
-    bias_corrected_dir: Path = None
+    bias_corrected_dir: Path = None,
+    atlas_registration_overrides: Optional[dict] = None,
 ) -> dict:
     """
     Process all modalities for a subject (registration step).
+
+    atlas_registration_overrides (skull stripping before registration,
+    KI-062 experiment): {"moving_override", "atlas_override", "random_seed"}
+    for the reference -> atlas registration. The registered reference is then
+    always rebuilt from the original image, because the registration itself
+    ran on the stripped brain.
     
     Workflow (following UPENN-GBM protocol):
     1. Register T1c (bias-corrected) to atlas
@@ -481,7 +543,8 @@ def process_subject_registration(
         number_of_iterations=params.get("number_of_iterations", 1000),
         smoothing_sigmas=params.get("smoothing_sigmas", [3, 2, 1, 0]),
         shrink_factors=params.get("shrink_factors", [8, 4, 2, 1]),
-        use_histogram_matching=params.get("use_histogram_matching", True)
+        use_histogram_matching=params.get("use_histogram_matching", True),
+        **(atlas_registration_overrides or {}),
     )
     
     results[reference_modality] = ref_result
@@ -571,7 +634,7 @@ def process_subject_registration(
         }
     
     # Also apply reference transformation to original (non-bias-corrected) reference image
-    if bias_corrected_dir is not None:
+    if bias_corrected_dir is not None or atlas_registration_overrides:
         logger.info(f"Applying transform to original {reference_modality}")
         original_ref = subject_dir / ref_pattern
         apply_transform(
