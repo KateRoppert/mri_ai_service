@@ -46,6 +46,16 @@ def session_file_paths(session_data: Dict[str, Any]) -> List[Path]:
     return paths
 
 
+class KappaUnavailable(Exception):
+    """The dataset listing could not be read (KI-069).
+
+    Every duplicate and name-clash check reads that listing; treating a failed
+    read as an empty dataset switched them off — attempts re-POSTed delivered
+    sessions (dataset 353: 29 entities for 13 names), or flagged them all as
+    name clashes. A failed read ends the attempt as a network failure instead.
+    """
+
+
 class KappaUploader:
     """
     Загружает итоговые результаты пайплайна в Kappa.
@@ -136,13 +146,29 @@ class KappaUploader:
                 "sessions": results,
             }
 
-        # 3. Проверяем дубликаты
-        existing_hashes = await self._get_existing_study_hashes(dataset_id)
-        # Same sub-NNN, different study: two machines numbered into this
-        # dataset independently while both were offline. Cannot renumber —
-        # the id is already in the file names — so refuse loudly instead of
-        # silently pairing a number with the wrong patient's files.
-        existing_names = await self._get_existing_entity_names(dataset_id)
+        # 3. Проверяем дубликаты. Hashes and names come from one listing per
+        # attempt, so they cannot disagree; without a listing nothing is
+        # decided (KI-069).
+        self._attempt_entities = None
+        try:
+            existing_hashes = await self._get_existing_study_hashes(dataset_id)
+            # Same sub-NNN, different study: two machines numbered into this
+            # dataset independently while both were offline. Cannot renumber —
+            # the id is already in the file names — so refuse loudly instead of
+            # silently pairing a number with the wrong patient's files.
+            existing_names = await self._get_existing_entity_names(dataset_id)
+        except KappaUnavailable:
+            logger.warning(
+                "Dataset %d listing unavailable — nothing uploaded, the "
+                "attempt is retried (run=%s)", dataset_id, self.run_id,
+            )
+            return {
+                "dataset_id": dataset_id,
+                "error": "entities_unavailable",
+                "uploaded": 0,
+                "total": len(universe),
+                "sessions": results,
+            }
 
         # 4. Загружаем каждую готовую сессию
         for session_key, session_data in sessions.items():
@@ -523,24 +549,32 @@ class KappaUploader:
         dataset while both are offline, and would otherwise silently upload
         two different patients under the same sub-NNN.
         """
-        from kappa_client import get_dataset_entities
+        entities = await self._fetch_dataset_entities(dataset_id)
+        return {e.get("dsEntityName") for e in entities if e.get("dsEntityName")}
 
-        entities = await get_dataset_entities(
+    async def _fetch_dataset_entities(self, dataset_id: int) -> list:
+        """The dataset listing, read once per upload attempt.
+
+        Raises KappaUnavailable when Kappa did not answer: an unread listing
+        is not an empty dataset (KI-069).
+        """
+        cached = getattr(self, "_attempt_entities", None)
+        if cached is not None:
+            return cached
+        import kappa_client
+
+        entities = await kappa_client.get_dataset_entities(
             token=self.token, user_id=self.user_id,
             user_type_id=self.user_type_id, dataset_id=dataset_id,
         )
-        return {e.get("dsEntityName") for e in (entities or []) if e.get("dsEntityName")}
+        if entities is None:
+            raise KappaUnavailable(f"dataset {dataset_id} listing unavailable")
+        self._attempt_entities = entities
+        return entities
 
     async def _get_existing_study_hashes(self, dataset_id: int) -> set:
         """Получить множество study_hash уже загруженных сущностей."""
-        from kappa_client import get_dataset_entities
-
-        entities = await get_dataset_entities(
-            token=self.token,
-            user_id=self.user_id,
-            user_type_id=self.user_type_id,
-            dataset_id=dataset_id,
-        )
+        entities = await self._fetch_dataset_entities(dataset_id)
 
         if not entities:
             return set()

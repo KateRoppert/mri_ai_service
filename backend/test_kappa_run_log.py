@@ -107,3 +107,20 @@ def test_names_the_dataset_entity_when_it_differs(tmp_path):
 
     text = _read(tmp_path)
     assert "уже в датасете под именем sub-010_ses-001" in text
+
+
+def test_unreadable_listing_says_nothing_was_sent(tmp_path):
+    """KI-069: not 'could not resolve the dataset' — the dataset is known,
+    its listing did not arrive, and nothing was sent on purpose."""
+    result = {"dataset_id": 353, "error": "entities_unavailable",
+              "uploaded": 0, "total": 11, "sessions": []}
+    verdict = {
+        "status": "pending", "next_attempt": NOW + timedelta(minutes=1),
+        "detail": {"delivered": 0, "total": 11, "reason": "network", "attempts": 1},
+    }
+    kappa_run_log.log_attempt(tmp_path, "после прогона", result, None, verdict)
+
+    text = _read(tmp_path)
+    assert "Kappa не отдала список сущностей датасета — ничего не отправлено" in text
+    assert "не удалось определить датасет" not in text
+    assert "Итог: ждёт — 0 из 11 (Kappa недоступна)" in text

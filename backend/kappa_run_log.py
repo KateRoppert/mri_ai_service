@@ -101,6 +101,10 @@ def log_attempt(
         append(output_path, f"Попытка ({source}): загрузчик не отработал")
     elif result.get("error") == "no_session":
         append(output_path, f"Попытка ({source}): пропущена — нет входа в Kappa")
+    elif result.get("error") == "entities_unavailable":
+        append(output_path,
+               f"Попытка ({source}): Kappa не отдала список сущностей "
+               f"датасета — ничего не отправлено, чтобы не задвоить")
     elif result.get("error"):
         append(output_path,
                f"Попытка ({source}): не удалось определить датасет "
