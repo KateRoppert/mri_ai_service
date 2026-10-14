@@ -10,6 +10,7 @@ running the stage by hand — where the flag has to mean what it means in
 every other stage.
 """
 import importlib.util
+import pytest
 import sys
 from pathlib import Path
 
@@ -61,8 +62,21 @@ def test_no_limit_keeps_everything(tmp_path):
     _tree(tmp_path, {"sub-001": ["ses-001"], "sub-002": ["ses-001"]})
     subjects = prep.find_subjects(tmp_path)
 
-    for empty in (None, 0):
-        assert prep.limit_to_patients(subjects, empty) == subjects
+    assert prep.limit_to_patients(subjects, None) == subjects
+
+
+def test_a_degenerate_limit_is_refused(tmp_path):
+    """0 used to mean "no limit" because the guard was `if not max_subjects`.
+    A cap of 0 — or a typo of 0 for 10 — then opened the gate on the whole
+    dataset instead of closing it, and a negative kept nothing while logging
+    nothing. A limiter must not fail in the permissive direction, so neither
+    value is accepted."""
+    _tree(tmp_path, {"sub-001": ["ses-001"], "sub-002": ["ses-001"]})
+    subjects = prep.find_subjects(tmp_path)
+
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="max_subjects"):
+            prep.limit_to_patients(subjects, bad)
 
 
 def test_a_limit_above_the_count_keeps_everything(tmp_path):

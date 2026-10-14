@@ -50,22 +50,39 @@ def build_command(
     log_file = logs_dir / f"{stage_name}.log"
     cmd.extend(['--log_file', str(log_file)])
     
-    # Global max-subjects — stage 01 only. The limit says how many patients
-    # ENTER the pipeline; everything downstream then processes what stage 01
-    # admitted, which is the same set by construction.
+    # Global max-subjects. The limit means "at most N patients in this run";
+    # WHERE it has to be applied depends on whether the run has an entrance.
     #
-    # Injecting it everywhere was wrong twice over. Each stage applied it to
-    # whatever it happened to iterate, and stage 05 iterates (subject,
-    # session) pairs — so a limit of 1 on an MS patient with two sessions
-    # took one SESSION, and the second never reached preprocessing,
-    # segmentation or the longitudinal view. And even where the counting was
-    # per-patient it was redundant, re-deciding downstream a question stage
-    # 01 had already answered.
+    # Stage 01 enabled: it IS the entrance. It admits N patients and every
+    # later stage processes what it admitted. Injecting the limit downstream
+    # as well was the original bug: those stages read the ACCUMULATING output
+    # directories, so their "first N" is the alphabetically first N of
+    # everything ever processed, not the N that just entered. With
+    # skip-existing on, such a run redoes nothing and never touches the new
+    # patient. (Stage 05 made it worse by counting (subject, session) pairs,
+    # so a limit of 1 on an MS patient with two visits took one VISIT.)
     #
-    # The per-stage --max-subjects flags stay: they are still how you limit a
-    # single stage run by hand.
+    # Stage 01 disabled — a re-run from a later stage: there is no entrance,
+    # so each enabled stage has to apply the limit itself, or nothing limits
+    # the run at all. They read the same accumulated directories in the same
+    # sorted order, so they agree on the same N: the first N by name, which
+    # is what "test on a few patients" means for a re-run. Note this picks
+    # the OLDEST subjects by id, not the newest.
+    #
+    # A stage declaring its own limit in args wins — that is how you limit a
+    # single stage by hand. Both spellings are checked because the orchestrator
+    # passes arg names through verbatim (see below), so the key that actually
+    # reaches argparse is the dashed one.
     stage_args = stage_config.get('args', {})
-    if stage_name == 'stage_01_reorganize' and 'max_subjects' not in stage_args:
+    # Defaults to True on a missing key on purpose: widening the limit to
+    # every stage is the branch with the hazard above, so it must take an
+    # explicit `enabled: false`, never a malformed config.
+    stage_01_runs = (
+        config.get('stages', {}).get('stage_01_reorganize', {}).get('enabled', True)
+    )
+    is_entrance = stage_name == 'stage_01_reorganize'
+    has_own_limit = 'max_subjects' in stage_args or 'max-subjects' in stage_args
+    if (is_entrance or not stage_01_runs) and not has_own_limit:
         max_subjects = config['general'].get('max_subjects')
         if max_subjects is not None:
             cmd.extend(['--max-subjects', str(max_subjects)])
@@ -406,6 +423,29 @@ def run_pipeline(
     logger.info(f"Enabled stages: {len(enabled_stages)}/8")
     for stage in enabled_stages:
         logger.info(f"  ✓ {stage}")
+
+    # Say where the patient limit landed and what it means there. Without
+    # stage 01 the limit stops meaning "the new patients" and starts meaning
+    # "the first N by subject id" (build_command explains why) — a real
+    # difference the operator cannot infer from the config alone.
+    max_subjects = config['general'].get('max_subjects')
+    if max_subjects is not None and enabled_stages:
+        if 'stage_01_reorganize' in enabled_stages:
+            logger.info(
+                f"Patient limit: {max_subjects} — applied at stage 01 "
+                f"(how many patients enter the pipeline)"
+            )
+        else:
+            limited = [
+                s for s in enabled_stages
+                if 'max_subjects' not in config['stages'][s].get('args', {})
+                and 'max-subjects' not in config['stages'][s].get('args', {})
+            ]
+            logger.info(
+                f"Patient limit: {max_subjects} — stage 01 is disabled, so it is "
+                f"applied per stage ({', '.join(limited) or 'none: every stage sets its own'}). "
+                f"These are the first {max_subjects} subjects BY ID, not the newest."
+            )
     logger.info("")
     
     # Выполнение этапов

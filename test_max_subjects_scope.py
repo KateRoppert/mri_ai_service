@@ -11,7 +11,9 @@ at once on an MS run of one patient with two sessions:
     patient, every later stage sees one patient by construction.
 
 So the limit is a statement about how many patients ENTER the pipeline, and
-it is injected only where that is decided.
+it is injected only where that is decided — which is stage 01 when stage 01
+runs, and every enabled stage when it does not, because then the run has no
+entrance and nothing would limit it at all.
 """
 import sys
 from pathlib import Path
@@ -40,7 +42,7 @@ def _config(max_subjects=3):
         'stages': {
             # build_command reads stage_config['args'] directly, so a real
             # config always has the key.
-            name: {'script': f'scripts/{name}.py', 'args': {}}
+            name: {'script': f'scripts/{name}.py', 'args': {}, 'enabled': True}
             for name in (
                 'stage_01_reorganize', 'stage_03_convert', 'stage_04_quality',
                 'stage_05_preprocessing', 'stage_06_segmentation',
@@ -88,3 +90,40 @@ def test_a_stage_declaring_its_own_limit_is_left_alone():
     cmd = build_command('stage_01_reorganize', config, Path('/project'))
 
     assert '--max-subjects' not in cmd
+
+
+def test_later_stages_get_the_limit_when_stage_01_is_disabled():
+    """A re-run from a later stage has no entrance, so each stage must apply
+    the limit itself or the config's limit silently does nothing — on a 252
+    patient dataset in a 20g container that is how stage 05 OOMs the host."""
+    config = _config()
+    config['stages']['stage_01_reorganize']['enabled'] = False
+
+    for stage in ('stage_03_convert', 'stage_05_preprocessing',
+                  'stage_08_anatomical_analysis'):
+        cmd = build_command(stage, config, Path('/project'))
+        assert '--max-subjects' in cmd, f"{stage} остался без лимита"
+        assert cmd[cmd.index('--max-subjects') + 1] == '3'
+
+
+def test_a_missing_enabled_key_keeps_the_limit_at_the_entrance():
+    """Widening the limit to every stage is the branch with the hazard, so it
+    takes an explicit `enabled: false` — not a key that happens to be absent."""
+    config = _config()
+    del config['stages']['stage_01_reorganize']['enabled']
+
+    assert '--max-subjects' not in build_command(
+        'stage_05_preprocessing', config, Path('/project'))
+
+
+def test_the_dashed_key_is_recognised_as_a_stage_s_own_limit():
+    """The orchestrator passes arg names through verbatim, so `max-subjects`
+    is the spelling that actually reaches argparse. The guard used to check
+    only `max_subjects`, which let stage 01 be handed the flag twice."""
+    config = _config()
+    config['stages']['stage_01_reorganize']['args'] = {'max-subjects': 5}
+
+    cmd = build_command('stage_01_reorganize', config, Path('/project'))
+
+    assert cmd.count('--max-subjects') == 1
+    assert cmd[cmd.index('--max-subjects') + 1] == '5'

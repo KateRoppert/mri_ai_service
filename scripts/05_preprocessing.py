@@ -148,9 +148,19 @@ def limit_to_patients(
     and the second never reached preprocessing, segmentation or the
     longitudinal view — while the log said "Limited to first 1 subjects".
     Every other stage counts patients; so does this now.
+
+    Raises ValueError on a limit below 1. `if not max_subjects` treated 0 as
+    "no limit", so a cap of 0 — or a typo of 0 for 10 — opened the gate on
+    the whole dataset instead of closing it, and a negative silently kept
+    nothing at all. Neither value has a use, and a limiter must not fail in
+    the permissive direction.
     """
-    if not max_subjects:
+    if max_subjects is None:
         return subjects
+    if max_subjects < 1:
+        raise ValueError(
+            f"max_subjects must be >= 1 or null, got {max_subjects!r}"
+        )
 
     keep = []
     seen = []
