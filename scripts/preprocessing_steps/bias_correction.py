@@ -12,6 +12,24 @@ import SimpleITK as sitk
 logger = logging.getLogger(__name__)
 
 
+def working_spacing(spacing, max_mm):
+    """Spacing N4 runs at: axes finer than `max_mm` coarsened to it, the rest
+    kept (same rule as registration's working copies). None -> unchanged."""
+    if max_mm is None:
+        return tuple(float(s) for s in spacing)
+    return tuple(max(float(s), float(max_mm)) for s in spacing)
+
+
+def _resample_to_spacing(img: sitk.Image, spacing) -> sitk.Image:
+    """Linear resample to `spacing`, same origin and direction, covering the
+    same physical extent."""
+    size = [max(1, int(round(n * s / t)))
+            for n, s, t in zip(img.GetSize(), img.GetSpacing(), spacing)]
+    return sitk.Resample(img, size, sitk.Transform(), sitk.sitkLinear,
+                         img.GetOrigin(), spacing, img.GetDirection(),
+                         0.0, img.GetPixelID())
+
+
 def apply_n4_bias_correction(
     input_path: Path,
     output_path: Path,
@@ -19,7 +37,8 @@ def apply_n4_bias_correction(
     n_iterations: list = [50, 50, 50, 50],
     convergence_threshold: float = 0.001,
     save_bias_field: bool = False,
-    bias_field_path: Path = None
+    bias_field_path: Path = None,
+    max_spacing_mm: float = None,
 ) -> dict:
     """
     Apply N4 bias field correction to a NIfTI image using SimpleITK.
@@ -32,6 +51,10 @@ def apply_n4_bias_correction(
         convergence_threshold: Convergence threshold (default: 0.001)
         save_bias_field: Whether to save the estimated bias field
         bias_field_path: Path to save bias field (if save_bias_field=True)
+        max_spacing_mm: If set, axes finer than this are resampled to it
+            first, and the corrected image is saved at that spacing. Only
+            for output that is used to compute transforms: SibBMS 3D 0.35 mm
+            sessions (231 Mvox) needed ~7 GB for N4 at native resolution.
     
     Returns:
         dict: Information about the correction
@@ -45,23 +68,17 @@ def apply_n4_bias_correction(
     try:
         logger.info(f"Applying N4 bias correction to {input_path.name}")
         
-        # Load image with nibabel to preserve header information
-        nib_img = nib.load(input_path)
-        nib_data = nib_img.get_fdata()
-        
-        # Convert to SimpleITK image
-        sitk_img = sitk.GetImageFromArray(nib_data.transpose(2, 1, 0))
+        # Read straight into float32: a float64 nibabel copy plus its
+        # SimpleITK copy doubled the footprint of large volumes.
+        sitk_img = sitk.ReadImage(str(input_path), sitk.sitkFloat32)
 
-        # Convert spacing to list of floats
-        spacing = [float(x) for x in nib_img.header.get_zooms()[:3]]
-        sitk_img.SetSpacing(spacing[::-1])  # Reverse for ITK convention
-
-        # Convert origin to list of floats  
-        origin = [float(x) for x in nib_img.affine[:3, 3]]
-        sitk_img.SetOrigin(origin[::-1])  # Reverse for ITK convention
-        
-        # Convert to float for processing
-        sitk_img = sitk.Cast(sitk_img, sitk.sitkFloat32)
+        target = working_spacing(sitk_img.GetSpacing(), max_spacing_mm)
+        if any(abs(t - s) > 1e-6 for t, s in zip(target, sitk_img.GetSpacing())):
+            logger.info(
+                "N4 on a %s mm copy of %s (native %s mm, used for registration only)",
+                "x".join(f"{t:.2f}" for t in target), input_path.name,
+                "x".join(f"{s:.2f}" for s in sitk_img.GetSpacing()))
+            sitk_img = _resample_to_spacing(sitk_img, target)
         
         # Create mask (non-zero voxels)
         # This is important for brain images to avoid bias from background
@@ -85,39 +102,30 @@ def apply_n4_bias_correction(
         
         # Execute correction on shrunken image
         logger.debug("Running N4 bias field correction...")
-        corrected_img_shrunk = corrector.Execute(sitk_img_shrunk, mask_shrunk)
+        corrector.Execute(sitk_img_shrunk, mask_shrunk)
+        del mask, mask_shrunk
         
-        # Get log bias field
-        log_bias_field_shrunk = corrector.GetLogBiasFieldAsImage(sitk_img_shrunk)
+        # Log bias field at the working resolution
+        log_bias_field = corrector.GetLogBiasFieldAsImage(sitk_img)
+        del sitk_img_shrunk
         
-        # Resample log bias field to original resolution if we used shrinking
-        if shrink_factor > 1:
-            log_bias_field = sitk.Resample(log_bias_field_shrunk, sitk_img)
-        else:
-            log_bias_field = log_bias_field_shrunk
-        
-        # Apply bias field correction to original resolution image
+        # Apply bias field correction
         bias_field = sitk.Exp(log_bias_field)
+        del log_bias_field
         corrected_img = sitk.Divide(sitk_img, bias_field)
-        
-        # Convert back to numpy array
-        corrected_data = sitk.GetArrayFromImage(corrected_img).transpose(2, 1, 0)
+        del sitk_img
         
         # Create output directory if it doesn't exist
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save corrected image with original header
-        corrected_nib = nib.Nifti1Image(corrected_data, nib_img.affine, nib_img.header)
-        nib.save(corrected_nib, output_path)
+        sitk.WriteImage(corrected_img, str(output_path))
         logger.info(f"Saved bias-corrected image to {output_path}")
         
         # Optionally save bias field
         bias_field_saved = False
         if save_bias_field and bias_field_path is not None:
-            bias_field_data = sitk.GetArrayFromImage(bias_field).transpose(2, 1, 0)
-            bias_field_nib = nib.Nifti1Image(bias_field_data, nib_img.affine, nib_img.header)
             bias_field_path.parent.mkdir(parents=True, exist_ok=True)
-            nib.save(bias_field_nib, bias_field_path)
+            sitk.WriteImage(bias_field, str(bias_field_path))
             logger.info(f"Saved bias field to {bias_field_path}")
             bias_field_saved = True
         
@@ -143,7 +151,8 @@ def process_subject_bias_correction(
     output_dir: Path,
     modalities: list,
     params: dict,
-    temp_dir: Path = None
+    temp_dir: Path = None,
+    max_spacing_mm: float = None,
 ) -> dict:
     """
     Process all modalities for a subject (bias correction step).
@@ -155,6 +164,9 @@ def process_subject_bias_correction(
         params: Dictionary of bias correction parameters
         temp_dir: Optional temporary directory for bias-corrected images
                   (if using for registration only)
+        max_spacing_mm: Working spacing limit for registration-only output
+                  (see apply_n4_bias_correction); ignored when the corrected
+                  images are final output.
     
     Returns:
         dict: Processing results for each modality
@@ -177,6 +189,10 @@ def process_subject_bias_correction(
     else:
         actual_output_dir = output_dir / subject_id / session_id / "anat"
         logger.info("Saving bias-corrected images to output directory")
+        if max_spacing_mm is not None:
+            logger.warning("N4 output is final: keeping native resolution, "
+                           "max_spacing_mm=%s ignored", max_spacing_mm)
+        max_spacing_mm = None
     
     for modality in modalities:
         # Find input file
@@ -208,7 +224,8 @@ def process_subject_bias_correction(
             n_iterations=params.get("n_iterations", [50, 50, 50, 50]),
             convergence_threshold=params.get("convergence_threshold", 0.001),
             save_bias_field=save_bias_field,
-            bias_field_path=bias_field_file
+            bias_field_path=bias_field_file,
+            max_spacing_mm=max_spacing_mm,
         )
         
         result["output_path"] = str(output_file)

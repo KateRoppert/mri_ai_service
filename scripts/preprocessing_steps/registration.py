@@ -14,6 +14,15 @@ from typing import Tuple, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# _SINGLE_PRECISION_NOTE: ants.apply_transforms defaults to double: it
+# clones fixed and moving to double and allocates the output as another clone
+# of moving, all at the moving image's size. On a 3D 0.35 mm original
+# (231 Mvox) that was a +5.6 GB transient, the largest stage-05 peak once N4
+# ran on a 1 mm copy (and the same for stage 07, where the native image is
+# the fixed one). Float halves it; measured difference ~1e-5 of the intensity
+# range (2026-10-12, SibBMS ses-005 t2fl).
+
+
 def load_ants_image(path: Path):
     """
     Load image with ANTsPy (compatible with different versions).
@@ -268,7 +277,8 @@ def apply_transform(
             moving=moving,
             transformlist=[str(transform_path)],
             interpolator=ants_interpolator,
-            whichtoinvert=[False]
+            whichtoinvert=[False],
+            singleprecision=True,  # see _SINGLE_PRECISION_NOTE
         )
         
         # Create output directory
@@ -540,7 +550,8 @@ def process_subject_registration(
                 str(modal_transform)     # Applied FIRST: modality → T1c
             ],
             interpolator="linear",
-            whichtoinvert=[False, False]  # Don't invert any transforms
+            whichtoinvert=[False, False],  # Don't invert any transforms
+            singleprecision=True,  # see _SINGLE_PRECISION_NOTE
         )
 
         # Save final result
@@ -620,7 +631,8 @@ def inverse_transform_mask(
             moving=mask_img,
             transformlist=reversed_transforms,
             interpolator="nearestNeighbor",
-            whichtoinvert=invert_flags
+            whichtoinvert=invert_flags,
+            singleprecision=True,  # see _SINGLE_PRECISION_NOTE; labels stay exact
         )
         
         # Save result
