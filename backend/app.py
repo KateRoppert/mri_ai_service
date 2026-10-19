@@ -473,6 +473,31 @@ async def root():
     )
 
 
+def _refuse_if_path_busy(db: Session, output_path: str) -> None:
+    """409 if another pending/running run already writes to `output_path`.
+
+    KI-068: two clicks on «Запуск» 40 s apart started two runs into the same
+    folder. They shared bids_organized/, preprocessed/ and temp/; HD-BET was
+    OOM-killed and the host ran out of memory. The guard this calls already
+    existed and was used by three other endpoints — the one that starts a run
+    was the only entrance without it.
+
+    The frontend's loading button is not a substitute: start_pipeline hands the
+    work to BackgroundTasks and returns within about a second, so the button
+    re-enables while the run keeps going for minutes.
+    """
+    active_on_path = get_active_run_by_output_path(db, output_path)
+    if active_on_path is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"В эту папку уже идёт обработка (запуск {active_on_path.run_id}) — "
+            f"дождитесь её завершения или укажите другую папку"
+        ),
+    )
+
+
 @app.post("/api/pipeline/start", response_model=PipelineStartResponse)
 async def start_pipeline(
     request: PipelineStartRequest,
@@ -507,6 +532,12 @@ async def start_pipeline(
             detail="Входная директория не существует или пуста"
         )
 
+    # Before numbering, not after: numbering.scope_for_run can CREATE a Kappa
+    # dataset (kappa_dataset_resolver.resolve_or_create) and raise the
+    # numbering floor. A request we are about to refuse must not leave traces
+    # in an external system.
+    _refuse_if_path_busy(db, output_path)
+
     # BIDS numbering scope: the Kappa dataset this run numbers subjects in
     # and uploads to. Resolved (or created) here, before the run row exists,
     # so a permissions error surfaces before GPU time is spent (KI-057) and
@@ -531,6 +562,12 @@ async def start_pipeline(
         _session = _get_kappa_session(request.kappa_session_id)
         if _session:
             upload_user_id = _session.get("user_id")
+
+    # Again, with the row write as the very next statement. `await
+    # scope_for_run` above yields the event loop, so two simultaneous starts
+    # both pass the early check while neither has written its row yet. Checking
+    # where nothing can intervene before the write is what actually closes it.
+    _refuse_if_path_busy(db, output_path)
 
     # Создаём запись в БД
     run = create_pipeline_run(
