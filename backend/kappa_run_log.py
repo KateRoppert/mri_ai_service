@@ -122,7 +122,9 @@ def log_attempt(
                 # попала в датасет под другим номером. Писать локальное имя
                 # значит утверждать, что в датасете лежит не то, что лежит.
                 actual = item.get("kappa_name")
-                if item.get("skipped_upload"):
+                if item.get("completed"):
+                    mark = "дополнено (в Kappa была неполная версия)"
+                elif item.get("skipped_upload"):
                     mark = (f"уже в датасете под именем {actual}"
                             if actual and actual != name
                             else "уже была в датасете")

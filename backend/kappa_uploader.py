@@ -46,6 +46,16 @@ def session_file_paths(session_data: Dict[str, Any]) -> List[Path]:
     return paths
 
 
+def _entity_info(entity: Dict[str, Any]) -> Dict[str, Any]:
+    info = entity.get("dsEntityInfo") or {}
+    if isinstance(info, str):
+        try:
+            info = json.loads(info)
+        except ValueError:
+            info = {}
+    return info if isinstance(info, dict) else {}
+
+
 class KappaUnavailable(Exception):
     """The dataset listing could not be read (KI-069).
 
@@ -211,6 +221,38 @@ class KappaUploader:
                 continue
 
             if study_hash and study_hash in existing_hashes:
+                # KI-035: the entity may predate _readiness and lack a
+                # modality and the mask. A complete rerun completes it
+                # instead of passing as a duplicate.
+                entity, state = self._entity_completeness(study_hash)
+                if state in ("incomplete", "incomplete_expert") \
+                        and entity.get("dsEntityName") != session_key:
+                    # Files carry the local name; written into an entity
+                    # named otherwise, it would look incomplete again on
+                    # every attempt and be rewritten forever.
+                    state = "incomplete_expert"
+                if state == "incomplete":
+                    results.append(await self._complete_entity(
+                        dataset_id, session_key, session_data, entity))
+                    continue
+                if state == "incomplete_expert":
+                    logger.warning(
+                        "Session %s would complete entity %s, which carries an "
+                        "expert mask — needs a human decision",
+                        session_key, entity.get("dsEntityId"),
+                    )
+                    results.append({
+                        "session": session_key,
+                        "success": False,
+                        "error": "supersedes",
+                        "message": (
+                            f"В Kappa лежит неполная версия {session_key} с "
+                            f"экспертной маской — дополнение заменит снимки, "
+                            f"на которых она нарисована"
+                        ),
+                    })
+                    continue
+
                 logger.warning(
                     "Duplicate detected, skipping upload: %s (study_hash=%s already in dataset %d)",
                     session_key, study_hash, dataset_id,
@@ -551,6 +593,129 @@ class KappaUploader:
         """
         entities = await self._fetch_dataset_entities(dataset_id)
         return {e.get("dsEntityName") for e in entities if e.get("dsEntityName")}
+
+    def _entity_completeness(self, study_hash: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        """What Kappa holds for this study (KI-035), from this attempt's listing.
+
+        Returns (entity, state): "complete", "incomplete" (a required modality
+        or the AI mask is missing, no expert mask), "incomplete_expert", or
+        "unknown" when there is no listing or no file list — never rewrite an
+        entity on missing information.
+        """
+        entities = [
+            e for e in (getattr(self, "_attempt_entities", None) or [])
+            if _entity_info(e).get("study_hash") == study_hash
+        ]
+        if not entities:
+            return None, "unknown"
+        try:
+            required = load_lesion_type_config(self.lesion_type)["required_modalities"]
+        except KeyError:
+            required = _DEFAULT_REQUIRED_MODALITIES
+        from kappa_entity_files import EXPERT_MASK_RE
+
+        verdicts = []
+        for entity in entities:
+            files = entity.get("files")
+            if not isinstance(files, list):
+                verdicts.append((entity, "unknown"))
+                continue
+            name = entity.get("dsEntityName") or ""
+            names = {f.get("fileName") or "" for f in files}
+            expert = any(EXPERT_MASK_RE.search(n) for n in names)
+            ai_mask = any("_segmask" in n and "_native_" not in n
+                          and not EXPERT_MASK_RE.search(n) for n in names)
+            complete = ai_mask and all(f"{name}_{m}.nii.gz" in names for m in required)
+            if complete:
+                verdicts.append((entity, "complete"))
+            else:
+                verdicts.append((entity, "incomplete_expert" if expert else "incomplete"))
+        # Any complete copy settles it; otherwise the most cautious verdict.
+        for wanted in ("complete", "unknown", "incomplete_expert", "incomplete"):
+            for entity, state in verdicts:
+                if state == wanted:
+                    return entity, state
+        return None, "unknown"
+
+    async def _complete_entity(
+        self, dataset_id: int, session_key: str,
+        session_data: Dict[str, Any], entity: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Make an incomplete entity hold this run's whole session (KI-035).
+
+        Every file is replaced, not only the missing ones: the entity's images
+        come from an earlier run, and this run's mask belongs to this run's
+        images. Expert masks are never touched (replace_entity_contents).
+        No POST: the study is already in the dataset.
+        """
+        import kappa_entity_files
+
+        entity_id = entity.get("dsEntityId")
+        name = entity.get("dsEntityName") or session_key
+        files = session_file_paths(session_data)
+        logger.warning(
+            "Completing incomplete entity %s (%s) in dataset %d with %d files of %s",
+            entity_id, name, dataset_id, len(files), session_key,
+        )
+        try:
+            outcome = await kappa_entity_files.replace_entity_contents(
+                self.token, self.user_id, self.user_type_id,
+                dataset_id, entity_id, files,
+            )
+        except Exception as exc:  # noqa: BLE001 — reported, retried next attempt
+            logger.exception("Completing %s failed: %s", entity_id, exc)
+            outcome = {"failed": [type(exc).__name__], "delete_job": None}
+
+        if outcome.get("failed") or outcome.get("delete_job") == "failed":
+            return {
+                "session": session_key,
+                "kappa_name": name,
+                "success": False,
+                "error": "upload failed",
+                "entity_id": entity_id,
+                "message": (
+                    f"Не удалось дополнить {name}: "
+                    f"{', '.join(outcome.get('failed') or ['удаление устаревших файлов'])}"
+                ),
+            }
+
+        status = entity.get("dsEntityStatus")
+        if isinstance(status, int) and status < 3:
+            try:
+                await update_entity_status(
+                    token=self.token, user_id=self.user_id,
+                    user_type_id=self.user_type_id, dataset_id=dataset_id,
+                    entity_id=entity_id, status=3,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to set status after completing %s: %s",
+                               entity_id, exc)
+        # The description still lists the first upload's files and
+        # preprocessing; the files are the truth, but keep the two in step.
+        try:
+            info = {**_entity_info(entity),
+                    **self._build_entity_info(session_key, session_data)}
+            updated = await kappa_entity_files.update_entity_info(
+                self.token, self.user_id, self.user_type_id, dataset_id, entity_id,
+                info, remark=f"KI-035: completed by run {self.run_id[:8]}",
+            )
+        except Exception as exc:  # noqa: BLE001 — the files are already in place
+            logger.warning("Building/sending dsEntityInfo for %s failed: %s",
+                           entity_id, exc)
+            updated = False
+        if not updated:
+            logger.warning("Entity %s completed, but its dsEntityInfo was not updated",
+                           entity_id)
+        self._do_local_registration(name, session_data, entity_id, dataset_id)
+        return {
+            "session": session_key,
+            "kappa_name": name,
+            "success": True,
+            "completed": True,
+            "entity_id": entity_id,
+            "files": len(files),
+            "message": f"Неполная сущность {name} дополнена данными этого прогона",
+        }
 
     async def _fetch_dataset_entities(self, dataset_id: int) -> list:
         """The dataset listing, read once per upload attempt.

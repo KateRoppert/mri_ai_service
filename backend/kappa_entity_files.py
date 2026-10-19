@@ -10,6 +10,7 @@ through one file would be something a reader finds out by accident; a
 separate module makes the boundary a thing you have to walk through.
 """
 import asyncio
+import json
 import logging
 import re
 import time
@@ -168,6 +169,34 @@ async def wait_for_job(
         await asyncio.sleep(interval)
     logger.warning("Job %s still running after %.0fs", job_id, timeout)
     return "running"
+
+
+async def update_entity_info(
+    token: str, user_id: int, user_type_id: int,
+    dataset_id: int, entity_id: str, info: Dict[str, Any], remark: str,
+) -> bool:
+    """Replace an entity's dsEntityInfo, leaving its files alone.
+
+    PUT with metadata and an empty file list. Checked live 2026-10-19 on a
+    throwaway entity: 200, files unchanged, info replaced.
+    """
+    url = f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/{dataset_id}/{entity_id}"
+    body = {"dsEntityInfo": info, "remark": remark}
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            response = await client.put(
+                url, headers=_headers(token),
+                data={"update_dataset_entity": json.dumps(body, ensure_ascii=False)},
+                files=[],
+            )
+        if response.is_success:
+            return True
+        logger.warning("v2 update entity info failed: status=%s, body=%s",
+                       response.status_code, response.text[:300])
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("v2 update entity info failed: %s", exc)
+        return False
 
 
 # Expert masks are versioned into the filename by the Slicer flow
