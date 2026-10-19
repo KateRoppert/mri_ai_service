@@ -116,7 +116,7 @@ hash already in the dataset, so this cannot create duplicates.
 
 Found on the way (separate fixes): an empty dataset's listing is 404
 "No record found." (`fix/kappa-empty-dataset-listing`); Kappa refuses status
-3 without labels / `output_image` (KI-074).
+3 without labels / `output_image` (KI-075).
 Added during implementation: an incomplete entity under a different name
 than the local session is not completed automatically (its files would keep
 the local name and the entity would look incomplete forever).
