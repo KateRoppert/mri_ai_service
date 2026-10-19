@@ -232,3 +232,181 @@ def test_coregistration_dice_missing_file_returns_none(tmp_path):
     a = tmp_path / "a.nii.gz"
     nib.save(nib.Nifti1Image(np.ones((10, 10, 10), np.float32), np.eye(4)), str(a))
     assert lesion_diff.coregistration_dice(a, tmp_path / "missing.nii.gz") is None
+
+
+# ── Раскрытие пограничных вердиктов (KI-074) ───────────────────────────────
+# dilation_voxels не поглощает дрожание модели — его там нет (KI-037 измерен:
+# маски побитово идентичны на одном входе). Он принимает клинические решения,
+# и в 11 парах сессий из 11 отчётные счёта меняются вместе с ним
+# (research/ms_diff_tolerance/). Поэтому диф обязан показывать, НАСКОЛЬКО
+# близко вердикт к перевороту, а не только сам вердикт.
+
+
+def _only(result, status):
+    return [l for l in result["lesions"] if l["status"] == status]
+
+
+def test_margin_mm_reports_the_gap_to_the_counterpart(tmp_path):
+    """У «нового» очага зазор — расстояние до ближайшей прежней ткани."""
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    # prev занимает x 2..4, curr — x 12..14 → зазор 12 - 4 = 8 мм
+    _save_labeled(prev_path, {1: (slice(2, 5), slice(5, 8), slice(5, 8))})
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(5, 8), slice(5, 8))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    new = _only(result, "new")
+    assert len(new) == 1
+    assert new[0]["margin_mm"] == pytest.approx(8.0)
+
+
+def test_a_directly_overlapping_lesion_has_zero_margin(tmp_path):
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    box = (slice(5, 8), slice(5, 8), slice(5, 8))
+    _save_labeled(prev_path, {1: box})
+    _save_labeled(curr_path, {1: box})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    assert result["lesions"][0]["margin_mm"] == pytest.approx(0.0)
+    assert result["lesions"][0]["borderline"] is False
+
+
+def test_borderline_flags_a_verdict_one_voxel_from_flipping(tmp_path):
+    """Зазор 4 мм при допуске 3 — вердикт «новый» переворачивается от сдвига
+    порога на один воксель, и это должно быть видно."""
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    # prev до x=8, curr от x=12 → зазор 4 мм
+    _save_labeled(prev_path, {1: (slice(6, 9), slice(5, 8), slice(5, 8))})
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(5, 8), slice(5, 8))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    new = _only(result, "new")
+    assert len(new) == 1, "при допуске 3 этот очаг ещё не сопоставлен"
+    assert new[0]["margin_mm"] == pytest.approx(4.0)
+    assert new[0]["borderline"] is True
+    assert result["borderline_count"] >= 1
+
+
+def test_a_match_one_voxel_from_becoming_new_is_borderline(tmp_path):
+    """Обратная сторона: сопоставленный через зазор 2 мм при допуске 3."""
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    # prev до x=10, curr от x=12 → зазор 2 мм; расширение на 3 достаёт
+    _save_labeled(prev_path, {1: (slice(8, 11), slice(5, 8), slice(5, 8))})
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(5, 8), slice(5, 8))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    assert _only(result, "new") == [], "зазор 2 мм должен быть сопоставлен"
+    matched = [l for l in result["lesions"] if l["status"] in ("stable", "growing")]
+    assert len(matched) == 1
+    assert matched[0]["margin_mm"] == pytest.approx(2.0)
+    assert matched[0]["borderline"] is True
+
+
+def test_a_verdict_far_from_the_threshold_is_not_borderline(tmp_path):
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    _save_labeled(prev_path, {1: (slice(2, 5), slice(5, 8), slice(5, 8))})
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(5, 8), slice(5, 8))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    assert _only(result, "new")[0]["borderline"] is False
+    assert result["borderline_count"] == 0
+
+
+def test_resolved_lesion_margin_measures_toward_the_current_session(tmp_path):
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    # prev имеет два очага; второй далеко от всего в curr
+    _save_labeled(prev_path, {
+        1: (slice(5, 8), slice(5, 8), slice(5, 8)),
+        2: (slice(5, 8), slice(15, 18), slice(5, 8)),
+    })
+    _save_labeled(curr_path, {1: (slice(5, 8), slice(5, 8), slice(5, 8))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    resolved = _only(result, "resolved")
+    assert len(resolved) == 1
+    # prev очаг 2 занимает y 15..17, ближайшая ткань curr — y 7 → зазор 8 мм
+    assert resolved[0]["margin_mm"] == pytest.approx(8.0)
+
+
+def test_matched_prev_count_discloses_swallowed_lesions(tmp_path):
+    """Один текущий очаг может проглотить несколько прежних.
+
+    Расширение собирает ВСЕ попавшие прежние метки и суммирует их объёмы, из-за
+    чего реально растущий очаг может выглядеть стабильным, а «исчезнувшие»
+    пропадают из отчёта. Сколько именно проглочено — факт, который надо
+    показывать.
+    """
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    _save_labeled(prev_path, {
+        1: (slice(9, 12), slice(2, 5), slice(5, 8)),
+        2: (slice(9, 12), slice(8, 11), slice(5, 8)),
+    })
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(5, 8), slice(5, 8))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    matched = [l for l in result["lesions"] if l["status"] in ("stable", "growing")]
+    assert len(matched) == 1
+    assert matched[0]["matched_prev_count"] == 2
+    assert _only(result, "resolved") == [], "оба прежних поглощены, не 'исчезли'"
+
+
+def test_a_new_lesion_matched_nothing(tmp_path):
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    _save_labeled(prev_path, {1: (slice(2, 5), slice(2, 5), slice(2, 5))})
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(12, 15), slice(12, 15))})
+
+    result = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+
+    assert _only(result, "new")[0]["matched_prev_count"] == 0
+
+
+def test_cache_is_invalidated_by_the_schema_version(tmp_path, monkeypatch):
+    """Ключ кэша включает параметры, но не форму вывода.
+
+    Без версии схемы запись, сделанная до появления margin_mm, вернулась бы
+    без него — и потребитель получил бы вердикт без раскрытия, молча.
+    """
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    _save_labeled(prev_path, {1: (slice(5, 8), slice(5, 8), slice(5, 8))})
+    _save_labeled(curr_path, {1: (slice(5, 8), slice(5, 8), slice(5, 8))})
+    params = {"dilation_voxels": 3}
+
+    key_now = lesion_diff._diff_cache_key(prev_path, curr_path, params)
+    monkeypatch.setattr(lesion_diff, "DIFF_SCHEMA_VERSION", "test-other-version")
+    key_other = lesion_diff._diff_cache_key(prev_path, curr_path, params)
+
+    assert key_now != key_other
+
+
+def test_the_rule_uses_chebyshev_not_euclidean_distance(tmp_path):
+    """Зазор в мм и порог в вокселях — разные метрики, и путать их нельзя.
+
+    binary_dilation структурой 3x3x3, применённая N раз, расширяет на N в
+    метрике L-infinity. Смещение (1,3,0) даёт евклидовы 3.16 мм, но по
+    Чебышёву 3 — очаг СОПОСТАВЛЕН при допуске 3, хотя «3.16 > 3» подсказывает
+    обратное. Ровно на этом ошибся живой разбор данных P000010.
+    """
+    prev_path, curr_path = tmp_path / "prev.nii.gz", tmp_path / "curr.nii.gz"
+    # prev занимает x<=11, y<=7;  curr — x>=12, y>=10. Минимальное смещение
+    # между их вокселами: по x 12-11=1, по y 10-7=3 → (1,3,0).
+    # Евклид sqrt(1+9) = 3.16 мм, Чебышёв = 3.
+    _save_labeled(prev_path, {1: (slice(9, 12), slice(5, 8), slice(5, 8))})
+    _save_labeled(curr_path, {1: (slice(12, 15), slice(10, 13), slice(5, 8))})
+
+    at3 = compare_labeled_masks(prev_path, curr_path, dilation_voxels=3)
+    assert _only(at3, "new") == [], "по Чебышёву 3 <= 3 — очаг сопоставлен"
+    matched = [l for l in at3["lesions"] if l["status"] in ("stable", "growing")]
+    assert matched[0]["margin_mm"] == pytest.approx(3.16, abs=0.01)
+    assert matched[0]["borderline"] is True
+
+    # А вот при допуске 2 он действительно становится новым — то есть вердикт
+    # держится именно на значении порога.
+    at2 = compare_labeled_masks(prev_path, curr_path, dilation_voxels=2)
+    assert len(_only(at2, "new")) == 1
+    assert _only(at2, "new")[0]["borderline"] is True, "|3 - 2| = 1 — на грани"

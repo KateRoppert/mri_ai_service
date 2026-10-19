@@ -3,6 +3,38 @@ import { useEffect, useState } from 'react';
 import { Table, Spin, Alert, Tag, Space, Tooltip } from 'antd';
 import { getLongitudinalReport, getLongitudinalDiff } from '../services/api';
 
+const STATUS_LABEL = {
+  new: 'новый',
+  resolved: 'исчез',
+  growing: 'растёт',
+  stable: 'стабилен',
+};
+
+// Очаги, для которых автоматическое сопоставление между сессиями ненадёжно
+// (KI-074): рядом в другой сессии есть очаг, и порог сопоставления решает,
+// считать их одним очагом или новым/исчезнувшим. Порог предварительный, его
+// значение — клинический вопрос, поэтому вердикт мы не меняем.
+//
+// В подсказке — только то, что нужно врачу: где смотреть и почему. Наша
+// внутренняя механика (допуск, воксели, номера KI) сюда не идёт.
+const renderBorderline = (pair) => {
+  const marginal = (pair.lesions || []).filter((l) => l.borderline);
+  if (marginal.length === 0) return null;
+  const detail = marginal
+    .map((l) => `${STATUS_LABEL[l.status] || l.status} — ${l.margin_mm} мм`)
+    .join('; ');
+  return (
+    <Tooltip
+      title={'Для этих очагов автоматическое сравнение сессий ненадёжно: рядом есть '
+        + `очаг другой сессии (${detail}). Возможно, это один и тот же очаг, `
+        + 'слегка сместившийся, а не появление или исчезновение. Стоит оценить их '
+        + 'самостоятельно.'}
+    >
+      <Tag color="purple">{marginal.length} требуют проверки</Tag>
+    </Tooltip>
+  );
+};
+
 const LongitudinalTimeline = ({ patientId, lesionType, runId = null }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -101,6 +133,7 @@ const LongitudinalTimeline = ({ patientId, lesionType, runId = null }) => {
             {pair.new_count > 0 && <Tag color="red">{pair.new_count} новых</Tag>}
             {pair.growing_count > 0 && <Tag color="orange">{pair.growing_count} растёт</Tag>}
             {pair.resolved_count > 0 && <Tag color="blue">{pair.resolved_count} исчезло</Tag>}
+            {renderBorderline(pair)}
           </Space>
         );
       },
