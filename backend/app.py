@@ -3112,7 +3112,17 @@ async def replace_kappa_entity(
     # Эндпоинт перезаписывает данные в чужой системе. Он должен работать
     # только для сессии, которую переобработали, а не для любой, чей адрес
     # удалось угадать.
-    if session_key not in superseding_sessions(run):
+    # KI-035: the uploader also blocks a rerun that would complete an
+    # incomplete entity carrying an expert mask. It records that verdict
+    # itself (supersedes_kappa in the run's delivery state), so that list is
+    # as trustworthy as reprocessed_sessions.
+    from database import get_kappa_delivery as _delivery
+    blocked_by_uploader = {
+        b.get("session") for b in (_delivery(run).get("blocked") or [])
+        if b.get("reason") == "supersedes_kappa"
+    }
+    if (session_key not in superseding_sessions(run)
+            and session_key not in blocked_by_uploader):
         raise HTTPException(
             status_code=400,
             detail=f"Сессия {session_key} не помечена как вытесняющая — "

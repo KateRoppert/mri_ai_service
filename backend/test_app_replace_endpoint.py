@@ -320,3 +320,52 @@ async def test_a_delete_job_still_running_does_not_block_the_verdict(monkeypatch
         "run-1", "sub-002", "ses-001", kappa_session_id="sid", db=None)
 
     assert written["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_session_blocked_by_the_uploader_can_be_replaced(monkeypatch):
+    """KI-035: completing an incomplete entity that carries an expert mask is
+    blocked as supersedes_kappa without being in reprocessed_sessions; the
+    replace button must work for it."""
+    import app
+    import kappa_entity_files as kef
+    import pipeline_monitor
+
+    class _Blocked(_Run):
+        reprocessed_sessions = None
+
+    monkeypatch.setattr(app, "get_pipeline_run", lambda db, rid: _Blocked())
+    monkeypatch.setattr(pipeline_monitor.pipeline_monitor, "_create_kappa_uploader",
+                        lambda *a, **k: _Uploader())
+    monkeypatch.setattr(app, "find_by_bids_id",
+                        lambda key, ds: [{"kappa_entity_id": "e1"}])
+
+    async def fake_replace(**kw):
+        return {"patched": 1, "added": 0, "deleted": 0, "failed": [], "delete_job": None}
+
+    monkeypatch.setattr(kef, "replace_entity_contents", fake_replace)
+    monkeypatch.setattr("kappa_run_log.append", lambda *a, **k: None)
+    monkeypatch.setattr("database.set_kappa_delivery", lambda *a, **k: None)
+
+    out = await app.replace_kappa_entity(
+        "run-1", "sub-002", "ses-001", kappa_session_id="sid", db=None)
+
+    assert out.patched == 1
+
+
+@pytest.mark.asyncio
+async def test_blocked_for_another_reason_is_still_refused(monkeypatch):
+    import app
+
+    class _Clash(_Run):
+        reprocessed_sessions = None
+        kappa_upload_detail = json.dumps({"blocked": [
+            {"session": "sub-002_ses-001", "reason": "name_clash", "message": "m"}]})
+
+    monkeypatch.setattr(app, "get_pipeline_run", lambda db, rid: _Clash())
+
+    with pytest.raises(HTTPException) as caught:
+        await app.replace_kappa_entity(
+            "run-1", "sub-002", "ses-001", kappa_session_id="sid", db=None)
+
+    assert caught.value.status_code == 400

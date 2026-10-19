@@ -124,3 +124,16 @@ def test_unreadable_listing_says_nothing_was_sent(tmp_path):
     assert "Kappa не отдала список сущностей датасета — ничего не отправлено" in text
     assert "не удалось определить датасет" not in text
     assert "Итог: ждёт — 0 из 11 (Kappa недоступна)" in text
+
+
+def test_completed_entity_is_named_as_completed(tmp_path):
+    """KI-035: an incomplete entity filled by a rerun is not a fresh upload."""
+    result = {"dataset_id": 249, "uploaded": 1, "total": 1, "sessions": [
+        {"session": "sub-214_ses-001", "success": True, "completed": True,
+         "entity_id": "ent-214"}]}
+    verdict = {"status": "done", "next_attempt": None,
+               "detail": {"delivered": 1, "total": 1, "attempts": 1}}
+    kappa_run_log.log_attempt(tmp_path, "после прогона", result, None, verdict)
+
+    assert ("sub-214_ses-001 — дополнено (в Kappa была неполная версия) "
+            "(entity ent-214)") in _read(tmp_path)
