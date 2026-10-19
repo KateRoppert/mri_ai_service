@@ -34,11 +34,18 @@ from typing import Dict, Optional, Union
 
 import nibabel as nib
 import numpy as np
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import (binary_dilation, distance_transform_cdt,
+                          distance_transform_edt)
 
 logger = logging.getLogger(__name__)
 
 MIN_LESION_VOLUME_MM3 = 5.0
+
+# Версия ФОРМЫ вывода compare_labeled_masks, часть ключа кэша. Ключ включает
+# параметры и mtime масок, но не схему: без этой версии запись, сделанная до
+# появления margin_mm, воспроизводилась бы без него, и потребитель получил бы
+# вердикт без раскрытия — молча. Поднимать при любом изменении набора полей.
+DIFF_SCHEMA_VERSION = "3-margin-chebyshev"
 
 
 def compare_labeled_masks(
@@ -77,6 +84,53 @@ def compare_labeled_masks(
     )
     prev_labels_set = set(prev_labels)
 
+    # Зазор до встречной стороны: насколько далеко вердикт от переворота.
+    #
+    # dilation_voxels не поглощает дрожание модели — его нет (KI-037 измерен:
+    # маски побитово идентичны на одном входе). Он принимает клинические
+    # решения, и по 11 парам сессий из 11 отчётные счёта меняются вместе с ним
+    # (research/ms_diff_tolerance/). Правильное значение — клинический вопрос,
+    # поэтому здесь мы его не меняем, а показываем, где он решил на грани.
+    #
+    # Две МЕТРИКИ, и обе нужны, потому что мерят разное.
+    #
+    # В миллиметрах, евклидово — то, что показываем врачу: клинически это и
+    # есть расстояние между очагами.
+    #
+    # По Чебышёву в вокселях — то, в чём живёт само сопоставление.
+    # binary_dilation структурой 3x3x3, применённая N раз, расширяет ровно на N
+    # в метрике L-infinity, поэтому прежний очаг сопоставляется тогда и только
+    # тогда, когда его чебышёвское расстояние до текущего <= dilation_voxels.
+    # Вердикт переворачивается именно на этой величине, и правило обязано
+    # сравнивать порог с ней, а не с евклидовым зазором: смещение (3,1,0) даёт
+    # евклидовы 3.16, но по Чебышёву 3 — очаг сопоставлен, хотя «3.16 > 3»
+    # подсказывает обратное.
+    zooms = np.abs(np.diag(curr_img.affine[:3, :3]))
+    prev_kept = np.isin(prev_data, prev_labels) if prev_labels else None
+    curr_kept = np.isin(curr_data, curr_labels) if curr_labels else None
+
+    def _distance_fields(kept):
+        """(евклидово мм, Чебышёв в вокселях) до ближайшей ткани `kept`."""
+        if kept is None or not kept.any():
+            return None, None
+        empty = ~kept
+        return (distance_transform_edt(empty, sampling=zooms),
+                distance_transform_cdt(empty, metric="chessboard"))
+
+    dist_to_prev_mm, dist_to_prev_cheb = _distance_fields(prev_kept)
+    dist_to_curr_mm, dist_to_curr_cheb = _distance_fields(curr_kept)
+
+    def _margin(mask, field_mm, field_cheb):
+        """(евклидов зазор в мм, пограничный ли по Чебышёву)."""
+        if field_mm is None:
+            return None, False
+        margin_mm = round(float(field_mm[mask].min()), 2)
+        margin_cheb = int(field_cheb[mask].min())
+        # Вердикт переворачивается, если порог сдвинуть на один воксель —
+        # гранулярность, в которой порог и задан. Правило привязано к
+        # НАСТРОЕННОМУ допуску, поэтому остаётся честным, если его изменят.
+        return margin_mm, bool(abs(margin_cheb - dilation_voxels) <= 1)
+
     lesions = []
     matched_prev_labels = set()
 
@@ -93,9 +147,12 @@ def compare_labeled_masks(
         )
 
         if not overlapping_prev:
+            margin_mm, borderline = _margin(curr_mask, dist_to_prev_mm, dist_to_prev_cheb)
             lesions.append({
                 "label": label, "status": "new",
                 "volume_cm3": curr_vol, "previous_volume_cm3": 0.0,
+                "margin_mm": margin_mm, "borderline": borderline,
+                "matched_prev_count": 0,
             })
             continue
 
@@ -107,16 +164,27 @@ def compare_labeled_masks(
         is_growing = (growth_rel >= growth_threshold_relative) or (growth_abs >= growth_threshold_absolute_cm3)
         status = "growing" if is_growing else "stable"
 
+        margin_mm, borderline = _margin(curr_mask, dist_to_prev_mm, dist_to_prev_cheb)
         lesions.append({
             "label": label, "status": status,
             "volume_cm3": curr_vol, "previous_volume_cm3": prev_vol,
+            "margin_mm": margin_mm, "borderline": borderline,
+            # Сколько прежних очагов проглотил этот один. Расширение собирает
+            # ВСЕ попавшие метки и суммирует их объёмы, поэтому при большом
+            # допуске реально растущий очаг может выглядеть стабильным, а
+            # «исчезнувшие» пропасть из отчёта. Число — факт, не вердикт.
+            "matched_prev_count": len(overlapping_prev),
         })
 
     for label in prev_labels:
         if label not in matched_prev_labels:
+            margin_mm, borderline = _margin(
+                prev_data == label, dist_to_curr_mm, dist_to_curr_cheb)
             lesions.append({
                 "label": label, "status": "resolved",
                 "volume_cm3": 0.0, "previous_volume_cm3": _volume_cm3(prev_data, label),
+                "margin_mm": margin_mm, "borderline": borderline,
+                "matched_prev_count": 0,
             })
 
     counts = {"new": 0, "growing": 0, "stable": 0, "resolved": 0}
@@ -128,6 +196,7 @@ def compare_labeled_masks(
         "growing_count": counts["growing"],
         "stable_count": counts["stable"],
         "resolved_count": counts["resolved"],
+        "borderline_count": sum(1 for l in lesions if l["borderline"]),
         "lesions": lesions,
     }
 
@@ -187,6 +256,7 @@ def _diff_cache_key(prev_path: Path, curr_path: Path, params: Dict) -> str:
         f"ga={params.get('growth_threshold_absolute_cm3')}",
         f"dv={params.get('dilation_voxels')}",
         f"mv={params.get('min_lesion_volume_mm3')}",
+        f"schema={DIFF_SCHEMA_VERSION}",
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

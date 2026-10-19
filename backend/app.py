@@ -1869,6 +1869,7 @@ async def get_longitudinal_diff(
             growing_count=result["growing_count"],
             stable_count=result["stable_count"],
             resolved_count=result["resolved_count"],
+            borderline_count=result.get("borderline_count", 0),
             lesions=[LesionDiffEntry(**l) for l in result["lesions"]],
             reliable=True,
             coregistration_dice=round(coreg, 3) if coreg is not None else None,

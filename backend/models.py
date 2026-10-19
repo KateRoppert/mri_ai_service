@@ -537,6 +537,28 @@ class LesionDiffEntry(BaseModel):
     status: str = Field(..., description="new | growing | stable | resolved")
     volume_cm3: float = Field(..., description="Объём в текущей сессии, см³ (0 если resolved)")
     previous_volume_cm3: float = Field(..., description="Объём в предыдущей сессии, см³ (0 если new)")
+    # Раскрытие пограничных вердиктов (KI-074). Допуск сопоставления
+    # dilation_voxels подбирали под дрожание модели, которого нет (KI-037), —
+    # значит он не гасит шум, а принимает клинические решения. Правильное
+    # значение требует врача, поэтому вердикт не меняем, а показываем, где он
+    # решён на грани.
+    margin_mm: Optional[float] = Field(
+        None,
+        description="Зазор до встречной стороны, мм: для new — до ближайшего "
+                    "прежнего очага, для resolved — до текущего, для "
+                    "сопоставленных — 0 при прямом пересечении. "
+                    "None, если в другой сессии нет зачтённых очагов",
+    )
+    borderline: bool = Field(
+        False,
+        description="Вердикт переворачивается при сдвиге допуска на один воксель",
+    )
+    matched_prev_count: int = Field(
+        0,
+        description="Сколько прежних очагов сопоставлено с этим. >1 означает, "
+                    "что их объёмы просуммированы — растущий очаг мог стать "
+                    "«стабильным», а прежние не попасть в resolved",
+    )
 
 class LongitudinalDiffPair(BaseModel):
     """Диагностика очагов между двумя соседними по времени сессиями"""
@@ -546,6 +568,8 @@ class LongitudinalDiffPair(BaseModel):
     growing_count: int
     stable_count: int
     resolved_count: int
+    # Сколько вердиктов в паре решены на грани допуска (см. LesionDiffEntry).
+    borderline_count: int = 0
     lesions: List[LesionDiffEntry]
     # Диагностика недостоверна, если сессии плохо ко-регистрированы: очаги не
     # пересекаются и всё считается как «новое + исчезло». reliable=False → фронт
