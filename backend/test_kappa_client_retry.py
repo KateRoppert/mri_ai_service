@@ -216,3 +216,34 @@ async def test_the_total_wait_is_bounded(monkeypatch):
         f"сделано {len(log)} попыток — бюджет "
         f"{kappa_client.READ_TOTAL_BUDGET_SECONDS}s не остановил их"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_dataset_is_an_empty_listing(monkeypatch):
+    """Kappa answers a dataset with no entities with 404 "No record found."
+    (2026-10-19, new dataset 357). Taken as a failure, the uploader (KI-069)
+    retried forever and a new dataset never got its first session."""
+    log, _ = _install(monkeypatch, [
+        _Resp(404, {"detail": "No record found."}, '{"detail":"No record found."}')])
+
+    out = await kappa_client.get_dataset_entities("tok", 26, 3, 357)
+
+    assert out == []
+    assert len(log) == 1
+
+
+@pytest.mark.asyncio
+async def test_other_404s_are_still_failures(monkeypatch):
+    log, _ = _install(monkeypatch, [
+        _Resp(404, {"detail": "Dataset not found"}, '{"detail":"Dataset not found"}')])
+
+    assert await kappa_client.get_dataset_entities("tok", 26, 3, 999) is None
+
+
+@pytest.mark.asyncio
+async def test_entity_details_keep_none_on_no_records(monkeypatch):
+    """Only the listing knows what "nothing" means; a missing entity stays None."""
+    _install(monkeypatch, [
+        _Resp(404, {"detail": "No record found."}, '{"detail":"No record found."}')])
+
+    assert await kappa_client.get_entity_details("tok", 26, 3, 357, "e1") is None

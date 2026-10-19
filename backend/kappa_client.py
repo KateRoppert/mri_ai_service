@@ -477,8 +477,21 @@ READ_TOTAL_BUDGET_SECONDS = 25.0
 READ_TIMEOUT = httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=5.0)
 
 
+# Kappa answers a listing of a dataset that has no entities yet with
+# 404 {"detail": "No record found."} (seen 2026-10-19 on a new dataset).
+_NO_RECORDS_DETAIL = "No record found."
+
+
+def _no_records(response) -> bool:
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 — not the JSON answer we look for
+        return False
+    return isinstance(body, dict) and body.get("detail") == _NO_RECORDS_DETAIL
+
+
 async def _get_json_with_retry(
-    url: str, headers: Dict[str, str], what: str
+    url: str, headers: Dict[str, str], what: str, empty: Any = None,
 ) -> Optional[Any]:
     """GET `url` and return the parsed JSON, or None.
 
@@ -486,6 +499,11 @@ async def _get_json_with_retry(
     An HTTP status is an ANSWER: 403 and 404 do not change on a second ask,
     and retrying them would only triple how long the operator waits for the
     same refusal.
+
+    `empty`: what Kappa's "No record found." 404 means for this call. For a
+    listing it is an empty list — the dataset exists and holds nothing.
+    Taking it as a failure made a new dataset unable to receive its first
+    upload (KI-069 treats an unread listing as "Kappa unavailable").
     """
     started = time.monotonic()
 
@@ -512,6 +530,10 @@ async def _get_json_with_retry(
             return None
 
         if not response.is_success:
+            if empty is not None and response.status_code == 404 \
+                    and _no_records(response):
+                logger.info("%s: записей нет", what)
+                return empty
             logger.warning(
                 "%s: Kappa ответила status=%s, body=%s",
                 what, response.status_code, response.text[:300],
@@ -555,7 +577,7 @@ async def get_dataset_entities(
     headers = {"Authorization": f"Bearer {token}"}
 
     data = await _get_json_with_retry(
-        url, headers, f"Список сущностей датасета {dataset_id}"
+        url, headers, f"Список сущностей датасета {dataset_id}", empty=[],
     )
     if data is None:
         return None

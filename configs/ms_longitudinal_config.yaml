@@ -10,16 +10,29 @@
 growth_threshold_relative: 0.20
 growth_threshold_absolute_cm3: 0.03
 
-# Voxel dilation tolerance for matching a lesion across sessions. Set to 3
-# (not 1) because the MS segmentation model's own inference is not
-# deterministic run-to-run on identical input — nnU-Net test-time-augmentation
-# mirroring plus cudnn.benchmark=True (no fixed seed) shift small lesions'
-# boundaries by 1-2 voxels between runs. At dilation_voxels=1 this caused
-# genuinely stable small lesions to be misclassified as new+resolved pairs;
-# empirically, 3 voxels absorbs that jitter across repeated runs of the same
-# input while staying well below typical inter-lesion spacing in MS. This is
-# a provisional value (pending more real longitudinal cases), same status as
-# the growth thresholds above — it mitigates the symptom, not the underlying
-# segmentation non-determinism, which is tracked separately as KI-037 in
-# KNOWN_ISSUES.md.
+# Voxel dilation tolerance for matching a lesion across sessions.
+#
+# WHY 3 — the original reason, now DISPROVED (KI-037, measured 2026-10-19):
+# it was set to 3 (not 1) to absorb 1-2 voxel jitter attributed to the MS
+# model's inference — nnU-Net TTA mirroring plus cudnn.benchmark=True with no
+# fixed seed. The code still does all of that, but running it says otherwise:
+# three passes of scripts/06_segmentation.py over the SAME preprocessed input,
+# one of them after `docker compose restart service-ms-seg`, produce
+# bit-identical masks (Dice 1.0000, np.array_equal True). TTA mirroring is a
+# fixed set of flips, not random augmentation, and inference uses only
+# deterministic forward convolution algorithms. The earlier tuning re-ran the
+# WHOLE pipeline three times, so its input varied through preprocessing
+# (KI-062), not through the model.
+#
+# WHAT THAT MEANS: there is no jitter here to absorb, so this value is not
+# suppressing noise — it is deciding clinical verdicts. Measured over 11
+# session pairs in 10 runs (research/ms_diff_tolerance/), the reported
+# new/resolved counts change with this parameter in 11 cases out of 11, and
+# 87 lesions sit in the 1-6 mm decision band, including ones of 306, 226 and
+# 157 mm³. Tracked as KI-074.
+#
+# DO NOT retune by feel — that is how 3 got here. The right value is a
+# clinical question (McDonald 2017 defines "new T2 lesion" but no matching
+# tolerance), so this stays a provisional default pending clinician input,
+# same status as the growth thresholds above.
 dilation_voxels: 3
