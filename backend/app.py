@@ -2774,7 +2774,7 @@ class ValidationActionRequest(PydanticBaseModel):
 async def validation_action(request: ValidationActionRequest):
     """Записать действие валидации (confirm/reject/revoke) и обновить статус в Каппе."""
     from kappa_auth import get_session
-    from kappa_client import update_entity_status
+    from kappa_client import set_entity_status
     from validation_service import record_action, get_current_votes
 
     session = get_session(request.session_id)
@@ -2804,19 +2804,25 @@ async def validation_action(request: ValidationActionRequest):
     votes = get_current_votes(request.entity_id)
     new_status = _compute_entity_status(votes)
 
-    await update_entity_status(
+    # KI-075: Kappa can refuse a status (since October 2026 it refuses 3 and
+    # 5 without labels and an output mask). The result used to be ignored,
+    # and the doctor saw the vote accepted while Kappa kept the old status.
+    kappa_ok, kappa_message = await set_entity_status(
         token=session["kappa_token"],
         user_id=session["user_id"],
         user_type_id=session["user_type_id"],
         dataset_id=request.dataset_id,
         entity_id=request.entity_id,
         status=new_status,
+        remark=f"validation: {request.action}",
     )
 
     return {
         "success": True,
         "votes": votes,
         "kappa_status": new_status,
+        "kappa_status_updated": kappa_ok,
+        "kappa_message": kappa_message,
     }
 
 

@@ -785,6 +785,8 @@ class KappaUploader:
         # Формируем dsEntityInfo
         entity_info = self._build_entity_info(session_key, session_data)
 
+        from kappa_entity_files import file_category
+
         result = await upload_entity(
             token=self.token,
             user_id=self.user_id,
@@ -793,6 +795,7 @@ class KappaUploader:
             entity_name=session_key,
             file_paths=file_paths,
             entity_info=entity_info,
+            files_category={p.name: file_category(p.name) for p in file_paths},
         )
 
         entity_id = self._extract_entity_id(result) if result is not None else None
@@ -968,6 +971,15 @@ class KappaUploader:
 
         return None
 
+    def _kappa_labels(self) -> List[str]:
+        """dsEntityInfo.labels for this lesion type (configs/lesion_types.yaml
+        kappa_labels, i.e. the segmentation service's mask classes)."""
+        try:
+            labels = load_lesion_type_config(self.lesion_type).get("kappa_labels")
+        except KeyError:
+            labels = None
+        return list(labels) if labels else [self.lesion_type]
+
     def _build_entity_info(
         self,
         session_key: str,
@@ -977,6 +989,8 @@ class KappaUploader:
 
         info: Dict[str, Any] = {
             "bids_id": session_key,
+            # Mask classes; Kappa refuses statuses 3 and 5 without them (KI-075).
+            "labels": self._kappa_labels(),
             "study_hash": self._compute_study_hash(session_data),
             "pipeline_run_id": self.run_id[:8],
             "lesion_type": self.lesion_type,

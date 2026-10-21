@@ -30,6 +30,14 @@ KAPPA_DATA_URL_V2 = "https://kappa.nsu.ru:8061/data-micro-services/v2"
 # Kappa function in the codebase.
 
 
+def file_category(name: str) -> str:
+    """Kappa file category: "output" for the main AI mask, "input" for the
+    rest. Kappa refuses statuses 3 and 5 without an output file (KI-075).
+    The main mask is `*_segmask.nii.gz`; native, label, and expert masks
+    (`_segmask_native_*`, `_segmask_labels`, `_segmask_vN`) end otherwise."""
+    return "output" if name.endswith("_segmask.nii.gz") else "input"
+
+
 def _headers(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -70,6 +78,7 @@ async def patch_file(
             ) as client:
                 response = await client.patch(
                     url, headers=_headers(token),
+                    params={"file_category": file_category(path.name)},
                     files={"updated_entity_file":
                            (path.name, fh, "application/gzip")},
                 )
@@ -88,9 +97,20 @@ async def add_files(
     token: str, user_id: int, user_type_id: int,
     dataset_id: int, entity_id: str, paths: List[Path],
 ) -> bool:
-    """Add files the entity does not have yet."""
+    """Add files the entity does not have yet.
+
+    Kappa applies one category to a whole request, so outputs and inputs go
+    in separate requests (KI-075)."""
     if not paths:
         return True
+    groups: Dict[str, List[Path]] = {}
+    for p in paths:
+        groups.setdefault(file_category(p.name), []).append(p)
+    if len(groups) > 1:
+        results = [await add_files(token, user_id, user_type_id, dataset_id,
+                                   entity_id, group) for group in groups.values()]
+        return all(results)
+    category = next(iter(groups))
     url = (f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/files"
            f"/{dataset_id}/{entity_id}")
     handles = []
@@ -103,7 +123,9 @@ async def add_files(
         async with kappa_client(
             timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
         ) as client:
-            response = await client.post(url, headers=_headers(token), files=files)
+            response = await client.post(url, headers=_headers(token),
+                                         params={"file_category": category},
+                                         files=files)
         if response.is_success:
             logger.info("Added %d file(s) to entity %s", len(paths), entity_id)
             return True

@@ -84,6 +84,13 @@ const ValidationActions = ({ entityId, datasetId, runId, onStatusChange, onMaskU
         revoke: 'Решение отозвано',
       };
       message.success(messages[action]);
+      if (result.kappa_status_updated === false) {
+        // KI-075: the vote is saved here, but Kappa refused the status.
+        message.warning(
+          `Голос сохранён, но Kappa не приняла новый статус: ${result.kappa_message || 'без объяснения'}`,
+          8,
+        );
+      }
 
       if (onStatusChange) {
         onStatusChange(result);

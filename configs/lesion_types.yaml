@@ -20,13 +20,21 @@
 #   reference_modality   — Modality registered directly to the atlas in stage 05.
 #                          Other modalities are co-registered to this one first.
 #   reports              — Analysis outputs produced by stages 07–08.
+#   kappa_labels         — Mask classes written to dsEntityInfo.labels on
+#                          upload. Kappa refuses statuses 3 and 5 without them
+#                          (KI-075). Must equal the segmentation service
+#                          manifest's output.classes without background —
+#                          the web image has no services/, so they are copied
+#                          here; test_lesion_types_labels.py keeps them equal.
 
 glioblastoma:
   required_modalities: [t1, t1c, t2, t2fl]
   reference_modality: t1c
   reports: [volume, lobar]
+  kappa_labels: [ed, net, et, ncr]
 
 multiple_sclerosis:
   required_modalities: [t1, t2, t2fl]
   reference_modality: t1
   reports: [lesion_count, volume_per_lobe]
+  kappa_labels: [lesion]
