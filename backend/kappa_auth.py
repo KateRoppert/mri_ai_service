@@ -3,6 +3,8 @@
 """
 import json
 import httpx
+
+from kappa_http import kappa_client
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -33,7 +35,7 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+        async with kappa_client(timeout=10.0) as client:
             response = await client.post(url, json=payload)
     except httpx.HTTPError as exc:
         # Kappa недоступна — это не то же самое, что неверный пароль, и

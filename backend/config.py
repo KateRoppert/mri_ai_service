@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+
+    # Проверка TLS-сертификата Kappa (KI-064). По умолчанию включена: замер
+    # 21.10.2026 показал, что сертификат kappa.nsu.ru действующий (GlobalSign,
+    # *.nsu.ru), и штатная проверка проходит. Отключение, KAPPA_TLS_VERIFY=false,
+    # оставлено обходом для машины без набора корневых сертификатов, где иначе
+    # отвалится вход — это явное решение, и backend/kappa_http.py пишет о нём
+    # в лог. Создавать клиента для Kappa в обход kappa_http.kappa_client()
+    # нельзя: именно так отключение и разошлось по 15 местам.
+    kappa_tls_verify: bool = True
     
     # База данных
     # Путь внутри /app/backend/data — эта директория монтируется как volume

@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from kappa_http import kappa_client
+
 logger = logging.getLogger(__name__)
 
 KAPPA_DATA_URL_V2 = "https://kappa.nsu.ru:8061/data-micro-services/v2"
@@ -39,7 +41,7 @@ async def list_entity_files(
     """The entity's files as [{"fileId", "fileName"}]. Empty on any failure."""
     url = f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/{dataset_id}"
     try:
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        async with kappa_client(timeout=30.0) as client:
             response = await client.get(url, headers=_headers(token))
         if not response.is_success:
             logger.warning("v2 list entities failed: status=%s, body=%s",
@@ -63,9 +65,8 @@ async def patch_file(
     url = f"{KAPPA_DATA_URL_V2}/datasets/{dataset_id}/{entity_id}/{file_id}"
     try:
         with open(path, "rb") as fh:
-            async with httpx.AsyncClient(
+            async with kappa_client(
                 timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
-                verify=False,
             ) as client:
                 response = await client.patch(
                     url, headers=_headers(token),
@@ -99,9 +100,8 @@ async def add_files(
             fh = open(p, "rb")
             handles.append(fh)
             files.append(("files", (p.name, fh, "application/gzip")))
-        async with httpx.AsyncClient(
+        async with kappa_client(
             timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
-            verify=False,
         ) as client:
             response = await client.post(url, headers=_headers(token), files=files)
         if response.is_success:
@@ -127,7 +127,7 @@ async def delete_files(
         return None
     url = f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/files"
     try:
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        async with kappa_client(timeout=30.0) as client:
             response = await client.request(
                 "DELETE", url, headers=_headers(token), json=list(file_ids),
             )
@@ -155,7 +155,7 @@ async def wait_for_job(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            async with kappa_client(timeout=30.0) as client:
                 response = await client.get(url, headers=_headers(token),
                                             params={"datasetId": dataset_id})
             if response.is_success:
@@ -183,7 +183,7 @@ async def update_entity_info(
     url = f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/{dataset_id}/{entity_id}"
     body = {"dsEntityInfo": info, "remark": remark}
     try:
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        async with kappa_client(timeout=30.0) as client:
             response = await client.put(
                 url, headers=_headers(token),
                 data={"update_dataset_entity": json.dumps(body, ensure_ascii=False)},
