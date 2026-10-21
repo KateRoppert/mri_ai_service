@@ -9,7 +9,9 @@ bottom is new.
 
 import logging
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 import nibabel as nib
 import numpy as np
 import os
@@ -203,55 +205,84 @@ def run_bet(
         # Get BET command and environment
         bet_cmd = get_bet_command()
         env = get_fsl_env()
-        
-        # Build BET command
-        cmd = [
-            bet_cmd,
-            str(input_path),
-            str(output_path),
-            '-f', str(fractional_intensity),
-            '-g', str(vertical_gradient)
-        ]
-        
-        # Add mask generation flag
-        if generate_mask:
-            cmd.append('-m')
-        
-        # Add robust brain center estimation
-        cmd.append('-R')
 
-        logger.debug(f"BET command: {' '.join(cmd)}")
-        logger.debug(f"FSLDIR: {env.get('FSLDIR', 'not set')}")
-        
-        # Run BET with FSL environment
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes timeout
-            env=env
-        )
-        
-        if result.returncode != 0:
-            raise RuntimeError(f"BET failed with return code {result.returncode}: {result.stderr}")
-        
-        logger.debug(f"BET output: {result.stdout}")
-        
-        # BET creates mask with _mask suffix automatically
-        auto_mask_path = output_path.parent / f"{output_path.stem.replace('.nii', '')}_mask.nii.gz"
-        
-        mask_created = False
-        if generate_mask and auto_mask_path.exists():
-            # Move mask to desired location if specified
-            if mask_path is not None and mask_path != auto_mask_path:
+        # KI-049: `bet` is a shell wrapper that splits its arguments on
+        # spaces — under ".../Рабочий стол/..." it failed with "input image
+        # not valid". It runs in a private temp dir (system temp, no spaces)
+        # on a symlink to the input; results are moved to the caller's paths.
+        work = Path(tempfile.mkdtemp(prefix="bet_"))
+        try:
+            work_in = work / "in.nii.gz"
+            work_in.symlink_to(Path(input_path).resolve())
+            work_out = work / "out"
+
+            # Build BET command
+            cmd = [
+                bet_cmd,
+                str(work_in),
+                str(work_out),
+                '-f', str(fractional_intensity),
+                '-g', str(vertical_gradient)
+            ]
+
+            # Add mask generation flag
+            if generate_mask:
+                cmd.append('-m')
+
+            # Add robust brain center estimation
+            cmd.append('-R')
+
+            logger.debug(f"BET command: {' '.join(cmd)}")
+            logger.debug(f"FSLDIR: {env.get('FSLDIR', 'not set')}")
+
+            # Run BET with FSL environment
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minutes timeout
+                env=env
+            )
+
+            if result.returncode != 0:
+                # BET prints its own error to stdout and leaves stderr empty;
+                # stderr alone gave "return code 1: " and nothing else.
+                said = " ".join(
+                    part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+                )
+                raise RuntimeError(
+                    f"BET failed with return code {result.returncode}: {said[:500]}"
+                )
+
+            logger.debug(f"BET output: {result.stdout}")
+
+            produced = work / "out.nii.gz"
+            produced_mask = work / "out_mask.nii.gz"
+            if not produced.exists():
+                raise RuntimeError(
+                    f"BET exited 0 but did not write the stripped image for {input_path.name}"
+                )
+            if generate_mask and not produced_mask.exists():
+                raise RuntimeError(
+                    f"BET exited 0 but did not write the brain mask for {input_path.name}"
+                )
+
+            shutil.move(str(produced), str(output_path))
+            mask_created = False
+            if generate_mask:
+                if mask_path is None:
+                    base = output_path.name
+                    for ext in (".nii.gz", ".nii"):
+                        if base.endswith(ext):
+                            base = base[: -len(ext)]
+                            break
+                    mask_path = output_path.parent / f"{base}_mask.nii.gz"
                 mask_path.parent.mkdir(parents=True, exist_ok=True)
-                auto_mask_path.rename(mask_path)
+                shutil.move(str(produced_mask), str(mask_path))
                 logger.info(f"Saved brain mask to {mask_path}")
                 mask_created = True
-            else:
-                mask_path = auto_mask_path
-                logger.info(f"Brain mask created at {auto_mask_path}")
-                mask_created = True
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
         
         processing_time = time.time() - start_time
         logger.info(f"BET completed in {processing_time:.2f} seconds")
