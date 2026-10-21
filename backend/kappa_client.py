@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from kappa_http import kappa_client
+
 logger = logging.getLogger(__name__)
 
 KAPPA_DATA_URL = "https://kappa.nsu.ru:8061/data-micro-services/v1"
@@ -32,7 +34,7 @@ async def list_user_datasets(
     url = f"{KAPPA_DATA_URL}/datasets/{user_id}/{user_type_id}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with kappa_client(timeout=15.0) as client:
             response = await client.get(url, headers=headers)
         if response.is_success:
             data = response.json()
@@ -57,7 +59,7 @@ async def _find_dataset_id(
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with kappa_client(timeout=15.0) as client:
             response = await client.get(url, headers=headers)
 
         if not response.is_success:
@@ -107,7 +109,7 @@ async def create_dataset(
     try:
         logger.debug("Creating dataset: url=%s, payload=%s", url, payload)
 
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with kappa_client(timeout=15.0) as client:
             response = await client.post(url, json=payload, headers=headers)
 
         if response.is_success:
@@ -254,9 +256,8 @@ async def upload_entity(
         for attempt in range(3):
             write_timeout = 300.0 * (attempt + 1)
             try:
-                async with httpx.AsyncClient(
+                async with kappa_client(
                     timeout=httpx.Timeout(30.0, read=300.0, write=write_timeout),
-                    verify=False,
                 ) as client:
                     response = await client.post(
                         url, data=data, files=files, headers=headers
@@ -340,7 +341,7 @@ async def update_entity_status(
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with kappa_client(timeout=15.0) as client:
             response = await client.put(
                 url, data=data, files=files, headers=headers
             )
@@ -395,9 +396,8 @@ async def replace_entity_file(
         f = open(file_path, "rb")
         files = [("files", (target_filename, f, content_type))]
 
-        async with httpx.AsyncClient(
+        async with kappa_client(
             timeout=httpx.Timeout(30.0, read=300.0, write=300.0),
-            verify=False,
         ) as client:
             response = await client.put(
                 url, data=data, files=files, headers=headers
@@ -509,8 +509,8 @@ async def _get_json_with_retry(
 
     for attempt in range(1, READ_RETRY_ATTEMPTS + 1):
         try:
-            async with httpx.AsyncClient(
-                timeout=READ_TIMEOUT, verify=False
+            async with kappa_client(
+                timeout=READ_TIMEOUT
             ) as client:
                 response = await client.get(url, headers=headers)
         except Exception as exc:  # noqa: BLE001 — callers get None, see docstring
@@ -625,9 +625,8 @@ async def download_entity_file(
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with httpx.AsyncClient(
+        async with kappa_client(
             timeout=httpx.Timeout(30.0, read=300.0),
-            verify=False,
         ) as client:
             response = await client.get(url, headers=headers)
 
