@@ -610,10 +610,14 @@ def process_single_subject(
                 )
             
             results['steps']['skull_stripping'] = {
-                "success": all(r.get('success', False) for r in skull_strip_results.values()),
+                "success": False,
                 "results": skull_strip_results,
                 "time": time.time() - step_start
             }
+            # KI-049: a failed mask used to leave the registered images, skull
+            # and all, as this session's output while it counted as a success.
+            _require_skull_strip_success(skull_strip_results)
+            results['steps']['skull_stripping']["success"] = True
             
             logger.info(f"✓ Skull stripping completed in {results['steps']['skull_stripping']['time']:.1f}s")
         else:
@@ -650,6 +654,30 @@ def process_single_subject(
         results['success'] = False
     
     return results
+
+def _require_skull_strip_success(skull_strip_results: dict) -> None:
+    """Raise unless every modality came out skull-stripped (KI-049).
+
+    Two shapes reach here: per-modality results {modality: {"success", ...}},
+    and {"success": False, "error": ...} when no tool could run at all.
+    """
+    if not skull_strip_results:
+        raise RuntimeError("Skull stripping produced no result")
+    if "success" in skull_strip_results and not isinstance(
+            skull_strip_results.get("success"), dict):
+        if skull_strip_results.get("success"):
+            return
+        raise RuntimeError(
+            f"Skull stripping failed: {skull_strip_results.get('error', 'unknown error')}")
+    failed = {
+        modality: (r or {}).get("error", "unknown error")
+        for modality, r in skull_strip_results.items()
+        if not (isinstance(r, dict) and r.get("success"))
+    }
+    if failed:
+        raise RuntimeError("Skull stripping failed: " + "; ".join(
+            f"{m}: {err}" for m, err in failed.items()))
+
 
 def _apply_native_mask(native_mask, atlas_path, transform_dir, output_dir,
                        subject_id, session_id, modalities, reference_modality):
