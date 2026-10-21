@@ -173,6 +173,7 @@ async def upload_entity(
     entity_source: str = "mri-ai-service",
     labeling_algo: str = "default",
     zip_as_archive: bool = False,
+    files_category: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """
     Загрузить сущность (один или несколько файлов) в датасет Kappa.
@@ -195,6 +196,10 @@ async def upload_entity(
         "labelingAlgo": labeling_algo,
         "dsEntityInfo": entity_info or {},
     }
+    if files_category:
+        # file name -> "input" | "output". Kappa needs the mask as an output
+        # file before it lets the entity reach Labeled or Verified (KI-075).
+        new_dataset_entity["filesCategory"] = files_category
 
     entity_json = json.dumps(new_dataset_entity, ensure_ascii=False)
     data = {"new_dataset_entity": entity_json}
@@ -312,6 +317,59 @@ async def upload_entity(
             zip_path.unlink()
             zip_path.parent.rmdir()
 
+async def set_entity_status(
+    token: str,
+    user_id: int,
+    user_type_id: int,
+    dataset_id: int,
+    entity_id: str,
+    status: int = 3,  # 3 = Labeled
+    remark: str = "",
+) -> "tuple[bool, str]":
+    """
+    Обновить статус сущности датасета. Возвращает (успех, ответ Kappa).
+    Статусы: 0=Deactive, 1=Active, 2=New, 3=Labeled,
+             4=Under Verification, 5=Verified.
+
+    v2 PUT with metadata only. The v1 call needed a file in every request,
+    and the `empty.json` it sent stayed in the entity each time (KI-036).
+    Since October 2026 Kappa refuses 3 and 5 unless the entity has
+    dsEntityInfo.labels and an `output` mask (KI-075) — its answer is
+    returned so callers can say why.
+    """
+    from kappa_entity_files import KAPPA_DATA_URL_V2
+
+    url = f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/{dataset_id}/{entity_id}"
+    data = {"update_dataset_entity": json.dumps(
+        {"dsEntityStatus": status, "remark": remark or f"status {status}"})}
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with kappa_client(timeout=15.0) as client:
+            response = await client.put(url, data=data, files=[], headers=headers)
+
+        if response.is_success:
+            logger.info(
+                "Entity status updated: entity=%s, status=%d", entity_id, status
+            )
+            return True, ""
+        detail = response.text[:300]
+        try:
+            body = response.json()
+            if isinstance(body, dict) and isinstance(body.get("detail"), str):
+                detail = body["detail"]
+        except Exception:  # noqa: BLE001 — keep the raw text
+            pass
+        logger.warning(
+            "Failed to update entity status: status_code=%s, body=%s",
+            response.status_code, response.text[:300],
+        )
+        return False, detail
+    except Exception as exc:
+        logger.exception("Error updating entity status: %s", exc)
+        return False, f"{type(exc).__name__}"
+
+
 async def update_entity_status(
     token: str,
     user_id: int,
@@ -320,47 +378,10 @@ async def update_entity_status(
     entity_id: str,
     status: int = 3,  # 3 = Labeled
 ) -> bool:
-    """
-    Обновить статус сущности датасета.
-    Статусы: 0=Deactive, 1=Active, 2=New, 3=Labeled,
-             4=Under Verification, 5=Verified.
-    """
-    url = (
-        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
-        f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
-    )
-
-    update_payload = json.dumps({"dsEntityStatus": status, "remark": ""})
-
-    # API требует multipart/form-data с update_dataset_entity + files
-    data = {"update_dataset_entity": update_payload}
-
-    # Пустой файл-заглушка (files обязателен в API)
-    files = [("files", ("empty.json", b"{}", "application/json"))]
-
-    headers = {"Authorization": f"Bearer {token}"}
-
-    try:
-        async with kappa_client(timeout=15.0) as client:
-            response = await client.put(
-                url, data=data, files=files, headers=headers
-            )
-
-        if response.is_success:
-            logger.info(
-                "Entity status updated: entity=%s, status=%d", entity_id, status
-            )
-            return True
-        else:
-            logger.warning(
-                "Failed to update entity status: status_code=%s, body=%s",
-                response.status_code,
-                response.text[:300],
-            )
-            return False
-    except Exception as exc:
-        logger.exception("Error updating entity status: %s", exc)
-        return False
+    """set_entity_status for callers that only need yes/no."""
+    ok, _ = await set_entity_status(token, user_id, user_type_id,
+                                    dataset_id, entity_id, status)
+    return ok
 
 async def replace_entity_file(
     token: str,
