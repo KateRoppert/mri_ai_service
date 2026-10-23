@@ -102,7 +102,8 @@ def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(getattr(logging, level))
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        # processName tells parallel workers apart (KI-032)
+        '%(asctime)s - %(processName)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     console.setFormatter(formatter)
@@ -435,7 +436,9 @@ def main():
                 failed += 1
                 logger.error(f"  ✗ Failed: {result.get('error', 'unknown')}{_peak_suffix(result)}")
     else:
-        with ProcessPoolExecutor(max_workers=actual_workers) as executor:
+        from utils.stage_logging import worker_initargs, worker_initializer
+        with ProcessPoolExecutor(initializer=worker_initializer,
+                                 initargs=worker_initargs(), max_workers=actual_workers) as executor:
             future_map = {
                 executor.submit(
                     process_one_mask,

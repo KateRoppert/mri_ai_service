@@ -111,6 +111,10 @@ def setup_logging(log_file: Path = None, level: str = "INFO"):
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file))
     
+    # Worker lines are told apart by process name (KI-032); the format comes
+    # from preprocessing_config.yaml, so add it there rather than replace it.
+    if "%(processName)s" not in log_format:
+        log_format = log_format.replace("%(levelname)s", "%(processName)s - %(levelname)s", 1)
     logging.basicConfig(
         level=numeric_level,
         format=log_format,
@@ -1158,7 +1162,9 @@ def main():
                 # Inject the calculated thread count into every args tuple (last slot)
                 processing_args = [t[:-1] + (threads_per_worker,) for t in processing_args]
 
-                with ProcessPoolExecutor(max_workers=actual_workers) as executor:
+                from utils.stage_logging import worker_initargs, worker_initializer
+                with ProcessPoolExecutor(initializer=worker_initializer,
+                                         initargs=worker_initargs(), max_workers=actual_workers) as executor:
                     # Submit all jobs
                     future_to_subject = {
                         executor.submit(process_subject_wrapper, args_tuple): (args_tuple[1], args_tuple[2])
