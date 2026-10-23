@@ -35,7 +35,8 @@ def process_series_worker(args):
     
     # Create temporary converter instance for this process
     import logging
-    temp_logger = logging.getLogger(f"converter_worker_{patient_id}_{modality}")
+    # Child of the stage logger: reaches the stage log file (KI-032).
+    temp_logger = logging.getLogger(f"nifti_converter.worker.{patient_id}_{modality}")
     temp_logger.setLevel(logging.WARNING)  # Minimize logging in workers
     
     temp_converter = NiftiConverter.__new__(NiftiConverter)
@@ -571,7 +572,9 @@ class NiftiConverter:
         ]
 
         # Process in parallel
-        with Pool(processes=workers) as pool:
+        from utils.stage_logging import worker_initargs, worker_initializer
+        with Pool(processes=workers, initializer=worker_initializer,
+                  initargs=worker_initargs()) as pool:
             results = pool.map(process_series_worker, tasks)
 
         # Aggregate stats from each worker's returned stats dict.
@@ -597,41 +600,10 @@ class NiftiConverter:
 
 
 def setup_logging(log_file: Optional[Path] = None) -> logging.Logger:
-    """
-    Setup logging configuration.
-    
-    Args:
-        log_file: Path to log file (optional)
-        
-    Returns:
-        Configured logger instance
-    """
-    logger = logging.getLogger("nifti_converter")
-    logger.setLevel(logging.DEBUG)
-    
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_format = logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_format)
-    logger.addHandler(console_handler)
-    
-    # File handler (if specified)
-    if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        file_format = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(file_format)
-        logger.addHandler(file_handler)
-    
-    return logger
+    """Stage logger "nifti_converter"; handlers live on the root logger so worker and
+    helper-module logs reach the stage log file too (KI-032)."""
+    from utils.stage_logging import configure_stage_logging
+    return configure_stage_logging(log_file, name="nifti_converter")
 
 
 def main():

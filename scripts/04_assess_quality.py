@@ -437,7 +437,9 @@ class QualityAssessor:
         # a result the dead worker will never return, which previously hung the
         # stage indefinitely with idle workers at ~0% CPU.
         try:
-            with ProcessPoolExecutor(max_workers=workers) as executor:
+            from utils.stage_logging import worker_initargs, worker_initializer
+            with ProcessPoolExecutor(initializer=worker_initializer,
+                                     initargs=worker_initargs(), max_workers=workers) as executor:
                 results = list(executor.map(self._assess_image_metered, tasks))
         except BrokenProcessPool:
             self.logger.error(
@@ -805,41 +807,10 @@ class QualityAssessor:
 
 
 def setup_logging(log_file: Optional[Path] = None) -> logging.Logger:
-    """
-    Setup logging configuration.
-    
-    Args:
-        log_file: Path to log file (optional)
-        
-    Returns:
-        Configured logger instance
-    """
-    logger = logging.getLogger("quality_assessor")
-    logger.setLevel(logging.DEBUG)
-    
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_format = logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_format)
-    logger.addHandler(console_handler)
-    
-    # File handler (if specified)
-    if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        file_format = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(file_format)
-        logger.addHandler(file_handler)
-    
-    return logger
+    """Stage logger "quality_assessor"; handlers live on the root logger so worker and
+    helper-module logs reach the stage log file too (KI-032)."""
+    from utils.stage_logging import configure_stage_logging
+    return configure_stage_logging(log_file, name="quality_assessor")
 
 
 def main():

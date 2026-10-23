@@ -1158,7 +1158,9 @@ def main():
                 # Inject the calculated thread count into every args tuple (last slot)
                 processing_args = [t[:-1] + (threads_per_worker,) for t in processing_args]
 
-                with ProcessPoolExecutor(max_workers=actual_workers) as executor:
+                from utils.stage_logging import worker_initargs, worker_initializer
+                with ProcessPoolExecutor(initializer=worker_initializer,
+                                         initargs=worker_initargs(), max_workers=actual_workers) as executor:
                     # Submit all jobs
                     future_to_subject = {
                         executor.submit(process_subject_wrapper, args_tuple): (args_tuple[1], args_tuple[2])

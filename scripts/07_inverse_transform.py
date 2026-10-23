@@ -435,7 +435,9 @@ def main():
                 failed += 1
                 logger.error(f"  ✗ Failed: {result.get('error', 'unknown')}{_peak_suffix(result)}")
     else:
-        with ProcessPoolExecutor(max_workers=actual_workers) as executor:
+        from utils.stage_logging import worker_initargs, worker_initializer
+        with ProcessPoolExecutor(initializer=worker_initializer,
+                                 initargs=worker_initargs(), max_workers=actual_workers) as executor:
             future_map = {
                 executor.submit(
                     process_one_mask,

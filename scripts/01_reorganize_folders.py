@@ -1283,35 +1283,10 @@ class FileOrganizer:
 
 
 def setup_logging(log_file: Optional[Path] = None) -> logging.Logger:
-    """Setup logging configuration."""
-    logger = logging.getLogger('reorganize_folders')
-    logger.setLevel(logging.DEBUG)
-
-    # Remove existing handlers if re-running in same interpreter
-    if logger.handlers:
-        logger.handlers = []
-
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File handler
-    if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    return logger
+    """Stage logger "reorganize_folders"; handlers live on the root logger so worker and
+    helper-module logs reach the stage log file too (KI-032)."""
+    from utils.stage_logging import configure_stage_logging
+    return configure_stage_logging(log_file, name="reorganize_folders")
 
 
 def save_mapping_file(mapping_data: Dict, output_dir: Path):
@@ -1677,15 +1652,11 @@ def process_single_patient(
     """
     original_patient_id = patient_dir.name
 
-    # Setup logging for this process
-    logger = logging.getLogger(f'patient_{original_patient_id}')
+    # A child of the stage logger with no handler of its own: its lines reach
+    # the stage log file. It used to have its own StreamHandler and wrote to
+    # stderr only, so per-patient detail never reached the log (KI-032).
+    logger = logging.getLogger(f'reorganize_folders.patient_{original_patient_id}')
     logger.setLevel(log_level)
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
-        logger.addHandler(handler)
 
     try:
         new_patient_id = patient_mapping[original_patient_id]
@@ -2128,7 +2099,9 @@ def run_parallel(
     counters = {"successful": 0, "skipped": 0, "failed": 0}
     failed_patients: List[Tuple[str, str]] = []  # (original_id, reason)
 
-    with mp.Pool(processes=workers) as pool:
+    from utils.stage_logging import worker_initargs, worker_initializer
+    with mp.Pool(processes=workers, initializer=worker_initializer,
+                 initargs=worker_initargs()) as pool:
         for pr in pool.imap_unordered(process_func, patient_dirs):
             results.append(pr)
             status = pr.get("status", "failed")
