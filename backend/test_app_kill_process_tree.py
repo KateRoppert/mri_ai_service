@@ -23,11 +23,19 @@ from app import _kill_process_tree
 
 
 def _process_alive(pid: int) -> bool:
+    """Running, not merely un-reaped. A killed grandchild whose parent is
+    gone is reparented to PID 1; in a container PID 1 is often not an init
+    that reaps, so the zombie stays and kill(pid, 0) still succeeds."""
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            state = f.read().rsplit(")", 1)[1].split()[0]
+        return state not in ("Z", "X")
+    except OSError:
+        return True
 
 
 def test_kill_process_tree_kills_grandchild_not_just_direct_child(tmp_path):

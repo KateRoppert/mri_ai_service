@@ -65,20 +65,16 @@ class TestMatchModality:
         result = detector._match_modality("t1-tse 2.5mm cor brain")
         assert result == "t1"
 
-    def test_mpr_ce_t1_tse_returns_none(self, detector):
-        # mpr excludes t2fl and t1c; 'ce' marker excludes t1 → no match
-        result = detector._match_modality("mpr ce_t1-tse 2.5mm cor brain")
-        assert result is None
+    # MPR reformats are classified like any series since e4f592d: excluding
+    # them hid the only candidate for a modality (clinical_dicom/BO-1 lost
+    # its t1c). A primary acquisition still wins where both exist — that is
+    # the scorer's derived-reconstruction tie-break (42967c7), tested in
+    # test_stage01_derived_penalty.py, not the name matcher's job.
+    def test_mpr_ce_t1_tse_is_t1c(self, detector):
+        assert detector._match_modality("mpr ce_t1-tse 2.5mm cor brain") == "t1c"
 
-    def test_mpr_flair_not_classified_as_t2fl(self, detector):
-        # 'mpr' is in t2fl exclude list
-        result = detector._match_modality("mpr flair brain")
-        assert result != "t2fl"
-
-    def test_mpr_flair_returns_none(self, detector):
-        # 'mpr' excludes t2fl; no other modality keyword matches → None
-        result = detector._match_modality("mpr flair brain")
-        assert result is None
+    def test_mpr_flair_is_t2fl(self, detector):
+        assert detector._match_modality("mpr flair brain") == "t2fl"
 
     def test_normal_t2_tse_classified_as_t2(self, detector):
         # plain T2 TSE without any exclusion keywords → t2
@@ -196,15 +192,21 @@ def converter():
 
 
 def _make_worker_results(specs):
-    """Build fake Pool.map results from (total, successful, failed, skipped) tuples."""
+    """Fake Pool.map results from (total, successful, failed, skipped) tuples,
+    in the worker's current return shape (a dict, not the old tuple)."""
     return [
-        (successful > 0, {
-            'total_series': total,
-            'successful': successful,
-            'failed': failed,
-            'skipped': skipped,
-        })
-        for total, successful, failed, skipped in specs
+        {
+            "success": failed == 0,
+            "stats": {
+                'total_series': total,
+                'successful': successful,
+                'failed': failed,
+                'skipped': skipped,
+            },
+            "patient": f"{i:03d}", "session": "001", "modality": "t1",
+            "series_path": f"/tmp/series{i}", "error": "boom" if failed else None,
+        }
+        for i, (total, successful, failed, skipped) in enumerate(specs)
     ]
 
 
@@ -232,6 +234,8 @@ class TestProcessParallel:
         assert converter.stats['total_series'] == 5
         assert converter.stats['successful'] == 2
         assert converter.stats['failed'] == 3
+        # both workers reported failures: both land in the failure report
+        assert [c["patient"] for c in converter.failed_cases] == ["000", "001"]
 
     def test_skipped_not_counted_as_successful(self, converter):
         results = _make_worker_results([(3, 1, 0, 2)])

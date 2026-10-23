@@ -8,7 +8,7 @@ from utils.config_loader import load_lesion_type_config
 def test_glioblastoma_modalities():
     cfg = load_lesion_type_config('glioblastoma')
     assert set(cfg['required_modalities']) == {'t1', 't1c', 't2', 't2fl'}
-    assert cfg['reference_modality'] == 't1'
+    assert cfg['reference_modality'] == 't1c'  # GBM registers on t1c (CLAUDE.md)
     assert 'volume' in cfg['reports']
 
 

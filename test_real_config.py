@@ -1,138 +1,67 @@
 """
-Тест загрузки реального конфига.
+The repository's pipeline_config.yaml loads, resolves, and points every
+enabled stage at a script that exists.
+
+This used to be a print-only script whose entry point was named
+test_real_config(config_path) — pytest took `config_path` for a fixture and
+reported an error on every run (KI-063). The printout is still available:
+
+    python test_real_config.py pipeline_config.yaml
 """
-
-from pathlib import Path
 import sys
+from pathlib import Path
 
-# Добавляем путь к utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
+ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT))
 
-from utils.config_loader import (
-    load_config,
-    resolve_paths,
+from utils.config_loader import (  # noqa: E402
+    get_enabled_stages,
     get_stage_input_dir,
     get_stage_output_dir,
-    get_enabled_stages,
-    ConfigValidationError
+    load_config,
+    resolve_paths,
 )
 
+CONFIG = ROOT / "pipeline_config.yaml"
 
-def test_real_config(config_path: str):
-    """
-    Тестирует загрузку реального конфига.
-    
-    Args:
-        config_path: Путь к реальному pipeline_config.yaml
-    """
-    print(f"{'='*70}")
-    print(f"Testing config: {config_path}")
-    print(f"{'='*70}\n")
-    
-    try:
-        # Загрузка конфига
-        config = load_config(Path(config_path))
-        print("✓ Config loaded successfully\n")
-        
-        # Разрешение путей
-        config = resolve_paths(config)
-        print("✓ Paths resolved\n")
-        
-        # Вывод общей информации
-        print("GENERAL SETTINGS:")
-        print(f"  Root input:  {config['general']['root_input_dir']}")
-        print(f"  Root output: {config['general']['root_output_dir']}")
-        print(f"  Max subjects: {config['general']['max_subjects']}")
-        print(f"  Skip existing: {config['general']['skip_existing']}\n")
-        
-        # Вывод включенных этапов
-        enabled_stages = get_enabled_stages(config)
-        print(f"ENABLED STAGES ({len(enabled_stages)}/6):")
-        for stage_name in enabled_stages:
-            print(f"  ✓ {stage_name}")
-        print()
-        
-        # Вывод отключенных этапов
-        all_stages = [
-            'stage_01_reorganize',
-            'stage_02_metadata',
-            'stage_03_convert',
-            'stage_04_quality',
-            'stage_05_preprocessing',
-            'stage_06_segmentation'
-        ]
-        disabled_stages = [s for s in all_stages if s not in enabled_stages]
-        if disabled_stages:
-            print(f"DISABLED STAGES ({len(disabled_stages)}/6):")
-            for stage_name in disabled_stages:
-                print(f"  ✗ {stage_name}")
-            print()
-        
-        # Вывод путей для каждого этапа
-        print("STAGE PATHS:")
-        for stage_name in all_stages:
-            enabled = config['stages'][stage_name]['enabled']
-            status = "✓" if enabled else "✗"
-            input_dir = get_stage_input_dir(stage_name, config)
-            output_dir = get_stage_output_dir(stage_name, config)
-            print(f"  {status} {stage_name}:")
-            print(f"      Input:  {input_dir}")
-            print(f"      Output: {output_dir}")
-        print()
-        
-        # Вывод аргументов для включенных этапов
-        print("STAGE ARGUMENTS:")
-        for stage_name in enabled_stages:
-            stage_config = config['stages'][stage_name]
-            print(f"  {stage_name}:")
-            print(f"    Script: {stage_config['script']}")
-            print(f"    Args:")
-            for arg_name, arg_value in stage_config['args'].items():
-                print(f"      --{arg_name}: {arg_value}")
-        print()
-        
-        # Проверка parallel_stages
-        if 'parallel_stages' in config:
-            parallel = config['parallel_stages']
-            print("PARALLEL STAGES:")
-            print(f"  Enabled: {parallel['enabled']}")
-            if parallel['enabled'] and 'groups' in parallel:
-                print(f"  Groups: {parallel['groups']}")
-            print()
-        
-        # Проверка reporting
-        if 'reporting' in config:
-            reporting = config['reporting']
-            print("REPORTING:")
-            print(f"  Enabled: {reporting['enabled']}")
-            if reporting['enabled']:
-                print(f"  Formats: {reporting.get('formats', [])}")
-                print(f"  Include: {reporting.get('include', [])}")
-            print()
-        
-        print(f"{'='*70}")
-        print("✓ ALL CHECKS PASSED")
-        print(f"{'='*70}")
-        
-    except ConfigValidationError as e:
-        print(f"\n✗ CONFIG VALIDATION ERROR:")
-        print(f"  {e}\n")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n✗ UNEXPECTED ERROR:")
-        print(f"  {type(e).__name__}: {e}\n")
-        sys.exit(1)
+
+def _resolved(path=CONFIG):
+    return resolve_paths(load_config(Path(path)))
+
+
+def test_repo_config_loads_and_resolves():
+    config = _resolved()
+    assert config["general"]["root_output_dir"]
+    assert get_enabled_stages(config), "no stage enabled"
+
+
+def test_every_enabled_stage_has_its_script_and_dirs():
+    config = _resolved()
+    for stage in get_enabled_stages(config):
+        script = config["stages"][stage]["script"]
+        assert (ROOT / script).exists() or (ROOT / "scripts" / Path(script).name).exists(), \
+            f"{stage}: script {script} not found"
+        assert get_stage_output_dir(stage, config), f"{stage}: no output dir"
+        get_stage_input_dir(stage, config)  # must not raise
+
+
+def print_config(path):
+    config = _resolved(path)
+    general = config["general"]
+    print(f"Config: {path}")
+    print(f"  root_input_dir:  {general['root_input_dir']}")
+    print(f"  root_output_dir: {general['root_output_dir']}")
+    print(f"  max_subjects: {general.get('max_subjects')}  skip_existing: {general.get('skip_existing')}")
+    enabled = set(get_enabled_stages(config))
+    for stage, cfg in config["stages"].items():
+        mark = "✓" if stage in enabled else "✗"
+        print(f"  {mark} {stage}: {cfg.get('script')}")
+        if stage in enabled:
+            print(f"      in:  {get_stage_input_dir(stage, config)}")
+            print(f"      out: {get_stage_output_dir(stage, config)}")
+            for k, v in (cfg.get("args") or {}).items():
+                print(f"      --{k}: {v}")
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Test real pipeline config")
-    parser.add_argument(
-        "config",
-        type=str,
-        help="Path to pipeline_config.yaml"
-    )
-    
-    args = parser.parse_args()
-    test_real_config(args.config)
+    print_config(sys.argv[1] if len(sys.argv) > 1 else CONFIG)

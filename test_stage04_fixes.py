@@ -210,15 +210,50 @@ class TestAssessImageWrapperSkipBeforeCompute:
 # ---------------------------------------------------------------------------
 
 class TestProcessParallelSkipped:
+    """Stage 04 runs on ProcessPoolExecutor (a worker killed by the OOM killer
+    surfaces as BrokenProcessPool instead of hanging Pool.map forever), and a
+    worker returns (success, category, peak_bytes, voxels, name) since KI-058."""
+
     def _run_with_mock_pool(self, assessor, mock_results):
-        mock_pool = MagicMock()
-        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
-        mock_pool.__exit__ = MagicMock(return_value=False)
-        mock_pool.map = MagicMock(return_value=mock_results)
+        results = [(ok, cat, None, 0, f"img{i}") for i, (ok, cat) in enumerate(mock_results)]
+
+        class _Executor:
+            def __init__(self, *args, **kwargs):  # e.g. initializer= (KI-032)
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def map(self, fn, tasks):
+                return iter(results)
 
         fake_images = [(Path("/fake/t1.nii.gz"), "001", "ses-001", "t1")]
-        with patch.object(quality_mod, 'Pool', MagicMock(return_value=mock_pool)):
+        with patch.object(quality_mod, 'ProcessPoolExecutor', _Executor):
             assessor._process_parallel(fake_images, Path("/tmp/out"), workers=2)
+
+    def test_a_killed_worker_fails_the_stage_instead_of_hanging(self, assessor):
+        from concurrent.futures.process import BrokenProcessPool
+
+        class _Broken:
+            def __init__(self, *args, **kwargs):  # e.g. initializer= (KI-032)
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def map(self, fn, tasks):
+                raise BrokenProcessPool("worker killed")
+
+        with patch.object(quality_mod, 'ProcessPoolExecutor', _Broken):
+            with pytest.raises(BrokenProcessPool):
+                assessor._process_parallel([(Path("/fake/t1.nii.gz"), "001", "ses-001", "t1")],
+                                           Path("/tmp/out"), workers=2)
 
     def test_skipped_counted_in_parallel(self, assessor):
         results = [

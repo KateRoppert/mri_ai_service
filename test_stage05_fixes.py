@@ -1,6 +1,6 @@
 """
 Tests for bugs fixed in stage 05 (05_preprocessing.py) and
-preprocessing_steps/skull_stripping.py.
+preprocessing_steps/skull_stripping/ (a package since the plugin split).
 
 Covered cases:
 - process_single_subject: reference_modality resolved by step name, not by [2] index
@@ -25,9 +25,13 @@ SCRIPTS_DIR = PROJ_ROOT / "scripts"
 sys.path.insert(0, str(PROJ_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-# Pre-mock unavailable C-extension dependencies so the module loads in test env
-for _dep in ("SimpleITK", "ants", "antspyx", "antspynet"):
-    if _dep not in sys.modules:
+# Mock C-extension dependencies only where they are really missing. Mocking
+# unconditionally put MagicMocks into sys.modules for every test collected
+# after this file, including ones that use the real ants (KI-063).
+for _dep in ("SimpleITK", "ants"):
+    try:
+        importlib.import_module(_dep)
+    except ImportError:
         sys.modules[_dep] = MagicMock()
 
 
@@ -40,7 +44,7 @@ def _load_module(filename: str, module_name: str):
 
 
 preproc_mod = _load_module("05_preprocessing.py", "preproc")
-skull_mod = _load_module("preprocessing_steps/skull_stripping.py", "skull_stripping")
+from preprocessing_steps import skull_stripping as skull_mod  # noqa: E402
 
 find_subjects = preproc_mod.find_subjects
 check_subject_processed = preproc_mod.check_subject_processed
@@ -299,6 +303,12 @@ class TestReferenceModalityByName:
 # check_subject_processed — skip detection
 # ---------------------------------------------------------------------------
 
+def _write_nifti(path: Path) -> None:
+    import nibabel as nib
+    import numpy as np
+    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), dtype=np.float32), np.eye(4)), str(path))
+
+
 class TestCheckSubjectProcessed:
     def _setup(self, tmp_path: Path, input_mods: list, output_mods: list):
         sub, ses = "sub-001", "ses-001"
@@ -309,7 +319,9 @@ class TestCheckSubjectProcessed:
         for mod in input_mods:
             (in_anat / f"{sub}_{ses}_{mod}.nii.gz").write_bytes(b"")
         for mod in output_mods:
-            (out_anat / f"{sub}_{ses}_{mod}.nii.gz").write_bytes(b"")
+            # A real (tiny) NIfTI: an empty or truncated output counts as not
+            # done since resume checks file integrity (is_complete_nifti).
+            _write_nifti(out_anat / f"{sub}_{ses}_{mod}.nii.gz")
         return tmp_path / "input", tmp_path / "output", sub, ses
 
     def test_fully_processed_returns_true(self, tmp_path):
@@ -330,6 +342,15 @@ class TestCheckSubjectProcessed:
         assert is_done is False
         assert set(missing) == {"t1", "t2"}
 
+    def test_truncated_output_is_not_done(self, tmp_path):
+        """A run stopped mid-write leaves a truncated file; it must be redone."""
+        in_dir, out_dir, sub, ses = self._setup(tmp_path, ["t1", "t2"], ["t1", "t2"])
+        t2 = out_dir / sub / ses / "anat" / f"{sub}_{ses}_t2.nii.gz"
+        t2.write_bytes(t2.read_bytes()[:40])
+        is_done, missing = check_subject_processed(in_dir, out_dir, sub, ses, ["t1", "t2"])
+        assert is_done is False
+        assert missing == ["t2"]
+
     def test_only_checks_modalities_present_on_input(self, tmp_path):
         """If t2fl is not on input, it must not be required on output."""
         in_dir, out_dir, sub, ses = self._setup(tmp_path, ["t1"], ["t1"])
@@ -346,7 +367,7 @@ class TestFSLEnvironmentLogging:
     def test_warning_not_error_for_nonexistent_fsl_dir(self, tmp_path, caplog):
         """setup_fsl_environment must log WARNING (not ERROR) when path doesn't exist."""
         bad_fsl_path = str(tmp_path / "nonexistent_fsl")
-        with caplog.at_level(logging.WARNING, logger="skull_stripping"):
+        with caplog.at_level(logging.WARNING, logger="preprocessing_steps.skull_stripping"):
             setup_fsl_environment(bad_fsl_path)
 
         warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -358,7 +379,7 @@ class TestFSLEnvironmentLogging:
     def test_warning_message_mentions_fallback(self, tmp_path, caplog):
         """Warning message should hint that system PATH will be used."""
         bad_fsl_path = str(tmp_path / "no_fsl_here")
-        with caplog.at_level(logging.WARNING, logger="skull_stripping"):
+        with caplog.at_level(logging.WARNING, logger="preprocessing_steps.skull_stripping"):
             setup_fsl_environment(bad_fsl_path)
 
         combined = " ".join(r.message for r in caplog.records if r.levelno == logging.WARNING)
@@ -366,7 +387,7 @@ class TestFSLEnvironmentLogging:
 
     def test_no_log_when_fsl_dir_is_empty_string(self, caplog):
         """Empty fsl_dir string means 'use PATH' — no warning should be logged."""
-        with caplog.at_level(logging.WARNING, logger="skull_stripping"):
+        with caplog.at_level(logging.WARNING, logger="preprocessing_steps.skull_stripping"):
             setup_fsl_environment("")
         error_msgs = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(error_msgs) == 0

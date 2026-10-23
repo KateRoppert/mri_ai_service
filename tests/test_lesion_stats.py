@@ -6,8 +6,10 @@ import nibabel as nib
 import importlib.util
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+# compute_lesion_stats moved out of the stage-08 script (08_lobar_localization.py,
+# since renamed 08_anatomical_analysis.py) into scripts/lesion_stats.py.
 _spec = importlib.util.spec_from_file_location(
-    "stage08", str(Path(__file__).parent.parent / "scripts" / "08_lobar_localization.py")
+    "lesion_stats", str(Path(__file__).parent.parent / "scripts" / "lesion_stats.py")
 )
 stage08 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(stage08)
@@ -25,7 +27,7 @@ def _make_mask(tmp_path):
 
 def test_min_size_filter_excludes_noise_from_count(tmp_path):
     mask = _make_mask(tmp_path)
-    stats, labeled, affine = stage08.compute_lesion_stats(mask)
+    stats, labeled, affine, kept = stage08.compute_lesion_stats(mask)
 
     # The 1-voxel speck (<3 mm3) is excluded from the count and per-lesion list.
     assert stats["lesion_count"] == 1
@@ -42,6 +44,8 @@ def test_min_size_filter_excludes_noise_from_count(tmp_path):
     # The saved labeled array keeps EVERY component (both blobs); only the
     # stats/hover map drops the sub-threshold one.
     assert set(int(x) for x in np.unique(labeled) if x != 0) == {1, 2}
+    # ...and kept_labels names the one that counts as a lesion.
+    assert len(kept) == 1
 
 
 def test_display_list_sorted_descending(tmp_path):
@@ -53,6 +57,6 @@ def test_display_list_sorted_descending(tmp_path):
     p = tmp_path / "mask3.nii.gz"
     nib.save(nib.Nifti1Image(data, np.eye(4)), str(p))
 
-    stats, _, _ = stage08.compute_lesion_stats(p)
+    stats, _, _, _ = stage08.compute_lesion_stats(p)
     assert stats["lesion_count"] == 3
     assert stats["lesion_volumes_cm3"] == sorted(stats["lesion_volumes_cm3"], reverse=True)
