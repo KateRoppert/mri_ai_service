@@ -218,7 +218,7 @@ class TestProcessParallelSkipped:
         results = [(ok, cat, None, 0, f"img{i}") for i, (ok, cat) in enumerate(mock_results)]
 
         class _Executor:
-            def __init__(self, max_workers=None):
+            def __init__(self, *args, **kwargs):  # e.g. initializer= (KI-032)
                 pass
 
             def __enter__(self):
@@ -238,7 +238,7 @@ class TestProcessParallelSkipped:
         from concurrent.futures.process import BrokenProcessPool
 
         class _Broken:
-            def __init__(self, max_workers=None):
+            def __init__(self, *args, **kwargs):  # e.g. initializer= (KI-032)
                 pass
 
             def __enter__(self):
