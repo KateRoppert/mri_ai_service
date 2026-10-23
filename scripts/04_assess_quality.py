@@ -487,17 +487,24 @@ class QualityAssessor:
         """Assess one image under a peak-memory meter (KI-058).
 
         Returns (success, category, peak_bytes, voxels, file name); the parent
-        logs the heaviest one, since worker log records do not reliably reach
-        the stage log (KI-032).
+        also logs the heaviest one. Each task logs its own line too, which
+        reaches the stage log since KI-032 (worker process name included).
         """
-        from utils.resource_planner import max_voxels, task_peak_meter
+        import time
+        from utils.resource_planner import format_task_peak, max_voxels, task_peak_meter
 
-        nifti_path = args[0]
+        nifti_path, patient_id, session_id, modality = args[0], args[1], args[2], args[3]
+        started = time.monotonic()
         with task_peak_meter() as meter:
             success, category = QualityAssessor._assess_image_wrapper(args)
         # After the task, and not for a skipped file: a skip must not touch
         # the image at all, not even its header (test_stage04_fixes).
         voxels = max_voxels([nifti_path]) if category != "SKIPPED" else 0
+        peak = format_task_peak(meter.peak_bytes, voxels) if category != "SKIPPED" else None
+        logging.getLogger("quality_assessor.worker").info(
+            f"{patient_id}/ses-{session_id} {modality}: "
+            f"{category if success else 'FAILED'} in {time.monotonic() - started:.1f}s"
+            + (f" — {peak}" if peak else ""))
         return success, category, meter.peak_bytes, voxels, Path(nifti_path).name
 
     @staticmethod

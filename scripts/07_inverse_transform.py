@@ -102,7 +102,8 @@ def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(getattr(logging, level))
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        # processName tells parallel workers apart (KI-032)
+        '%(asctime)s - %(processName)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     console.setFormatter(formatter)

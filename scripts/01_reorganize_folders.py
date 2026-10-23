@@ -2082,7 +2082,9 @@ def run_parallel(
         input_dir=input_dir,
         output_dir=output_dir,
         patient_mapping=patient_mapping,
-        log_level=logging.WARNING,
+        # INFO: one 'Processing'/'Completed' pair per patient in the stage log,
+        # tagged with the worker's process name (KI-032).
+        log_level=logging.INFO,
         force=force,
         dry_run=dry_run,
         tags_config=tags_config,

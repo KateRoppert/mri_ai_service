@@ -37,13 +37,15 @@ def process_series_worker(args):
     import logging
     # Child of the stage logger: reaches the stage log file (KI-032).
     temp_logger = logging.getLogger(f"nifti_converter.worker.{patient_id}_{modality}")
-    temp_logger.setLevel(logging.WARNING)  # Minimize logging in workers
+    temp_logger.setLevel(logging.INFO)
     
     temp_converter = NiftiConverter.__new__(NiftiConverter)
     temp_converter.logger = temp_logger
     temp_converter.dcm2niix_base_cmd = dcm2niix_base_cmd
     temp_converter.stats = {'total_series': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
     
+    import time
+    started = time.monotonic()
     success, error = temp_converter.convert_series(
     series_path,
     patient_id,
@@ -51,6 +53,12 @@ def process_series_worker(args):
     output_dir,
     session
     )
+    # One line per series, tagged with the worker's process name in the stage
+    # log, so a parallel run shows who did what and how long it took (KI-032).
+    outcome = ("skipped" if temp_converter.stats.get("skipped") else
+               "ok" if success else f"FAILED: {error}")
+    temp_logger.info(f"{patient_id}/ses-{session} {modality}: {outcome} "
+                     f"in {time.monotonic() - started:.1f}s")
 
     return {
         "success": success,

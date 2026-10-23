@@ -63,3 +63,14 @@ and no stage would keep worker logs.
 - Suites (with `fix/ki-063-stale-root-tests`): utils 31, root 225, backend
   561, scripts 75, tests/ 212 + 6 skipped for a fixture dataset absent from
   the temporary worktree.
+
+### Follow-up (same day): workers say what they do
+
+Kate ran two patients and saw no worker lines: warnings reached the file,
+but on a clean run workers of 01/03/04 logged nothing (01 ran them at
+WARNING in parallel mode, 03 too, 04 had no INFO on the worker path). Now
+one INFO line per task — 01 per patient, 03 per series with outcome and
+time, 04 per image with category, time and peak memory — and 05/07/08 carry
+the process name. Live, KA08 + KA45, parallel: stage 01 11 lines per worker,
+03 one per series (`ForkPoolWorker-1 … 001/ses-001 t2: ok in 0.3s`), 04 one
+per image (`ForkProcess-3 … t2: POOR in 0.6s — peak RSS 0.13 GB …`).

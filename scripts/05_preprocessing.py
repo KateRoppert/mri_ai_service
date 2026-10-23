@@ -111,6 +111,10 @@ def setup_logging(log_file: Path = None, level: str = "INFO"):
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file))
     
+    # Worker lines are told apart by process name (KI-032); the format comes
+    # from preprocessing_config.yaml, so add it there rather than replace it.
+    if "%(processName)s" not in log_format:
+        log_format = log_format.replace("%(levelname)s", "%(processName)s - %(levelname)s", 1)
     logging.basicConfig(
         level=numeric_level,
         format=log_format,
