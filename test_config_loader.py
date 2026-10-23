@@ -332,22 +332,11 @@ def test_nonexistent_config_file():
 
 
 @pytest.fixture
-def _series_scoring_yaml_path():
-    """Temporarily overwrites the real configs/series_scoring.yaml and restores it afterward.
-
-    load_series_scoring_config() takes no arguments and always reads from the
-    hardcoded path Path(__file__).parent.parent / 'configs' / 'series_scoring.yaml'.
-    There is no way to inject a test path, so to genuinely exercise the production
-    function we must temporarily mutate the real file. The original content is
-    backed up and restored in a finally block so the file is never left corrupted,
-    even if the test fails or raises.
-    """
-    real_path = Path(__file__).parent / 'configs' / 'series_scoring.yaml'
-    original_content = real_path.read_text(encoding='utf-8')
-    try:
-        yield real_path
-    finally:
-        real_path.write_text(original_content, encoding='utf-8')
+def _series_scoring_yaml_path(tmp_path):
+    """A scratch series_scoring.yaml. The tests used to overwrite the real
+    configs/series_scoring.yaml and restore it in `finally` — a killed run
+    left the real config empty (KI-063)."""
+    return tmp_path / "series_scoring.yaml"
 
 
 def test_load_series_scoring_config_empty_file(_series_scoring_yaml_path):
@@ -360,7 +349,7 @@ def test_load_series_scoring_config_empty_file(_series_scoring_yaml_path):
     _series_scoring_yaml_path.write_text("", encoding='utf-8')
 
     with pytest.raises(ConfigValidationError, match="must be a non-empty YAML mapping"):
-        load_series_scoring_config()
+        load_series_scoring_config(_series_scoring_yaml_path)
 
 
 def test_load_series_scoring_config_whitespace_only_file(_series_scoring_yaml_path):
@@ -371,7 +360,7 @@ def test_load_series_scoring_config_whitespace_only_file(_series_scoring_yaml_pa
     _series_scoring_yaml_path.write_text("   \n  \n   ", encoding='utf-8')
 
     with pytest.raises(ConfigValidationError, match="must be a non-empty YAML mapping"):
-        load_series_scoring_config()
+        load_series_scoring_config(_series_scoring_yaml_path)
 
 
 if __name__ == "__main__":

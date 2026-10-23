@@ -44,7 +44,8 @@ registration = _load_module("registration.py", "registration_interp_fix")
 def _run_apply_transform(tmp_path, **kwargs):
     captured = {}
 
-    def fake_apply_transforms(fixed, moving, transformlist, interpolator, whichtoinvert):
+    def fake_apply_transforms(fixed, moving, transformlist, interpolator, whichtoinvert, **kw):
+        # **kw: e.g. singleprecision=True (stage-05 memory fix)
         captured["interpolator"] = interpolator
         return MagicMock()
 

@@ -14,7 +14,25 @@ This will test:
 
 from pathlib import Path
 from datetime import datetime
-from performance_monitor import ExperimentMetrics, BenchmarkLogger
+import sys
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))
+from performance_monitor import ExperimentMetrics, BenchmarkLogger  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _in_tmp_dir(tmp_path, monkeypatch):
+    """Every test writes ./test_benchmark_results relative to the working
+    directory; under pytest that was the repo root (KI-063)."""
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture
+def logger():
+    """A BenchmarkLogger with the CPU/GPU baselines test_save_and_load writes."""
+    return test_save_and_load()
 
 
 def test_cpu_metrics():
@@ -279,7 +297,7 @@ def test_baseline_finding(logger):
     print()
 
 
-def test_csv_format():
+def test_csv_format(logger):
     """Check CSV file format"""
     print("=" * 70)
     print("TEST 5: CSV File Format Check")
@@ -372,7 +390,7 @@ def main():
         test_baseline_finding(logger)
         
         # Test 5: CSV format
-        test_csv_format()
+        test_csv_format(logger)
         
         # Test 6: to_dict method
         test_to_dict()

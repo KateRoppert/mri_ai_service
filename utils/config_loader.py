@@ -3,7 +3,7 @@
 """
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Optional, Dict, Any, List
 import yaml
 import sys
 
@@ -317,7 +317,7 @@ def load_lesion_type_config(lesion_type: str) -> Dict[str, Any]:
     return all_configs[lesion_type]
 
 
-def load_series_scoring_config() -> Dict[str, Any]:
+def load_series_scoring_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """
     Load series scoring configuration from configs/series_scoring.yaml.
 
@@ -337,7 +337,10 @@ def load_series_scoring_config() -> Dict[str, Any]:
                               and anatomy exclusion (KI-027, design spec
                               "Обработка ошибок").
     """
-    config_path = Path(__file__).parent.parent / 'configs' / 'series_scoring.yaml'
+    # config_path is for tests: they used to overwrite the real file, which a
+    # killed test run would leave empty (KI-063).
+    if config_path is None:
+        config_path = Path(__file__).parent.parent / 'configs' / 'series_scoring.yaml'
 
     if not config_path.exists():
         raise ConfigValidationError(f"Config file not found: {config_path}")

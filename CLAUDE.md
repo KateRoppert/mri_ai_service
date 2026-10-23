@@ -22,6 +22,8 @@ python3 -m venv ~/.venvs/slicer-agent && ~/.venvs/slicer-agent/bin/pip install -
 source venv/bin/activate
 python -m pytest backend/ -q
 python -m pytest test_*.py -q
+python -m pytest scripts/ -q
+python -m pytest --import-mode=importlib $(git ls-files 'tests/*.py' | grep /test_) -q   # tracked tests/; resource/ clashes with stdlib without importlib
 cd frontend && npm run lint
 ```
 
@@ -90,7 +92,7 @@ UI в `backend/config.py` нумерует этапы 1–7, пропуская 
 
 ## Testing
 
-Тесты: `backend/test_*.py`, корневые `test_*.py`, часть в `scripts/`. Папка `tests/` в `.gitignore` — новые тесты туда не класть. CI пока нет. Покрытие наращиваем на затронутых путях, не «тесты ради тестов». Frontend: ESLint (`npm run lint`), форматтера Python в репо нет.
+Тесты: `backend/test_*.py`, корневые `test_*.py`, часть в `scripts/`. Папка `tests/` в `.gitignore` — новые тесты туда не класть (отслеживаемые там старые — запускать как в Commands). С 2026-10-23 все четыре набора зелёные (KI-063) — красный тест теперь значит регрессию, а не фон. Тесты не пишут в рабочие конфиги и в корень репо: только `tmp_path`. CI пока нет. Покрытие наращиваем на затронутых путях, не «тесты ради тестов». Frontend: ESLint (`npm run lint`), форматтера Python в репо нет.
 
 ## Gotchas
 
