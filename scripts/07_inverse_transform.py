@@ -25,8 +25,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from preprocessing_steps.registration import inverse_transform_subject_masks
+
+# The utils imports below only resolved when the stage was started from the
+# repository root; the other stages insert this themselves.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
 from utils.nifti_integrity import is_complete_nifti
+from utils.resource_planner import available_cpu_count
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +375,8 @@ def main():
     # apply_transforms uses ~4 ANTs threads per call (lighter than full registration).
     # Reserve 2 cores for the OS/IDE on workstation machines.
     _OS_RESERVED_CORES = 2
-    cpu_count = os.cpu_count() or 4
+    # Container budget, not the host's cores (KI-078).
+    cpu_count = available_cpu_count()
     effective_cpu = max(4, cpu_count - _OS_RESERVED_CORES)
     if args.mode == "sequential":
         actual_workers = 1

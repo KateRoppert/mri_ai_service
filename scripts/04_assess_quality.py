@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-from multiprocessing import cpu_count
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pipeline_validator import InputOutputValidator
@@ -20,6 +19,7 @@ from pipeline_validator import InputOutputValidator
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
 from utils.nifti_integrity import is_complete_nifti
+from utils.resource_planner import available_cpu_count
 
 import numpy as np
 import yaml
@@ -949,11 +949,14 @@ def main():
 
         # Determine number of workers
         if args.mode == 'parallel':
+            # The CPUs this container may really use: cpuset and the cpus
+            # quota are invisible to os.cpu_count() (KI-078).
+            usable_cpus = available_cpu_count()
             if args.workers == 1:
-                args.workers = cpu_count()
+                args.workers = usable_cpus
                 logger.info(f"Workers not specified for parallel mode, using CPU count: {args.workers}")
-            elif args.workers > cpu_count():
-                logger.warning(f"Requested {args.workers} workers but only {cpu_count()} CPUs available")
+            elif args.workers > usable_cpus:
+                logger.warning(f"Requested {args.workers} workers but only {usable_cpus} CPUs available")
         else:
             args.workers = 1  # Sequential mode always uses 1 worker
         

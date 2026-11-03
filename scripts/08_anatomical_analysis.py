@@ -29,6 +29,9 @@ from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentM
 from lobar_analysis import LobarAnalyzer
 from lesion_stats import compute_lesion_stats
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.resource_planner import available_cpu_count
+
 logger = logging.getLogger(__name__)
 
 
@@ -382,7 +385,8 @@ def main():
     # Auto-tune parallelism.
     # Lobar analysis is pure Python/numpy — no ANTs threads, so workers can
     # use all available cores without thread over-subscription risk.
-    cpu_count = os.cpu_count() or 4
+    # Container budget, not the host's cores (KI-078).
+    cpu_count = available_cpu_count()
     if args.mode == "sequential":
         actual_workers = 1
         logger.info(f"Workers: 1 (sequential)")

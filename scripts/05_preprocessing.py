@@ -23,6 +23,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
 from utils.nifti_integrity import is_complete_nifti
+from utils.resource_planner import available_cpu_count
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from pipeline_validator import InputOutputValidator
 
@@ -898,9 +899,11 @@ def main():
     # Setup logging
     setup_logging(args.log_file, level="INFO")
 
-    cpu_count = os.cpu_count() or 4
+    # The budget this container may really use, not the host's core count:
+    # cpuset and the cpus quota are invisible to os.cpu_count() (KI-078).
+    cpu_count = available_cpu_count()
 
-    logger.info(f"System: {cpu_count} CPU cores available")
+    logger.info(f"System: {cpu_count} CPU cores usable (container budget)")
     logger.info(f"Mode: {args.mode}")
 
     if args.mode == 'sequential':

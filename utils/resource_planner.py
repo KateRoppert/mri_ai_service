@@ -8,6 +8,7 @@ working run is never broken.
 """
 
 import logging
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,76 @@ def host_available_bytes(meminfo_path: str = "/proc/meminfo") -> Optional[int]:
             except (IndexError, ValueError):
                 return None
     return None
+
+
+def cgroup_cpu_limit(
+    v2_path: str = "/sys/fs/cgroup/cpu.max",
+    v1_quota_path: str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+    v1_period_path: str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+) -> Optional[float]:
+    """Container CPU quota as a (possibly fractional) CPU count, or None.
+
+    cgroup v2 writes "<quota> <period>" in microseconds into cpu.max, with
+    "max" for no limit; v1 splits it over two files and uses -1 for no limit.
+    Returned unrounded: which way to round is the caller's call, not the
+    reader's.
+    """
+    try:
+        raw = Path(v2_path).read_text().strip().split()
+        if raw and raw[0] == "max":
+            return None
+        quota, period = float(raw[0]), float(raw[1])
+        if period > 0 and quota > 0:
+            return quota / period
+        return None
+    except (OSError, ValueError, IndexError):
+        pass
+
+    try:
+        quota = float(Path(v1_quota_path).read_text().strip())
+        period = float(Path(v1_period_path).read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if quota <= 0 or period <= 0:  # -1 == unlimited
+        return None
+    return quota / period
+
+
+def available_cpu_count(
+    v2_path: str = "/sys/fs/cgroup/cpu.max",
+    v1_quota_path: str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+    v1_period_path: str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+) -> int:
+    """How many CPUs this process may really use. Never 0.
+
+    KI-078: stages sized their ANTs/ITK thread counts from `os.cpu_count()`,
+    which reports the HOST's processors and ignores both `cpuset-cpus` and the
+    `cpus` quota. On a 24-thread machine with `cpuset-cpus: "0-7"` that planned
+    11 threads per worker onto 8 usable cores. This is the CPU twin of the
+    budget KI-058 introduced for memory.
+
+    Two mechanisms, two readings, tighter wins:
+      * pinning (`cpuset-cpus`) shows up in the affinity mask;
+      * a quota (`--cpus`) does not — affinity still lists every core.
+
+    A fractional quota is floored, because over-subscription is the failure
+    being fixed. Fail-safe: with nothing readable, falls back to the host count
+    and then to 4, which is what the stages used before.
+    """
+    counts = []
+
+    try:
+        counts.append(len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass  # not Linux, or not permitted
+
+    quota = cgroup_cpu_limit(v2_path, v1_quota_path, v1_period_path)
+    if quota is not None:
+        counts.append(int(quota))  # floor: never plan more than granted
+
+    if not counts:
+        return os.cpu_count() or 4
+    return max(1, min(counts))
 
 
 def max_voxels(nifti_paths: Iterable[Path]) -> int:
