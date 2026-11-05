@@ -31,6 +31,11 @@ from lesion_stats import compute_lesion_stats
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.resource_planner import available_cpu_count
+from utils.task_timeline import (stage_finished, stage_started, task_done,
+                                 timeline_path)
+
+# Name used in the task journal and in configs/resource_config.yaml.
+STAGE_NAME = "stage_08_anatomical_analysis"
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +293,11 @@ def main():
 
     setup_logging(args.log_file)
 
+    # Per-task journal. Stage 08 is the one that decides readiness: until
+    # it finishes a session the clinician has a mask and not one number.
+    _timeline = timeline_path(args.log_file)
+    stage_started(_timeline, STAGE_NAME)
+
     # Validate inputs
     if not args.input_dir.exists():
         logger.error(f"Input directory not found: {args.input_dir}")
@@ -444,6 +454,9 @@ def main():
                 subj, sess = future_map[future]
                 try:
                     result = future.result()
+                    task_done(_timeline, STAGE_NAME, subj, sess,
+                              status="ok" if result["success"] else "failed",
+                              duration_s=result.get("processing_time"))
                     if result["success"]:
                         successful += 1
                         logger.info(f"✓ [{idx}/{len(masks)}] {subj}/{sess}")
@@ -452,6 +465,7 @@ def main():
                         logger.error(f"✗ [{idx}/{len(masks)}] {subj}/{sess}")
                 except Exception as e:
                     failed += 1
+                    task_done(_timeline, STAGE_NAME, subj, sess, status="failed")
                     logger.error(f"✗ [{idx}/{len(masks)}] {subj}/{sess}: {e}")
 
     total_time = time.time() - start_time
@@ -491,6 +505,7 @@ def main():
     logger.info(f"Total time:   {total_time:.1f}s")
     logger.info("=" * 70)
 
+    stage_finished(_timeline, STAGE_NAME, successful=successful, failed=failed)
     return 0 if failed == 0 else 1
 
 

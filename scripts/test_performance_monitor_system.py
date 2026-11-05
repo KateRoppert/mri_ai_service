@@ -178,23 +178,30 @@ def test_real_worker_cpu_is_actually_captured():
     точку отсчёта. С пересозданием списка каждый тик дерево показывало 2% там,
     где машина показывала 13%. Мок возвращал один и тот же объект, поэтому
     суммирование проверялось, а кеширование — нет.
+
+    Опрос идёт до условия, а не фиксированное число раз: при фиксированном
+    число тиков тест дрожал, когда пул успевал запуститься медленнее окна
+    сэмплирования. Порог 40% недостижим, если дети невидимы — родитель в это
+    время простаивает.
     """
     import time
     from concurrent.futures import ProcessPoolExecutor
 
     m = PerformanceMonitor(enabled=True)
     m.start()
+    best = 0.0
     with ProcessPoolExecutor(max_workers=2) as ex:
-        futures = [ex.submit(_burn, 1.5) for _ in range(2)]
-        for _ in range(4):
-            time.sleep(0.4)
+        futures = [ex.submit(_burn, 3.0) for _ in range(2)]
+        deadline = time.time() + 4.0
+        while time.time() < deadline and best <= 40.0:
+            time.sleep(0.25)
             m._sample()
-        [f.result() for f in futures]
+            best = max(best, m.cpu_samples[-1])
+        for f in futures:
+            f.cancel()
     m.stop()
 
-    # Два воркера на 100% каждый дали бы ~200%; порог низкий, чтобы тест не
-    # дрожал на загруженной машине, но 0% при двух горящих ядрах невозможен.
-    assert max(m.cpu_samples) > 50.0, (
+    assert best > 40.0, (
         f"работа воркеров не видна: {[round(s) for s in m.cpu_samples]}"
     )
 

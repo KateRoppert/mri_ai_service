@@ -24,6 +24,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
 from utils.nifti_integrity import is_complete_nifti
 from utils.resource_planner import available_cpu_count
+from utils.task_timeline import (stage_finished, stage_started, task_done,
+                                 timeline_path)
+
+# Name used in the task journal and in configs/resource_config.yaml.
+STAGE_NAME = "stage_05_preprocessing"
 from performance_monitor import PerformanceMonitor, BenchmarkLogger, ExperimentMetrics
 from pipeline_validator import InputOutputValidator
 
@@ -899,6 +904,11 @@ def main():
     # Setup logging
     setup_logging(args.log_file, level="INFO")
 
+    # Machine-readable per-task journal: makespan is a batch metric, but a
+    # clinician waits for one session (utils/task_timeline.py).
+    _timeline = timeline_path(args.log_file)
+    stage_started(_timeline, STAGE_NAME)
+
     # The budget this container may really use, not the host's core count:
     # cpuset and the cpus quota are invisible to os.cpu_count() (KI-078).
     cpu_count = available_cpu_count()
@@ -1181,6 +1191,13 @@ def main():
                         try:
                             result = future.result()
                             all_results.append(result)
+                            task_done(
+                                _timeline, STAGE_NAME, subject_id, session_id,
+                                status=("ok" if result.get('success')
+                                        else "skipped" if result.get('skipped')
+                                        else "failed"),
+                                duration_s=result.get('processing_time'),
+                            )
                             
                             if result['success']:
                                 successful += 1
@@ -1194,6 +1211,8 @@ def main():
                                 
                         except Exception as e:
                             failed += 1
+                            task_done(_timeline, STAGE_NAME, subject_id,
+                                      session_id, status="failed")
                             logger.error(f"✗ [{idx}/{len(processing_args)}] {subject_id}/{session_id} exception: {e}")
                             all_results.append({
                                 "subject_id": subject_id,
@@ -1358,6 +1377,7 @@ def main():
             logger.info(f"  Success rate:       {comparison_result['statistics']['success_rate_percent']}%")
             logger.info(f"  Complete sessions:  {comparison_result['statistics']['complete_sessions']}/{comparison_result['statistics']['total_sessions']}")
         
+        stage_finished(_timeline, STAGE_NAME, successful=successful, failed=failed)
         return 0
         
     except Exception as e:
