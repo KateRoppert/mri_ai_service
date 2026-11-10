@@ -649,13 +649,18 @@ class BIDSScanner:
     
     def filter_existing(
         self, 
-        sessions: list[SubjectSession]
+        sessions: list[SubjectSession],
+        timeline=None,
     ) -> tuple[list[SubjectSession], int]:
         """
         Filter out sessions that already have output mask files.
         
         Args:
             sessions: List of SubjectSession objects to filter
+            timeline: task journal to record the skips in. Without it a skipped
+                session would leave no trace at all, while stage 05 records its
+                own skips — and the completion rate in the run report is only
+                trustworthy if every session's fate is written down somewhere.
         
         Returns:
             Tuple of (filtered_sessions, skipped_count)
@@ -667,6 +672,8 @@ class BIDSScanner:
             if is_complete_nifti(session.output_mask_path):
                 identifier = session.get_identifier()
                 logger.debug(f"⊙ Skipping {identifier}: Output mask already exists at {session.output_mask_path}")
+                task_done(timeline, STAGE_NAME, session.subject_id,
+                          session.session_id, status="skipped")
                 skipped += 1
             else:
                 filtered.append(session)
@@ -997,7 +1004,8 @@ class SegmentationRunner:
                 logger.info("=" * 60)
                 logger.info(f"Sessions discovered: {len(sessions)}")
                 
-                sessions, skipped_count = scanner.filter_existing(sessions)
+                sessions, skipped_count = scanner.filter_existing(
+                    sessions, timeline=timeline_path(self.args.log_file))
                 self.stats.skipped = skipped_count
                 
                 logger.info(f"Sessions to process: {len(sessions)}")

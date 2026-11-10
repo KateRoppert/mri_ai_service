@@ -84,3 +84,41 @@ def test_stage_windows_are_durations_in_seconds(tmp_path):
     ])
 
     assert report(run)["stage_windows_s"] == {"stage_05": 60.0}
+
+
+def test_an_empty_journal_is_an_error_not_a_zero_result(tmp_path):
+    """«0 из 0 сессий» выглядит как настоящий замер и попало бы в таблицу.
+
+    Пустой или нечитаемый журнал — это отсутствие замера, а не прогон,
+    в котором ничего не произошло.
+    """
+    run = _run(tmp_path, [])
+    (run / "logs" / TIMELINE_NAME).write_text("", encoding="utf-8")
+
+    data = report(run)
+
+    assert "error" in data
+    assert "sessions_done" not in data
+
+
+def test_a_journal_without_a_start_is_an_error(tmp_path):
+    """Без stage_started время ожидания не от чего отсчитывать."""
+    run = _run(tmp_path, [
+        {"event": "task_done", "stage": "stage_08", "subject": "sub-001",
+         "session": "ses-001", "status": "ok", "at": 10.0},
+    ])
+
+    data = report(run)
+
+    assert "error" in data and "stage_started" in data["error"]
+
+
+def test_an_unreadable_run_directory_does_not_kill_the_batch(tmp_path, monkeypatch):
+    """Скрипту дают список прогонов; один каталог без прав не повод упасть."""
+    def boom(*_args, **_kwargs):
+        raise PermissionError("нет доступа")
+
+    monkeypatch.setattr(Path, "rglob", boom)
+
+    assert find_timeline(tmp_path) is None
+    assert "error" in report(tmp_path)

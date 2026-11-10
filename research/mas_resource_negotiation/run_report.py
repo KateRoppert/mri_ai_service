@@ -26,14 +26,21 @@ from utils.task_timeline import TIMELINE_NAME, read_timeline, turnaround
 
 
 def find_timeline(run_dir: Path) -> Path | None:
-    """Журнал лежит в `{run}/logs/`; на всякий случай ищем и глубже."""
-    direct = run_dir / "logs" / TIMELINE_NAME
-    if direct.is_file():
-        return direct
-    if run_dir.name == TIMELINE_NAME and run_dir.is_file():
-        return run_dir
-    found = sorted(run_dir.rglob(TIMELINE_NAME))
-    return found[0] if found else None
+    """Журнал лежит в `{run}/logs/`; на всякий случай ищем и глубже.
+
+    Обход дерева глотает ошибки доступа намеренно: скрипту дают список
+    прогонов, и один каталог без прав не должен ронять отчёт по остальным.
+    """
+    try:
+        direct = run_dir / "logs" / TIMELINE_NAME
+        if direct.is_file():
+            return direct
+        if run_dir.name == TIMELINE_NAME and run_dir.is_file():
+            return run_dir
+        found = sorted(run_dir.rglob(TIMELINE_NAME))
+        return found[0] if found else None
+    except OSError:
+        return None
 
 
 def report(run_dir: Path) -> dict:
@@ -41,7 +48,21 @@ def report(run_dir: Path) -> dict:
     if timeline is None:
         return {"run": str(run_dir), "error": f"нет {TIMELINE_NAME}"}
 
-    stats = turnaround(read_timeline(timeline))
+    # Нечитаемый или пустой журнал НЕ должен превращаться в честно
+    # выглядящий отчёт «0/0 сессий»: это число пошло бы в таблицу статьи как
+    # результат, хотя в действительности замера нет. Поэтому отличаем
+    # «пусто» от «успешно и ничего не сделано».
+    records = read_timeline(timeline)
+    if not records:
+        return {"run": str(run_dir), "timeline": str(timeline),
+                "error": "журнал пуст или не читается"}
+
+    stats = turnaround(records)
+    if stats["run_started_at"] is None:
+        return {"run": str(run_dir), "timeline": str(timeline),
+                "error": "в журнале нет ни одного stage_started — "
+                         "отсчитывать время ожидания не от чего"}
+
     attempted = stats["n"] + len(stats["incomplete"])
     return {
         "run": str(run_dir),
