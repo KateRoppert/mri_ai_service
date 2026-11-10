@@ -20,6 +20,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
 from utils.nifti_integrity import is_complete_nifti
 from utils.resource_planner import available_cpu_count
+from utils.task_timeline import stage_started, task_done, timeline_path
+
+# Name used in the task journal (utils/task_timeline.py).
+STAGE_NAME = "stage_04_quality"
 
 import numpy as np
 import yaml
@@ -924,6 +928,8 @@ def main():
     
     # Setup logging
     logger = setup_logging(args.log_file)
+    # Boundaries only: this stage's unit is a single image, not a session.
+    stage_started(timeline_path(args.log_file), STAGE_NAME)
 
     # Handle --force flag: clear output directory
     if args.force:

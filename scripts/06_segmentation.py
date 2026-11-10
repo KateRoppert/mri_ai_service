@@ -36,6 +36,10 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config
 from utils.nifti_integrity import is_complete_nifti
+from utils.task_timeline import stage_started, task_done, timeline_path
+
+# Name used in the task journal (utils/task_timeline.py).
+STAGE_NAME = "stage_06_segmentation"
 from pipeline_validator import InputOutputValidator
 
 # --- Logger Setup ---
@@ -1114,6 +1118,9 @@ class SegmentationRunner:
                                 )
                                 success = False
 
+                    task_done(timeline_path(self.args.log_file), STAGE_NAME,
+                              session.subject_id, session.session_id,
+                              status="ok" if success else "failed")
                     if success:
                         self.stats.successful += 1
                         try:
@@ -1131,6 +1138,9 @@ class SegmentationRunner:
 
                 except Exception as e:
                     self.stats.failed += 1
+                    task_done(timeline_path(self.args.log_file), STAGE_NAME,
+                              session.subject_id, session.session_id,
+                              status="failed")
                     logger.error(f"  ✗ Error processing {identifier}: {e}")
                     logger.exception(f"  Full traceback for {identifier}:")
                     return False
@@ -1490,6 +1500,7 @@ if __name__ == "__main__":
         log_file = args.output_dir / "segmentation.log"
 
     setup_logging(log_file, args.console_log_level)
+    stage_started(timeline_path(args.log_file), STAGE_NAME)
 
     try:
         app_config = Config(args.config)

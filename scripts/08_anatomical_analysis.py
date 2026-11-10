@@ -178,6 +178,7 @@ def process_one_mask(
     analyzer: pre-loaded LobarAnalyzer to reuse in sequential mode;
               if None a new one is created (needed per-process in parallel mode).
     """
+    task_start = time.time()
     try:
         if analyzer is None:
             analyzer = build_analyzer(lesion_type, atlas_path, mapping_path, seg_classes, ms_zone_atlas_paths)
@@ -242,7 +243,10 @@ def process_one_mask(
             "session_id": session_id,
             "success": True,
             "affected_lobes": affected,
-            "report_path": str(report_path)
+            "report_path": str(report_path),
+            # Measured here, written by the parent into the task journal
+            # (utils/task_timeline.py) — the pattern KI-058 set for peak RSS.
+            "processing_time": time.time() - task_start,
         }
 
     except Exception as e:

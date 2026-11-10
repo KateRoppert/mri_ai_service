@@ -231,3 +231,29 @@ def test_an_empty_timeline_does_not_raise():
     stats = turnaround([])
 
     assert stats["n"] == 0 and stats["median_s"] is None
+
+
+def test_a_stage_without_stage_finished_still_gets_an_end():
+    """Этапы 01/03/04 пишут только границу старта (их единица мельче сессии),
+    а упавший этап не успевает написать завершение. Последняя его запись —
+    лучшее, что есть, иначе окно осталось бы открытым."""
+    records = _records([
+        ("stage_started", "stage_03_convert", None, None, None, 0.0),
+        ("stage_started", "stage_05", None, None, None, 10.0),
+        ("task_done", "stage_05", "sub-001", "ses-001", "ok", 25.0),
+    ])
+
+    windows = turnaround(records)["stage_windows"]
+
+    assert windows["stage_05"]["finished_at"] == 25.0   # по последней задаче
+    assert windows["stage_03_convert"]["finished_at"] is None  # нечего взять
+
+
+def test_stage_finished_wins_over_the_fallback():
+    records = _records([
+        ("stage_started", "stage_05", None, None, None, 0.0),
+        ("task_done", "stage_05", "sub-001", "ses-001", "ok", 10.0),
+        ("stage_finished", "stage_05", None, None, None, 30.0),
+    ])
+
+    assert turnaround(records)["stage_windows"]["stage_05"]["finished_at"] == 30.0

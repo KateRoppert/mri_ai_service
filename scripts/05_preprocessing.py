@@ -1081,12 +1081,20 @@ def main():
                             "skipped": True
                         })
                         skipped += 1
+                        task_done(_timeline, STAGE_NAME, subject_id,
+                                  session_id, status="skipped")
                         continue
                     elif missing_mods:
                         logger.info(f"→ {subject_id}/{session_id} partially processed, missing: {', '.join(missing_mods)}")
                 
                 result = process_subject_wrapper(args_tuple)
                 all_results.append(result)
+                task_done(
+                    _timeline, STAGE_NAME, subject_id, session_id,
+                    status=("ok" if result.get('success')
+                            else "skipped" if result.get('skipped') else "failed"),
+                    duration_s=result.get('processing_time'),
+                )
                 if result.get("peak_line"):
                     logger.info(f"{subject_id}/{session_id}: {result['peak_line']}")
                 

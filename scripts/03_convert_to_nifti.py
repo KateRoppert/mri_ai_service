@@ -21,6 +21,10 @@ from pipeline_validator import InputOutputValidator
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.nifti_integrity import is_complete_nifti
 from utils.resource_planner import available_cpu_count
+from utils.task_timeline import stage_started, task_done, timeline_path
+
+# Name used in the task journal (utils/task_timeline.py).
+STAGE_NAME = "stage_03_convert"
 
 def process_series_worker(args):
     """
@@ -699,6 +703,8 @@ def main():
     
     # Setup logging
     logger = setup_logging(args.log_file)
+    # Boundaries only: this stage's unit is a series, not a session.
+    stage_started(timeline_path(args.log_file), STAGE_NAME)
 
     # Handle --force flag
     if args.force and args.output_dir.exists():

@@ -193,13 +193,26 @@ def turnaround(
         stage = r.get("stage")
         if not stage or r.get("at") is None:
             continue
-        window = windows.setdefault(stage, {"started_at": None, "finished_at": None})
+        window = windows.setdefault(
+            stage, {"started_at": None, "finished_at": None, "last_seen_at": None})
         if r.get("event") == "stage_started":
             window["started_at"] = (r["at"] if window["started_at"] is None
                                     else min(window["started_at"], r["at"]))
         elif r.get("event") == "stage_finished":
             window["finished_at"] = (r["at"] if window["finished_at"] is None
                                      else max(window["finished_at"], r["at"]))
+        else:
+            # Fallback for a stage that writes no stage_finished — either it
+            # only marks its boundary (units finer than a session) or it died.
+            # The last thing it recorded is the best end we have.
+            last = window.get("last_seen_at")
+            window["last_seen_at"] = r["at"] if last is None else max(last, r["at"])
+
+    for window in windows.values():
+        if window["finished_at"] is None:
+            window["finished_at"] = window.pop("last_seen_at")
+        else:
+            window.pop("last_seen_at", None)
 
     return {
         "run_started_at": run_started,

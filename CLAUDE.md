@@ -24,6 +24,7 @@ python -m pytest backend/ -q
 python -m pytest test_*.py -q
 python -m pytest scripts/ -q
 python -m pytest utils/ -q
+python -m pytest research/ -q
 python -m pytest --import-mode=importlib $(git ls-files 'tests/*.py' | grep /test_) -q   # tracked tests/; resource/ clashes with stdlib without importlib
 cd frontend && npm run lint
 ```

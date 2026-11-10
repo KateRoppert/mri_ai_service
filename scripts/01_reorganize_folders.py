@@ -36,6 +36,10 @@ from scripts.metadata_extractor import MetadataExtractor
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_lesion_type_config, load_series_scoring_config
 from utils.dicom_file_ops import is_dicom_file, find_dicom_files, MODALITY_BIDS_SUFFIX, copy_and_anonymize_series
+from utils.task_timeline import stage_started, task_done, timeline_path
+
+# Name used in the task journal (utils/task_timeline.py).
+STAGE_NAME = "stage_01_reorganize"
 
 # Single source of truth for modalities the pipeline knows how to process.
 # Maps internal modality name → BIDS suffix used in output filenames.
@@ -2297,6 +2301,10 @@ def main():
         args.log_file = args.output_dir / 'reorganize.log'
 
     logger = setup_logging(args.log_file)
+    # Earliest stage_started is the run's clock for turnaround. No per-task
+    # records here: this stage works per patient directory and assigns the
+    # sub-XXX number inside, so they would not join the later stages.
+    stage_started(timeline_path(args.log_file), STAGE_NAME)
 
     logger.info("=" * 60)
     logger.info("Starting dataset reorganization")
