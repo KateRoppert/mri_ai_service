@@ -179,3 +179,43 @@ def test_db_path_resolution_is_unchanged(monkeypatch, tmp_path):
     db = tmp_path / "env.db"
     monkeypatch.setenv("BRAIN_LESION_DB", str(db))
     assert bids_allocator._resolve_db_path(None) == db
+
+
+def test_a_migration_that_finished_under_us_is_not_an_error(old_db, monkeypatch):
+    """KI-079: второй процесс падал на `no such column: lesion_type`.
+
+    `migrate` защищался от гонки повторной проверкой под `BEGIN IMMEDIATE`,
+    но до взятия блокировки успевал вызвать `_plan`, а тот читает старый
+    столбец `lesion_type`. Если сосед домиграл в этом промежутке, падение
+    происходило раньше, чем срабатывала защита.
+
+    Поток здесь не нужен: достаточно воспроизвести порядок — устаревшая
+    проверка «таблица старая» на уже миграной базе.
+    """
+    from utils import bids_allocation_migration as m
+
+    assert m.migrate(old_db, dry_run=False) is not None  # первый процесс
+
+    real_is_legacy = m.is_legacy
+    calls = []
+
+    def stale_first_then_real(conn):
+        calls.append(1)
+        return True if len(calls) == 1 else real_is_legacy(conn)
+
+    monkeypatch.setattr(m, "is_legacy", stale_first_then_real)
+
+    assert m.migrate(old_db, dry_run=False) is None, "должен тихо уступить"
+    assert len(_backups(old_db)) == 1, "второй процесс не делает вторую копию"
+
+
+def test_dry_run_still_reports_the_plan(old_db):
+    """Защитная проверка: план для осмотра руками считается по-прежнему."""
+    from utils.bids_allocation_migration import migrate
+
+    result = migrate(old_db, dry_run=True)
+
+    assert result["moved_to_datasets"] == 2
+    assert result["moved_to_local"] == 1
+    assert _columns(old_db) == {"lesion_type", "original_patient_id",
+                                "bids_id", "created_at"}, "dry-run не меняет схему"
