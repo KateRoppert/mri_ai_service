@@ -5,6 +5,8 @@ Collects CPU, memory, and timing metrics.
 
 import csv
 import json
+import shutil
+import subprocess
 import time
 import threading
 from pathlib import Path
@@ -91,6 +93,21 @@ class ExperimentMetrics:
     disk_read_mb: Optional[float] = None
     disk_write_mb: Optional[float] = None
 
+    # Energy. The paper's premise is that clinical hardware is limited, so if
+    # a strategy wins by keeping more of it busy, the honest form of that claim
+    # includes what it costs.
+    #
+    # The GPU has no energy counter, so this is power sampled over the run and
+    # integrated. The CPU does have one (RAPL, microjoules), which is exact —
+    # when it is readable at all: energy_uj is root-only since PLATYPUS, where
+    # power draw was used to recover encryption keys. cpu_energy_wh stays None
+    # rather than 0.0 when it cannot be read, so a table never claims the CPU
+    # spent nothing.
+    gpu_power_avg_w: Optional[float] = None
+    gpu_power_max_w: Optional[float] = None
+    gpu_energy_wh: Optional[float] = None
+    cpu_energy_wh: Optional[float] = None
+
     # Comparative metrics
     speedup: Optional[float] = None
     efficiency: Optional[float] = None
@@ -111,6 +128,94 @@ class ExperimentMetrics:
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
         return asdict(self)
+
+
+RAPL_ROOT = "/sys/class/powercap"
+# Sampling nvidia-smi costs ~50-100 ms, so it runs on a slower cadence than the
+# rest: a GPU's power does not swing meaningfully inside two seconds, and the
+# subprocess should not show up in the CPU numbers we are collecting.
+GPU_POWER_EVERY_N_TICKS = 4
+
+
+def _rapl_energy_uj(root=RAPL_ROOT) -> Optional[int]:
+    """Total CPU package energy in microjoules, or None if unreadable.
+
+    Only top-level domains (intel-rapl:N) are summed. Their subdomains
+    (intel-rapl:N:M — cores, uncore, dram) are parts of the same package, so
+    adding both would count the same joules twice.
+    """
+    from pathlib import Path as _Path
+    total = None
+    try:
+        domains = sorted(_Path(root).glob("intel-rapl:[0-9]"))
+    except OSError:
+        return None
+    for domain in domains:
+        try:
+            value = int((domain / "energy_uj").read_text().strip())
+        except (OSError, ValueError):
+            continue  # no permission on this domain, or it went away
+        total = value if total is None else total + value
+    return total
+
+
+def _rapl_max_range_uj(root=RAPL_ROOT) -> Optional[int]:
+    """Where the counter wraps, summed over the same domains."""
+    from pathlib import Path as _Path
+    total = None
+    try:
+        domains = sorted(_Path(root).glob("intel-rapl:[0-9]"))
+    except OSError:
+        return None
+    for domain in domains:
+        try:
+            value = int((domain / "max_energy_range_uj").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        total = value if total is None else total + value
+    return total
+
+
+def _gpu_power_watts() -> Optional[float]:
+    """Power drawn by every visible GPU, summed, or None.
+
+    Summed because a run spends what all its cards spend — barguzin has two.
+    Laptop cards often report [N/A] for power.draw; cards that do are skipped,
+    and None comes back only when nothing reported at all.
+    """
+    try:
+        import pynvml  # present in the service images, not in the host venv
+        pynvml.nvmlInit()
+        try:
+            total = 0.0
+            for i in range(pynvml.nvmlDeviceGetCount()):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                total += pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+            if total > 0:
+                return total
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:
+        pass
+
+    try:
+        if not shutil.which("nvidia-smi"):
+            return None
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=power.draw",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return None
+        values = []
+        for line in result.stdout.strip().splitlines():
+            try:
+                values.append(float(line.strip()))
+            except ValueError:
+                continue  # [N/A]
+        return sum(values) if values else None
+    except Exception:
+        return None
 
 
 class PerformanceMonitor:
@@ -138,6 +243,13 @@ class PerformanceMonitor:
         self._disk_at_start = None
         self._disk_latest = None
         self._procs = {}
+        self.gpu_power_samples: List[float] = []
+        self._rapl_root = RAPL_ROOT
+        self._rapl_last = None
+        self._rapl_max_range = None
+        self._cpu_energy_uj = 0
+        self._cpu_energy_available = False
+        self._tick = 0
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
         
@@ -158,6 +270,12 @@ class PerformanceMonitor:
         self._disk_at_start = self._disk_counters()
         self._disk_latest = self._disk_at_start
         self._procs = {}
+        self.gpu_power_samples = []
+        self._rapl_last = _rapl_energy_uj(self._rapl_root)
+        self._rapl_max_range = _rapl_max_range_uj(self._rapl_root)
+        self._cpu_energy_uj = 0
+        self._cpu_energy_available = self._rapl_last is not None
+        self._tick = 0
         # Prime the per-process baseline: the first cpu_percent() call always
         # returns 0.0, it only sets the reference point for the next one.
         self._root = psutil.Process()
@@ -259,6 +377,30 @@ class PerformanceMonitor:
         if latest is not None:
             self._disk_latest = latest
 
+        self._sample_energy()
+
+    def _sample_energy(self):
+        """CPU energy from the RAPL counter; GPU power on a slower cadence."""
+        self._tick += 1
+
+        if self._cpu_energy_available:
+            now = _rapl_energy_uj(self._rapl_root)
+            if now is not None and self._rapl_last is not None:
+                delta = now - self._rapl_last
+                if delta < 0 and self._rapl_max_range:
+                    # The counter is a ring: at 100 W it wraps in roughly 45
+                    # minutes, and a matrix run is longer than that.
+                    delta += self._rapl_max_range
+                if delta >= 0:
+                    self._cpu_energy_uj += delta
+            if now is not None:
+                self._rapl_last = now
+
+        if self._tick % GPU_POWER_EVERY_N_TICKS == 1:
+            watts = _gpu_power_watts()
+            if watts is not None:
+                self.gpu_power_samples.append(watts)
+
     def _monitor_loop(self):
         """Background monitoring loop."""
         while self.monitoring:
@@ -276,11 +418,24 @@ class PerformanceMonitor:
         Returns:
             Dictionary with metrics
         """
+        # `is not None`, not truthiness: a start_time of 0.0 is a valid
+        # instant, and `if self.start_time` silently discards the duration.
         duration = (self.end_time - self.start_time
-                    if self.start_time and self.end_time else None)
+                    if self.start_time is not None and self.end_time is not None
+                    else None)
 
         def agg(samples, how):
             return how(samples) if samples else None
+
+        gpu_power_avg = (sum(self.gpu_power_samples) / len(self.gpu_power_samples)
+                         if self.gpu_power_samples else None)
+        # No energy counter on the card, so power is integrated over the run.
+        # Sampling is near-uniform, which makes mean x duration a sound
+        # estimator; it is also the form a reader can check by hand.
+        gpu_energy_wh = (gpu_power_avg * duration / 3600.0
+                         if gpu_power_avg is not None and duration else None)
+        cpu_energy_wh = (self._cpu_energy_uj / 1e6 / 3600.0
+                         if self._cpu_energy_available else None)
 
         read_mb = write_mb = None
         if self._disk_at_start is not None and self._disk_latest is not None:
@@ -302,6 +457,11 @@ class PerformanceMonitor:
                 'iowait_max': None,
                 'disk_read_mb': read_mb,
                 'disk_write_mb': write_mb,
+                'gpu_power_avg_w': gpu_power_avg,
+                'gpu_power_max_w': (max(self.gpu_power_samples)
+                                    if self.gpu_power_samples else None),
+                'gpu_energy_wh': gpu_energy_wh,
+                'cpu_energy_wh': cpu_energy_wh,
                 'duration': duration,
             }
 
@@ -318,6 +478,11 @@ class PerformanceMonitor:
             'iowait_max': agg(self.iowait_samples, max),
             'disk_read_mb': read_mb,
             'disk_write_mb': write_mb,
+            'gpu_power_avg_w': gpu_power_avg,
+            'gpu_power_max_w': (max(self.gpu_power_samples)
+                                if self.gpu_power_samples else None),
+            'gpu_energy_wh': gpu_energy_wh,
+            'cpu_energy_wh': cpu_energy_wh,
             'duration': duration,
         }
 
@@ -357,6 +522,8 @@ class BenchmarkLogger:
             'gpu_temperature_avg', 'gpu_temperature_max',
             'system_cpu_avg', 'system_cpu_max', 'system_memory_peak_mb',
             'iowait_avg', 'iowait_max', 'disk_read_mb', 'disk_write_mb',
+            'gpu_power_avg_w', 'gpu_power_max_w', 'gpu_energy_wh',
+            'cpu_energy_wh',
             'speedup', 'efficiency'
         ]
         
@@ -411,6 +578,10 @@ class BenchmarkLogger:
                 f"{metrics.iowait_max:.3f}" if metrics.iowait_max is not None else "",
                 f"{metrics.disk_read_mb:.2f}" if metrics.disk_read_mb is not None else "",
                 f"{metrics.disk_write_mb:.2f}" if metrics.disk_write_mb is not None else "",
+                f"{metrics.gpu_power_avg_w:.2f}" if metrics.gpu_power_avg_w is not None else "",
+                f"{metrics.gpu_power_max_w:.2f}" if metrics.gpu_power_max_w is not None else "",
+                f"{metrics.gpu_energy_wh:.4f}" if metrics.gpu_energy_wh is not None else "",
+                f"{metrics.cpu_energy_wh:.4f}" if metrics.cpu_energy_wh is not None else "",
                 f"{metrics.speedup:.3f}" if metrics.speedup else "",
                 f"{metrics.efficiency:.3f}" if metrics.efficiency else ""
             ])
