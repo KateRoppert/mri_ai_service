@@ -18,7 +18,19 @@ from kappa_http import kappa_client
 
 logger = logging.getLogger(__name__)
 
-KAPPA_DATA_URL = "https://kappa.nsu.ru:8061/data-micro-services/v1"
+# v2, потому что v1 закрыт 13.11.2026 (KI-081): любой путь под
+# `/data-micro-services/v1/` отдаёт 401 от nginx, не доходя до приложения.
+#
+# Отличие v2 на всех вызовах ниже одно и то же: из пути уходят
+# `{user_id}/{user_type_id}` — личность берётся из токена. Тела запросов и
+# ключи ответов совпадают; это проверено живыми пробами на одноразовом
+# датасете ещё в октябре, см.
+# docs/superpowers/specs/2026-10-02-kappa-replace-on-reprocess-design.md
+#
+# Параметры `user_id`/`user_type_id` в сигнатурах сохранены: их передают
+# вызывающие по всему проекту, и выкидывать их значило бы трогать весь этот
+# путь ради косметики. В телах запросов `userId` остался там, где и был.
+KAPPA_DATA_URL = "https://kappa.nsu.ru:8061/data-micro-services/v2"
 
 
 async def list_user_datasets(
@@ -31,7 +43,7 @@ async def list_user_datasets(
     Each element is a dict with at least 'datasetId' and 'datasetName'.
     Returns an empty list on error.
     """
-    url = f"{KAPPA_DATA_URL}/datasets/{user_id}/{user_type_id}"
+    url = f"{KAPPA_DATA_URL}/datasets"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         async with kappa_client(timeout=15.0) as client:
@@ -55,7 +67,7 @@ async def _find_dataset_id(
     """
     Найти dataset_id по имени через GET /datasets/{user_id}/{user_type_id}.
     """
-    url = f"{KAPPA_DATA_URL}/datasets/{user_id}/{user_type_id}"
+    url = f"{KAPPA_DATA_URL}/datasets"
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
@@ -96,7 +108,7 @@ async def create_dataset(
     Создать новый датасет в Kappa.
     Возвращает dataset_id или None при ошибке.
     """
-    url = f"{KAPPA_DATA_URL}/datasets/new/{user_id}/{user_type_id}"
+    url = f"{KAPPA_DATA_URL}/datasets/new"
     payload = {
         "userId": user_id,
         "datasetName": dataset_name,
@@ -180,10 +192,7 @@ async def upload_entity(
     Если zip_as_archive=True, файлы упаковываются в zip перед загрузкой.
     Возвращает ответ сервера или None при ошибке.
     """
-    url = (
-        f"{KAPPA_DATA_URL}/datasets/datasetEntities/new"
-        f"/{user_id}/{user_type_id}/{dataset_id}"
-    )
+    url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/new/{dataset_id}"
 
     collected_on = datetime.now(timezone.utc).isoformat()
 
@@ -337,9 +346,7 @@ async def set_entity_status(
     dsEntityInfo.labels and an `output` mask (KI-075) — its answer is
     returned so callers can say why.
     """
-    from kappa_entity_files import KAPPA_DATA_URL_V2
-
-    url = f"{KAPPA_DATA_URL_V2}/datasets/datasetEntities/{dataset_id}/{entity_id}"
+    url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/{dataset_id}/{entity_id}"
     data = {"update_dataset_entity": json.dumps(
         {"dsEntityStatus": status, "remark": remark or f"status {status}"})}
     headers = {"Authorization": f"Bearer {token}"}
@@ -383,7 +390,7 @@ async def update_entity_status(
                                     dataset_id, entity_id, status)
     return ok
 
-async def replace_entity_file(
+async def append_entity_file(
     token: str,
     user_id: int,
     user_type_id: int,
@@ -393,14 +400,22 @@ async def replace_entity_file(
     content_type: str = "application/gzip",
 ) -> Optional[str]:
     """
-    Заменить файл(ы) сущности в Каппе (PUT с новым файлом).
-    Используется для загрузки отредактированной маски экспертом.
+    ДОПИСАТЬ файл к сущности в Каппе (PUT с новым файлом).
+
+    Имя до 13.11.2026 было `replace_entity_file` и врало: файл под уже
+    существующим именем не заменяется, а добавляется вторым с другим id.
+    Измерено на одноразовом датасете и в v1 (02.10.2026), и в v2 после
+    миграции (13.11.2026, датасет 376: файлов было 2, стало 3, два
+    `probe_mask.json` с разными id).
+
+    Это и есть нужное поведение: версии экспертных масок должны
+    накапливаться, на чём построен флоу в `app.py`. Замена на месте с
+    сохранением id — отдельная операция v2 (`PATCH`), она живёт в
+    `kappa_entity_files.replace_entity_contents`.
+
     Возвращает kappa_file_id загруженного файла или None при ошибке.
     """
-    url = (
-        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
-        f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
-    )
+    url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/{dataset_id}/{entity_id}"
 
     update_payload = json.dumps({"remark": "mask updated by expert"})
     data = {"update_dataset_entity": update_payload}
@@ -591,10 +606,7 @@ async def get_dataset_entities(
     """
     Получить список сущностей датасета.
     """
-    url = (
-        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
-        f"/{user_id}/{user_type_id}/{dataset_id}"
-    )
+    url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/{dataset_id}"
     headers = {"Authorization": f"Bearer {token}"}
 
     data = await _get_json_with_retry(
@@ -618,10 +630,7 @@ async def get_entity_details(
     """
     Получить детали сущности датасета (включая список файлов).
     """
-    url = (
-        f"{KAPPA_DATA_URL}/datasets/datasetEntities"
-        f"/{user_id}/{user_type_id}/{dataset_id}/{entity_id}"
-    )
+    url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/{dataset_id}/{entity_id}"
     headers = {"Authorization": f"Bearer {token}"}
 
     return await _get_json_with_retry(
@@ -639,10 +648,7 @@ async def download_entity_file(
     Скачать файл сущности по file_id.
     Возвращает bytes или None при ошибке.
     """
-    url = (
-        f"{KAPPA_DATA_URL}/datasets/datasetEntities/files"
-        f"/{user_id}/{user_type_id}/{dataset_id}/{file_id}"
-    )
+    url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/files/{dataset_id}/{file_id}"
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
