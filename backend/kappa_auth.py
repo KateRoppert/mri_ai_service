@@ -20,7 +20,14 @@ class KappaUnreachable(Exception):
     """Kappa не ответила: сеть, DNS, таймаут. Отличается от неверных
     учётных данных, и сообщение оператору должно быть другим."""
 
-KAPPA_BASE_URL = "https://kappa.nsu.ru:8061/user-micro-services/v1"
+# v2, потому что v1 закрыт: 13.11.2026 любой путь под
+# `/user-micro-services/v1/`, включая несуществующий, стал отдавать 401 с
+# пустым телом от nginx, не доходя до приложения. v2 принимает тот же запрос
+# (`loginId`/`passwd`), а `UserDetails` в ответе содержит все поля, которые
+# читает код ниже, включая `token` и `tokenExpiryDate` — проверено живым
+# входом. Клиент ДАННЫХ (`kappa_client.py`) пока остаётся на v1; его миграция
+# — отдельная задача, см. docs/superpowers/specs/2026-10-02-kappa-replace-on-reprocess-design.md
+KAPPA_BASE_URL = "https://kappa.nsu.ru:8061/user-micro-services/v2"
 
 
 async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
@@ -46,6 +53,32 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
         raise KappaUnreachable(str(exc)) from exc
 
     if response.status_code != 200:
+        # Отказ БЕЗ разбираемого тела — это не ответ по существу. Приложение
+        # Kappa объясняет отказ в JSON (`detail`), а шлюз не объясняет ничего:
+        # 13.11.2026 закрытый v1 отдавал 401 с пустым телом и `text/html`, и
+        # пока это считалось неверным паролем, офлайн-режим с отложенной
+        # выгрузкой не включался (он срабатывает только на KappaUnreachable), а
+        # работать было нельзя вообще — хотя пайплайн от Kappa не зависит.
+        #
+        # Обратное направление не менее важно: отказ С объяснением трактовать
+        # как недоступность нельзя, иначе повторные попытки с неверным паролем
+        # заблокируют учётную запись.
+        try:
+            detail = response.json()
+        except ValueError:
+            detail = None
+        if detail is None:
+            logger.warning(
+                "Kappa ответила %s без JSON-тела (%d байт, content-type %s) — "
+                "считаем недоступностью, а не неверным паролем",
+                response.status_code, len(response.content or b""),
+                response.headers.get("content-type"),
+            )
+            raise KappaUnreachable(
+                f"Kappa отклонила запрос со статусом {response.status_code} "
+                f"без объяснения — похоже на отказ шлюза, а не на проверку "
+                f"учётных данных"
+            )
         logger.warning("Kappa login failed: status=%s, body=%s", response.status_code, response.text[:300])
         return None
 
