@@ -390,7 +390,7 @@ async def update_entity_status(
                                     dataset_id, entity_id, status)
     return ok
 
-async def replace_entity_file(
+async def append_entity_file(
     token: str,
     user_id: int,
     user_type_id: int,
@@ -400,8 +400,19 @@ async def replace_entity_file(
     content_type: str = "application/gzip",
 ) -> Optional[str]:
     """
-    Заменить файл(ы) сущности в Каппе (PUT с новым файлом).
-    Используется для загрузки отредактированной маски экспертом.
+    ДОПИСАТЬ файл к сущности в Каппе (PUT с новым файлом).
+
+    Имя до 13.11.2026 было `replace_entity_file` и врало: файл под уже
+    существующим именем не заменяется, а добавляется вторым с другим id.
+    Измерено на одноразовом датасете и в v1 (02.10.2026), и в v2 после
+    миграции (13.11.2026, датасет 376: файлов было 2, стало 3, два
+    `probe_mask.json` с разными id).
+
+    Это и есть нужное поведение: версии экспертных масок должны
+    накапливаться, на чём построен флоу в `app.py`. Замена на месте с
+    сохранением id — отдельная операция v2 (`PATCH`), она живёт в
+    `kappa_entity_files.replace_entity_contents`.
+
     Возвращает kappa_file_id загруженного файла или None при ошибке.
     """
     url = f"{KAPPA_DATA_URL}/datasets/datasetEntities/{dataset_id}/{entity_id}"

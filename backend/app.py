@@ -2186,7 +2186,7 @@ async def upload_edited_mask(
     """
     import shutil
     from kappa_auth import get_session
-    from kappa_client import replace_entity_file
+    from kappa_client import append_entity_file
     from mask_service import register_expert_mask, get_next_version, get_ai_mask_dir
 
     # 1. Валидация сессии
@@ -2276,7 +2276,7 @@ async def upload_edited_mask(
     # 3. Заливаем в Каппу (получаем kappa_file_id)
     kappa_file_id = None
     try:
-        kappa_file_id = await replace_entity_file(
+        kappa_file_id = await append_entity_file(
             token=session["kappa_token"],
             user_id=session["user_id"],
             user_type_id=session["user_type_id"],

@@ -156,14 +156,18 @@ async def test_downloading_a_file_keeps_dataset_and_file(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_replacing_a_file_keeps_dataset_and_entity(monkeypatch, tmp_path):
+async def test_appending_a_file_keeps_dataset_and_entity(monkeypatch, tmp_path):
     """Тот же эндпоинт, что у обновления сущности: в v2 PUT принимает ту же
-    пару `update_dataset_entity` + `files`, что и v1."""
+    пару `update_dataset_entity` + `files`, что и v1 — и так же ДОПИСЫВАЕТ.
+
+    Проверено живой пробой 13.11.2026 на одноразовом датасете 376: файл под
+    существующим именем дал второй файл с другим id, как и в v1.
+    """
     calls = _install(monkeypatch, _Response(body={"files": [{"fileId": "f1"}]}))
     f = tmp_path / "mask.nii.gz"
     f.write_bytes(b"x")
 
-    await kappa_client.replace_entity_file("tok", 26, 3, 350, "e1", f)
+    await kappa_client.append_entity_file("tok", 26, 3, 350, "e1", f)
 
     assert calls[0]["method"] == "PUT"
     assert calls[0]["url"] == f"{BASE}/datasets/datasetEntities/350/e1"
