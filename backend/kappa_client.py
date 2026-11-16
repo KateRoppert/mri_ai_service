@@ -42,6 +42,17 @@ async def list_user_datasets(
     Return all datasets for the given user.
     Each element is a dict with at least 'datasetId' and 'datasetName'.
     Returns an empty list on error.
+
+    ВАЖНО после миграции на v2: маршрутизирует **токен**, не `user_id`.
+    v1 нёс `user_id` в пути и отвечал про запрошенного пользователя; v2
+    отвечает про владельца токена («List my datasets»). Поэтому `token` и
+    `user_id` ОБЯЗАНЫ быть из одной записи сессии — иначе ответ будет про
+    другого пользователя, чем спросили, и `_find_dataset_id` ниже выберет
+    чужой датасет, то есть пациенты уедут не туда.
+
+    Сейчас это так и есть во всех вызывающих (они берут всю тройку из одного
+    `session`), и закреплено тестом
+    `test_kappa_client_v2.py::test_the_uploader_gets_token_and_user_from_one_session`.
     """
     url = f"{KAPPA_DATA_URL}/datasets"
     headers = {"Authorization": f"Bearer {token}"}
@@ -65,7 +76,11 @@ async def _find_dataset_id(
     dataset_name: str,
 ) -> Optional[int]:
     """
-    Найти dataset_id по имени через GET /datasets/{user_id}/{user_type_id}.
+    Найти dataset_id по имени среди датасетов владельца токена.
+
+    Маршрутизирует токен, а не `user_id` — см. предупреждение в
+    `list_user_datasets`. Имя датасета ищется в ответе, поэтому чужой токен
+    даёт либо «не найдено», либо, при совпадении имён, ЧУЖОЙ dataset_id.
     """
     url = f"{KAPPA_DATA_URL}/datasets"
     headers = {"Authorization": f"Bearer {token}"}
