@@ -56,6 +56,10 @@ function App() {
   const [workspaceEntered, setWorkspaceEntered] = useState(false);
   // Автоматический вход не удался: пароль не подошёл. Показываем и ждём.
   const [loginRejected, setLoginRejected] = useState(null);
+  // Kappa ответила, но сессию не выдала (лимит устройств). Пароль при
+  // этом не проверялся, поэтому бэкенд его не придерживает и сам войти
+  // не сможет — сказать об этом надо явно.
+  const [loginQuota, setLoginQuota] = useState(null);
   // Kappa только что вернулась. Держим зелёную плашку недолго: оператор,
   // сидящий перед экраном, должен увидеть, что связь восстановилась, но
   // жить там она не должна — дальше о выгрузке говорят статусы в истории.
@@ -79,8 +83,11 @@ function App() {
         last_name: auto.last_name,
       });
       setLoginRejected(null);
+      setLoginQuota(null);
     } else if (auto?.status === 'rejected') {
       setLoginRejected(auto.login_id || '');
+    } else if (auto?.status === 'quota') {
+      setLoginQuota(auto.login_id || '');
     }
   };
 
@@ -384,6 +391,27 @@ function App() {
             action={
               <Button size="small" type="primary" onClick={() => setShowLogin(true)}>
                 Ввести заново
+              </Button>
+            }
+          />
+        )}
+
+        {!showLoginPage && loginQuota !== null && !kappaSession && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Kappa не выдала новую сессию"
+            description={
+              `Войти под «${loginQuota}» не удалось: у учётной записи слишком `
+              + 'много активных устройств. Выйдите из лишних сеансов в '
+              + 'интерфейсе Kappa либо подождите, пока они истекут. Обработка '
+              + 'продолжается, результаты сохранены — войдите заново, и они '
+              + 'уйдут в Kappa.'
+            }
+            action={
+              <Button size="small" type="primary" onClick={() => setShowLogin(true)}>
+                Войти заново
               </Button>
             }
           />
