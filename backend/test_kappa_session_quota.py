@@ -129,3 +129,89 @@ async def test_a_rejected_password_is_still_dropped_at_once(monkeypatch):
     assert pending.held_login() is None
     assert await pending.try_login_now() is None, "повторять нечего"
     assert len(calls) == 1, "второй отправки пароля быть не должно"
+
+
+# ── освобождение слота устройства ─────────────────────────────────────────
+
+
+class _Resp:
+    def __init__(self, status_code, body=None):
+        self.status_code = status_code
+        self._body = body
+        self.content = b"" if body is None else b"{}"
+        self.text = ""
+        self.headers = {"content-type": "application/json"}
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("нет тела")
+        return self._body
+
+
+class _DelClient:
+    def __init__(self, response, calls, boom=False):
+        self._r, self._calls, self._boom = response, calls, boom
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def delete(self, url, **kw):
+        if self._boom:
+            raise RuntimeError("сеть упала")
+        self._calls.append({"url": url, **kw})
+        return self._r
+
+
+@pytest.mark.asyncio
+async def test_release_sends_delete_with_that_token(monkeypatch):
+    """Списка сессий API не даёт, поэтому гасить можно только своим токеном."""
+    import kappa_auth
+    from kappa_auth import release_kappa_session
+
+    calls = []
+    monkeypatch.setattr(kappa_auth, "kappa_client",
+                        lambda timeout: _DelClient(_Resp(204), calls))
+
+    assert await release_kappa_session("tok-123") is True
+    assert calls[0]["url"].endswith("/user-micro-services/v2/session")
+    assert calls[0]["headers"]["Authorization"] == "Bearer tok-123"
+
+
+@pytest.mark.asyncio
+async def test_release_never_raises_into_the_caller(monkeypatch):
+    """Освобождение слота — попытка, а не обязательство: срывать из-за неё
+    выход из аккаунта нельзя."""
+    import kappa_auth
+    from kappa_auth import release_kappa_session
+
+    monkeypatch.setattr(kappa_auth, "kappa_client",
+                        lambda timeout: _DelClient(None, [], boom=True))
+
+    assert await release_kappa_session("tok") is False
+
+
+@pytest.mark.asyncio
+async def test_release_without_a_token_does_not_call_kappa(monkeypatch):
+    import kappa_auth
+    from kappa_auth import release_kappa_session
+
+    calls = []
+    monkeypatch.setattr(kappa_auth, "kappa_client",
+                        lambda timeout: _DelClient(_Resp(204), calls))
+
+    assert await release_kappa_session("") is False
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_to_log_out_is_reported_not_hidden(monkeypatch):
+    import kappa_auth
+    from kappa_auth import release_kappa_session
+
+    monkeypatch.setattr(kappa_auth, "kappa_client",
+                        lambda timeout: _DelClient(_Resp(401, {"detail": "expired"}), []))
+
+    assert await release_kappa_session("stale") is False

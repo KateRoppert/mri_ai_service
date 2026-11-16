@@ -3042,7 +3042,30 @@ async def kappa_logout(session_id: str):
     finally:
         db.close()
 
-    return {"status": "ok", "pending_uploads": pending}
+    # Если досылать нечего — выходим по-настоящему: гасим сессию в Kappa и
+    # убираем запись. Иначе слот устройства держится около недели, а
+    # инструмента «выйти везде» в их API нет, так что убрать за собой можем
+    # только мы (KI-083).
+    #
+    # Условие строгое — ГЛОБАЛЬНЫЙ ноль ожидающих, а не ноль у этого
+    # пользователя: так проще рассуждать, и мы никогда не гасим токен, пока
+    # хоть что-то ждёт отправки. Цена — при долго висящей выгрузке слот не
+    # освободится до истечения токена.
+    #
+    # Запись удаляется вместе с сессией намеренно: оставить её значило бы
+    # отдавать `find_live_session_for_user` токен, который Kappa уже
+    # аннулировала, и досылка падала бы на 401 вместо честного «сессии нет».
+    released = False
+    if pending == 0:
+        from kappa_auth import release_kappa_session
+        released = await release_kappa_session(session.get("kappa_token"))
+        delete_session(session_id)
+
+    return {
+        "status": "ok",
+        "pending_uploads": pending,
+        "kappa_session_released": released,
+    }
 
 @app.post("/api/kappa/retry-upload/{run_id}")
 async def retry_kappa_upload(run_id: str, session_id: str):
