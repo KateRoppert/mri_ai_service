@@ -242,3 +242,68 @@ def test_the_guard_detects_a_real_violation_and_ignores_prose(tmp_path):
 
     assert _v1_user_service_literals(bad) == [1]
     assert _v1_user_service_literals(prose) == []
+
+
+# ── «сессию сейчас выдать не можем» ≠ «данные неверны» ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_too_many_active_devices_is_not_an_operator_error(monkeypatch):
+    """16.11.2026 вход на баргузине отказал с
+    `403 {"detail":"TOO_MANY_ACTIVE_DEVICES"}`: v2 ограничивает число
+    одновременно активных сессий, а наш код их намеренно не гасит, чтобы не
+    рвать отложенную выгрузку.
+
+    Это нехватка ресурса, а не ошибка оператора. Пока она считалась неверным
+    паролем, офлайн-режим не включался и нельзя было даже запускать
+    обработку — хотя пайплайн от Kappa не зависит.
+    """
+    _install(monkeypatch, _Response(403, {"detail": "TOO_MANY_ACTIVE_DEVICES"}))
+
+    with pytest.raises(KappaUnreachable) as exc:
+        await kappa_login("e.roppert", "secret")
+
+    assert "TOO_MANY_ACTIVE_DEVICES" in str(exc.value), (
+        "причина должна доехать до оператора: «Kappa недоступна» тут вводит "
+        "в заблуждение — сервис-то отвечает"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_account_stays_an_answer_not_an_outage(monkeypatch):
+    """v2 документирует 403 «Account is disabled or not yet activated».
+
+    Это ответ по существу: повторять бессмысленно, нужно действие человека.
+    Поэтому он остаётся отказом, а не недоступностью.
+    """
+    _install(monkeypatch, _Response(403, {"detail": "Account is disabled"}))
+
+    assert await kappa_login("e.roppert", "secret") is None
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_password_is_never_treated_as_transient(monkeypatch):
+    """Самое важное направление: повторять неверный пароль нельзя — так
+    блокируют учётную запись."""
+    _install(monkeypatch, _Response(401, {"detail": "Invalid credentials"}))
+
+    assert await kappa_login("e.roppert", "wrong") is None
+
+
+def test_the_transient_set_is_explicit_and_documented():
+    """Набор задан данными, а не разбором текста: добавить код — одна строка,
+    и видно, какие именно отказы мы считаем временными."""
+    from kappa_auth import TRANSIENT_LOGIN_DETAILS
+
+    assert "TOO_MANY_ACTIVE_DEVICES" in TRANSIENT_LOGIN_DETAILS
+    assert all(d.isupper() or "_" in d for d in TRANSIENT_LOGIN_DETAILS)
+
+
+@pytest.mark.asyncio
+async def test_the_detail_is_matched_exactly_not_by_substring(monkeypatch):
+    """Иначе сообщение вроде «не TOO_MANY_ACTIVE_DEVICES, а другое» попало бы
+    во временные."""
+    _install(monkeypatch, _Response(
+        403, {"detail": "это не TOO_MANY_ACTIVE_DEVICES, а что-то иное"}))
+
+    assert await kappa_login("e.roppert", "secret") is None

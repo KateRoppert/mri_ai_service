@@ -25,9 +25,26 @@ class KappaUnreachable(Exception):
 # пустым телом от nginx, не доходя до приложения. v2 принимает тот же запрос
 # (`loginId`/`passwd`), а `UserDetails` в ответе содержит все поля, которые
 # читает код ниже, включая `token` и `tokenExpiryDate` — проверено живым
-# входом. Клиент ДАННЫХ (`kappa_client.py`) пока остаётся на v1; его миграция
-# — отдельная задача, см. docs/superpowers/specs/2026-10-02-kappa-replace-on-reprocess-design.md
+# входом. Клиент данных (`kappa_client.py`) переведён на v2 отдельно, KI-082.
 KAPPA_BASE_URL = "https://kappa.nsu.ru:8061/user-micro-services/v2"
+
+# Отказы входа, означающие «сессию сейчас выдать не можем», а не «данные
+# неверны». Разница существенна в обе стороны:
+#
+#   * неверный пароль повторять НЕЛЬЗЯ — так блокируют учётную запись;
+#   * нехватку ресурса, наоборот, надо пережить: включить офлайн-режим, чтобы
+#     обработку можно было запускать (пайплайн от Kappa не зависит), и войти
+#     самим, когда станет можно.
+#
+# `TOO_MANY_ACTIVE_DEVICES` появился 16.11.2026: v2 ограничивает число
+# одновременно активных сессий, а наш выход из аккаунта намеренно НЕ гасит
+# сессию в Kappa, чтобы не обрывать отложенную выгрузку
+# (`/api/kappa/logout`). Решение верное, но принято против v1, у которого
+# лимита не было, поэтому каждый вход занимал слот на срок жизни токена.
+#
+# Набор задан данными, а не разбором текста: добавить код — одна строка, и
+# видно, какие именно отказы считаются временными.
+TRANSIENT_LOGIN_DETAILS = frozenset({"TOO_MANY_ACTIVE_DEVICES"})
 
 
 async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
@@ -67,6 +84,17 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
             detail = response.json()
         except ValueError:
             detail = None
+        code = detail.get("detail") if isinstance(detail, dict) else None
+        if isinstance(code, str) and code.strip() in TRANSIENT_LOGIN_DETAILS:
+            # Сравнение точное, а не по подстроке: сообщение, лишь упоминающее
+            # код, не должно попадать во временные.
+            logger.warning(
+                "Kappa не выдала сессию (%s, статус %s) — считаем временной "
+                "нехваткой, а не ошибкой оператора",
+                code.strip(), response.status_code,
+            )
+            raise KappaUnreachable(code.strip())
+
         if detail is None:
             logger.warning(
                 "Kappa ответила %s без JSON-тела (%d байт, content-type %s) — "
