@@ -214,3 +214,73 @@ def test_no_backend_module_points_at_a_closed_v1_service(needle):
     }
 
     assert offenders == {}, f"ссылка на закрытый {needle}: {offenders}"
+
+
+def test_the_uploader_gets_token_and_user_from_one_session():
+    """Токен и `user_id` обязаны приходить из одной записи сессии.
+
+    После миграции на v2 маршрутизирует токен, а не `user_id`: v1 нёс
+    пользователя в пути и отвечал про запрошенного, v2 отвечает про владельца
+    токена. Пока пара согласована, разницы нет; стоит ей разойтись — и
+    `_find_dataset_id` выберет датасет другого пользователя, то есть пациенты
+    уедут в чужой датасет. Параметр `user_id` остался в сигнатурах, поэтому
+    глазами такое расхождение не заметно — его держит эта проверка.
+    """
+    problems = []
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        problems += [f"{path.name}:{line} {src}"
+                     for line, src in _mismatched_identity_sources(path)]
+
+    assert problems == [], (
+        "токен и пользователь берутся из разных источников: " + "; ".join(problems)
+    )
+
+
+def test_the_identity_guard_sees_a_mismatch_and_allows_one_session(tmp_path):
+    """Иначе проверка зеленела бы на любом коде."""
+    good = tmp_path / "good.py"
+    good.write_text(
+        "u = KappaUploader(token=session['kappa_token'],\n"
+        "                  user_id=session['user_id'],\n"
+        "                  user_type_id=session['user_type_id'])\n",
+        encoding="utf-8")
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "u = KappaUploader(token=live['kappa_token'],\n"
+        "                  user_id=run['kappa_user_id'],\n"
+        "                  user_type_id=live['user_type_id'])\n",
+        encoding="utf-8")
+
+    assert _mismatched_identity_sources(good) == []
+    assert len(_mismatched_identity_sources(bad)) == 1
+
+
+def _mismatched_identity_sources(path: Path):
+    """Места, где `KappaUploader` получает токен и пользователя из РАЗНЫХ мест.
+
+    Ожидаемая форма — подписка по одному имени: `session["kappa_token"]`,
+    `session["user_id"]`, `session["user_type_id"]`. Если имена разные, пара
+    может оказаться несогласованной, а в v2 маршрутизирует именно токен.
+    """
+    import ast
+
+    found = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "KappaUploader"):
+            continue
+        sources = {}
+        for kw in node.keywords:
+            if kw.arg not in ("token", "user_id", "user_type_id"):
+                continue
+            value = kw.value
+            if isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name):
+                sources[kw.arg] = value.value.id
+            else:
+                sources[kw.arg] = ast.dump(value)[:40]
+        if len(sources) == 3 and len(set(sources.values())) != 1:
+            found.append((node.lineno, sources))
+    return found
