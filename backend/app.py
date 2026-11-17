@@ -2902,10 +2902,26 @@ class KappaLoginRequest(PydanticBaseModel):
 @app.post("/api/kappa/login")
 async def kappa_login_endpoint(request: KappaLoginRequest):
     """Авторизация в Kappa"""
-    from kappa_auth import KappaUnreachable
+    from kappa_auth import KappaSessionQuota, KappaUnreachable
 
     try:
         result = await kappa_login(request.login_id, request.passwd)
+    except KappaSessionQuota as exc:
+        # Пароль НЕ запоминаем: Kappa его не проверяла, а придержанный
+        # непроверенный пароль фоновый воркер повторял бы до суток — это путь
+        # к блокировке учётной записи, от которого kappa_pending_login и
+        # защищает. Офлайн-режим при этом работает: обработку запускать можно,
+        # результаты уйдут после ручного входа.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Kappa не выдаёт новую сессию: слишком много активных "
+                "устройств у этой учётной записи. Выйдите из лишних сеансов в "
+                "интерфейсе Kappa либо подождите, пока они истекут. Обработку "
+                "можно запускать прямо сейчас — результаты уйдут, когда "
+                "получится войти."
+            ),
+        )
     except KappaUnreachable as exc:
         # Держим введённое в памяти и войдём сами, как только Kappa ответит
         # (backend/kappa_pending_login.py). Пароль не попадает ни в базу, ни
@@ -2916,20 +2932,10 @@ async def kappa_login_endpoint(request: KappaLoginRequest):
         # 503, а не 500: сервис не сломан, недоступен внешний. Ответ обязан
         # быть JSON с внятным текстом — тело 500 от Uvicorn это простая
         # строка, и фронт падал на ней в JSON.parse.
-        # Причина, если Kappa её назвала: «недоступна» для
-        # TOO_MANY_ACTIVE_DEVICES вводит в заблуждение — сервис отвечает, он
-        # просто не выдаёт новую сессию, и оператору надо знать именно это.
-        reason = {
-            "TOO_MANY_ACTIVE_DEVICES":
-                "Kappa не выдаёт новую сессию: слишком много активных "
-                "устройств у этой учётной записи. Выйдите из лишних сеансов "
-                "в интерфейсе Kappa либо подождите, пока они истекут.",
-        }.get(str(exc), "Kappa сейчас недоступна.")
-
         raise HTTPException(
             status_code=503,
             detail=(
-                f"{reason} Вход выполнится автоматически, как "
+                "Kappa сейчас недоступна. Вход выполнится автоматически, как "
                 "только связь восстановится — обработку можно запускать "
                 "прямо сейчас, результаты уйдут следом."
             ),
@@ -3036,7 +3042,30 @@ async def kappa_logout(session_id: str):
     finally:
         db.close()
 
-    return {"status": "ok", "pending_uploads": pending}
+    # Если досылать нечего — выходим по-настоящему: гасим сессию в Kappa и
+    # убираем запись. Иначе слот устройства держится около недели, а
+    # инструмента «выйти везде» в их API нет, так что убрать за собой можем
+    # только мы (KI-083).
+    #
+    # Условие строгое — ГЛОБАЛЬНЫЙ ноль ожидающих, а не ноль у этого
+    # пользователя: так проще рассуждать, и мы никогда не гасим токен, пока
+    # хоть что-то ждёт отправки. Цена — при долго висящей выгрузке слот не
+    # освободится до истечения токена.
+    #
+    # Запись удаляется вместе с сессией намеренно: оставить её значило бы
+    # отдавать `find_live_session_for_user` токен, который Kappa уже
+    # аннулировала, и досылка падала бы на 401 вместо честного «сессии нет».
+    released = False
+    if pending == 0:
+        from kappa_auth import release_kappa_session
+        released = await release_kappa_session(session.get("kappa_token"))
+        delete_session(session_id)
+
+    return {
+        "status": "ok",
+        "pending_uploads": pending,
+        "kappa_session_released": released,
+    }
 
 @app.post("/api/kappa/retry-upload/{run_id}")
 async def retry_kappa_upload(run_id: str, session_id: str):

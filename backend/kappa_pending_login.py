@@ -107,7 +107,7 @@ async def try_login_now() -> Optional[Dict[str, Any]]:
     if _held is None:
         return None
 
-    from kappa_auth import KappaUnreachable, kappa_login
+    from kappa_auth import KappaSessionQuota, KappaUnreachable, kappa_login
 
     # Замок держим на всю попытку, включая сетевой вызов. Брать из него
     # только учётные данные бессмысленно: оба вызывающих прочитали бы их и
@@ -121,6 +121,14 @@ async def try_login_now() -> Optional[Dict[str, Any]]:
 
         try:
             result = await kappa_login(login_id, passwd)
+        except KappaSessionQuota:
+            # Kappa ответила, но сессию не выдала и пароль не проверяла.
+            # Держать его дальше значит повторять непроверенный пароль, пока
+            # квота не освободится, — а это ровно та дорога к блокировке, от
+            # которой защищает этот модуль. Отбрасываем и говорим оператору.
+            forget("Kappa не выдала сессию: превышен лимит устройств")
+            _outcome = {"status": "quota", "login_id": login_id}
+            return None
         except KappaUnreachable:
             return None                  # still down; keep waiting
         except Exception as e:           # noqa: BLE001

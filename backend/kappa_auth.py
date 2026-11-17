@@ -20,6 +20,23 @@ class KappaUnreachable(Exception):
     """Kappa не ответила: сеть, DNS, таймаут. Отличается от неверных
     учётных данных, и сообщение оператору должно быть другим."""
 
+
+class KappaSessionQuota(KappaUnreachable):
+    """Kappa ОТВЕТИЛА, но отказалась выдать сессию — пароль она при этом не
+    проверяла.
+
+    Третий случай, которого в делении «ответила / не ответила» не было, и
+    отсюда дефект: учётные данные оказывались не подтверждёнными и не
+    отклонёнными, то есть не отбрасывались и повторялись фоновым воркером до
+    24 часов. Если пароль неверен, каждая такая попытка уходит в Kappa — а
+    `kappa_pending_login` существует именно затем, чтобы неверный пароль
+    отправлялся не более одного раза.
+
+    Наследуется от `KappaUnreachable` сознательно: для ВСЕГО остального это
+    та же недоступность — офлайн-режим включается, обработку запускать можно.
+    Отличается ровно одним: придерживать непроверенный пароль нельзя.
+    """
+
 # v2, потому что v1 закрыт: 13.11.2026 любой путь под
 # `/user-micro-services/v1/`, включая несуществующий, стал отдавать 401 с
 # пустым телом от nginx, не доходя до приложения. v2 принимает тот же запрос
@@ -93,7 +110,7 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
                 "нехваткой, а не ошибкой оператора",
                 code.strip(), response.status_code,
             )
-            raise KappaUnreachable(code.strip())
+            raise KappaSessionQuota(code.strip())
 
         if detail is None:
             logger.warning(
@@ -149,6 +166,36 @@ async def kappa_login(login_id: str, passwd: str) -> Dict[str, Any]:
         "last_name": data.get("lastName"),
         "token_expiry": data.get("tokenExpiryDate"),
     }
+
+
+async def release_kappa_session(token: str) -> bool:
+    """Погасить сессию в Kappa (`DELETE /session`) — освободить слот устройства.
+
+    v2 ограничивает число одновременно активных сессий
+    (`TOO_MANY_ACTIVE_DEVICES`), а слот держится до истечения токена, то есть
+    около недели. Инструмента «выйти везде» в API нет: `DELETE /session`
+    требует именно тот токен, чью сессию гасит, а списка сессий не выдаётся.
+    Значит убирать за собой можем только мы сами, по своему токену.
+
+    Исключений не поднимает: освобождение слота — попытка, а не
+    обязательство, и срывать из-за неё выход из аккаунта нельзя.
+    """
+    if not token:
+        return False
+    try:
+        async with kappa_client(timeout=15.0) as client:
+            response = await client.delete(
+                f"{KAPPA_BASE_URL}/session",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception as exc:  # noqa: BLE001 — см. докстринг
+        logger.warning("Не удалось погасить сессию Kappa: %s", exc)
+        return False
+    if 200 <= response.status_code < 300:
+        logger.info("Сессия Kappa погашена, слот устройства освобождён")
+        return True
+    logger.warning("Kappa не подтвердила выход: статус %s", response.status_code)
+    return False
 
 
 def get_session(
