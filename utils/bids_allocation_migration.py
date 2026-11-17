@@ -165,10 +165,17 @@ def migrate(db_path: Union[str, Path], dry_run: bool = True) -> Optional[dict]:
     try:
         if not is_legacy(conn):
             return None
-        planned, floors, result = _plan(conn)
         if dry_run:
+            _planned, _floors, result = _plan(conn)
             return result
 
+        # Nothing reads the legacy schema outside the write lock (KI-079).
+        # Between is_legacy() above and the lock below a neighbouring process
+        # can finish its own migration, and _plan's "SELECT lesion_type ..."
+        # would then hit a column that no longer exists — the re-check under
+        # the lock never got the chance to help, because the crash came first.
+        # The plan is recomputed under the lock anyway, so planning here only
+        # ever served dry_run.
         conn.execute("BEGIN IMMEDIATE")
         backup = None
         try:
