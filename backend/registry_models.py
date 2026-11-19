@@ -3,7 +3,7 @@ SQLAlchemy модели для patient_registry и validations.
 Добавляются к существующим моделям в database.py.
 """
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Integer, Text, Index
+from sqlalchemy import Column, String, DateTime, Integer, Text, Index, text
 from sqlalchemy.orm import Session
 
 from database import Base, engine
@@ -43,7 +43,7 @@ class PatientRegistry(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Ключевые идентификаторы
-    study_hash = Column(String, nullable=False, index=True, unique=True)
+    study_hash = Column(String, nullable=False, index=True)
     bids_id = Column(String, nullable=False, index=True)
 
     # Оригинальные данные пациента (DICOM)
@@ -67,6 +67,24 @@ class PatientRegistry(Base):
         DateTime,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # One row per (study, Kappa dataset), not per study. A study legitimately
+    # lives in more than one dataset — the same person in two datasets is two
+    # different subject numbers — and the old single-row key made a second
+    # upload overwrite the first one's address (KI-084).
+    #
+    # COALESCE, because SQLite treats NULLs as distinct under UNIQUE: a plain
+    # UNIQUE(study_hash, kappa_dataset_id) would allow any number of
+    # not-yet-delivered duplicates of one study. 0 is not a Kappa dataset id
+    # (they are positive), so it is safe as "not delivered yet".
+    __table_args__ = (
+        Index(
+            "ix_patient_registry_study_dataset",
+            "study_hash",
+            text("COALESCE(kappa_dataset_id, 0)"),
+            unique=True,
+        ),
     )
 
 
