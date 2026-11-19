@@ -82,7 +82,7 @@ UI в `backend/config.py` нумерует этапы 1–7, пропуская 
 ## Data stores
 
 - SQLite `backend/data/brain_lesion.db`: pipeline_runs, patient_registry, mask_versions, Kappa sessions, validations
-- Kappa: auth `https://kappa.nsu.ru:8061/user-micro-services/v1`, data `.../data-micro-services/v1` (`backend/kappa_auth.py`, `kappa_client.py`, `kappa_uploader.py`)
+- Kappa: auth `https://kappa.nsu.ru:8061/user-micro-services/v2`, data `.../data-micro-services/v2` (`backend/kappa_auth.py`, `kappa_client.py`, `kappa_uploader.py`). v1 закрыт 13.11.2026 — любой путь под ним отдаёт 401 с пустым телом от nginx (KI-081, KI-082)
 - Сессии Kappa в БД, `kappa_session_id` на фронте в localStorage
 
 Секреты: `.env` (не коммитить). Логины Kappa не класть в git/логи.
