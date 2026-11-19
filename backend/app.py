@@ -554,7 +554,7 @@ async def start_pipeline(
     # delivery would then label this run's data with settings it never used
     # (KI-085). Deliberately above the busy-path check below — nothing may sit
     # between that check and the row write.
-    run_preprocessing_id = numbering.current_preprocessing_id()
+    run_preprocessing_id = numbering.pin_preprocessing_id()
 
     # Upload intent, recorded at birth. Every run started from the web UI is
     # meant for Kappa — including one started while Kappa is unreachable, which

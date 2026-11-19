@@ -115,7 +115,7 @@ async def start_requeue(
     # Resuming a stopped run is the exception — it continues with the snapshot
     # taken at stop time (app.py), and that file is the honest source. Passing
     # None falls back to the live config, which is what a plain requeue wants.
-    preprocessing_id = numbering.current_preprocessing_id(preprocessing_snapshot)
+    preprocessing_id = numbering.pin_preprocessing_id(preprocessing_snapshot)
 
     run = create_pipeline_run(
         db,

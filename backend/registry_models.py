@@ -152,6 +152,29 @@ class MaskVersion(Base):
 
 Index("ix_mask_versions_entity_version", MaskVersion.entity_id, MaskVersion.version)
 
+
+class PreprocessingVersion(Base):
+    """What a preprocessing_id actually means.
+
+    The id is a hash of the functional part of the preprocessing config, and
+    it is written into patient_registry for every uploaded study. Without the
+    settings behind it the hash is a number that cannot be checked against
+    anything — which is exactly what happened: register_version was never
+    called in production, so three of the four ids ever used had nothing
+    behind them (KI-085).
+
+    Lives in the DB, not in configs/preprocessing_versions.json: that file is
+    tracked by git and configs/ is mounted into the container read-write, so
+    writing it from the application would dirty the working copy on every
+    config change.
+    """
+    __tablename__ = "preprocessing_versions"
+
+    preprocessing_id = Column(String, primary_key=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    config_json = Column(Text, nullable=False)
+
+
 def init_registry_tables():
     """Создать таблицы реестра и валидаций (если их ещё нет)."""
     Base.metadata.create_all(bind=engine)

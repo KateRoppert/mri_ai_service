@@ -5,7 +5,6 @@
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,7 +12,11 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# Файл для хранения истории версий
+# Legacy history file, READ-ONLY. New versions go to the preprocessing_versions
+# table in the DB instead: this file is tracked by git and configs/ is mounted
+# into the container read-write, so writing it from the application dirtied the
+# working copy on every config change (KI-085). It still holds the one entry
+# registered before that move, and that entry must stay resolvable.
 VERSIONS_FILE = Path(__file__).parent.parent / "configs" / "preprocessing_versions.json"
 
 
@@ -73,53 +76,112 @@ def get_full_config(config_path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def register_version(config_path: str) -> str:
+def register_version(config_path: str) -> Optional[str]:
+    """Record what this preprocessing_id means, so it can be resolved later.
+
+    Called at run start, where the config on disk is still the one about to
+    be used. Never raises: a run must start even when this bookkeeping fails,
+    and an unreadable config returns None rather than inventing a label.
     """
-    Зарегистрировать текущий конфиг в истории версий.
-    Если версия уже существует — ничего не делает.
-    Возвращает preprocessing_id.
-    """
-    preprocessing_id = compute_preprocessing_id(config_path)
-
-    # Загружаем историю
-    versions = _load_versions()
-
-    if preprocessing_id not in versions:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-
-        functional = _extract_functional_config(config)
-
-        versions[preprocessing_id] = {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "source_file": str(config_path),
-            "config": functional,
-        }
-
-        _save_versions(versions)
-        logger.info(
-            "Registered new preprocessing version: %s", preprocessing_id
+    try:
+        preprocessing_id = compute_preprocessing_id(config_path)
+    except Exception as exc:  # noqa: BLE001 — старт важнее метки
+        logger.warning(
+            "Could not compute preprocessing id from %s: %s", config_path, exc,
         )
-    else:
-        logger.debug(
-            "Preprocessing version already registered: %s", preprocessing_id
+        return None
+
+    try:
+        from database import SessionLocal
+        from registry_models import PreprocessingVersion
+
+        with open(config_path, "r", encoding="utf-8") as fh:
+            functional = _extract_functional_config(yaml.safe_load(fh))
+
+        db = SessionLocal()
+        try:
+            if db.get(PreprocessingVersion, preprocessing_id) is None:
+                db.add(PreprocessingVersion(
+                    preprocessing_id=preprocessing_id,
+                    config_json=json.dumps(
+                        functional, ensure_ascii=False, sort_keys=True),
+                ))
+                db.commit()
+                logger.info(
+                    "Registered preprocessing version %s", preprocessing_id,
+                )
+            else:
+                logger.debug(
+                    "Preprocessing version already registered: %s",
+                    preprocessing_id,
+                )
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not store preprocessing version %s: %s",
+            preprocessing_id, exc,
         )
 
     return preprocessing_id
 
 
 def get_version_config(preprocessing_id: str) -> Optional[Dict[str, Any]]:
-    """Получить конфиг по preprocessing_id."""
-    versions = _load_versions()
-    entry = versions.get(preprocessing_id)
-    if entry:
-        return entry.get("config")
-    return None
+    """Settings behind an id: the DB first, then the legacy JSON file.
+
+    The JSON is read-only now. It holds exactly one entry (1e2b93ad, created
+    02.04.2026) from before this moved into the DB, and that entry has to
+    stay resolvable.
+    """
+    if not preprocessing_id:
+        return None
+
+    try:
+        from database import SessionLocal
+        from registry_models import PreprocessingVersion
+
+        db = SessionLocal()
+        try:
+            row = db.get(PreprocessingVersion, preprocessing_id)
+            if row is not None:
+                return json.loads(row.config_json)
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not read preprocessing version %s: %s",
+            preprocessing_id, exc,
+        )
+
+    entry = _load_versions().get(preprocessing_id)
+    return entry.get("config") if entry else None
 
 
 def list_versions() -> Dict[str, Any]:
-    """Получить все зарегистрированные версии."""
-    return _load_versions()
+    """Все известные версии: сначала унаследованный файл, поверх — из БД.
+
+    Both sources, because the name promises all of them: the DB holds
+    everything registered since the move, the file the one entry from before.
+    """
+    versions: Dict[str, Any] = dict(_load_versions())
+    try:
+        from database import SessionLocal
+        from registry_models import PreprocessingVersion
+
+        db = SessionLocal()
+        try:
+            for row in db.query(PreprocessingVersion).all():
+                versions[row.preprocessing_id] = {
+                    "created_at": (
+                        row.created_at.isoformat() if row.created_at else None
+                    ),
+                    "config": json.loads(row.config_json),
+                }
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not list preprocessing versions: %s", exc)
+    return versions
 
 
 def _load_versions() -> Dict[str, Any]:
@@ -128,10 +190,3 @@ def _load_versions() -> Dict[str, Any]:
         with open(VERSIONS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
-
-
-def _save_versions(versions: Dict[str, Any]) -> None:
-    """Сохранить файл версий."""
-    VERSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(VERSIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(versions, f, ensure_ascii=False, indent=2)

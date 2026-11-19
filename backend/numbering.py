@@ -17,7 +17,7 @@ from typing import Optional, Tuple, Union
 from kappa_auth import get_session
 from kappa_dataset_resolver import dataset_floor, resolve_or_create
 from pipeline_monitor import PREPROCESSING_CONFIG
-from preprocessing_version import compute_preprocessing_id
+from preprocessing_version import compute_preprocessing_id, register_version
 from utils.bids_allocator import dataset_scope, local_scope, pending_scope, set_floor
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ async def scope_for_run(
     return scope, dataset_id, None
 
 
-def current_preprocessing_id(
+def pin_preprocessing_id(
     config_path: Optional[Union[str, Path]] = None,
 ) -> Optional[str]:
     """The preprocessing id to pin on a run that starts now.
@@ -116,13 +116,10 @@ def current_preprocessing_id(
             "Preprocessing config not found, run left unpinned: %s", path,
         )
         return None
-    try:
-        return compute_preprocessing_id(str(path))
-    except Exception as exc:  # noqa: BLE001 — старт важнее метки
-        logger.warning(
-            "Could not compute preprocessing id from %s: %s", path, exc,
-        )
-        return None
+    # register_version both computes the id and records the settings behind
+    # it, so the label written onto the data stays resolvable afterwards. It
+    # never raises and returns None when the config cannot be read.
+    return register_version(str(path))
 
 
 def scope_from_dataset_id(dataset_id: Optional[int], lesion_type: str) -> str:

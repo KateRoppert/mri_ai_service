@@ -55,27 +55,40 @@ def test_create_pipeline_run_defaults_to_none(tmp_path):
         db.close()
 
 
-def test_current_preprocessing_id_reads_the_given_config(tmp_path):
+def test_pin_preprocessing_id_reads_the_given_config(tmp_path):
     import numbering
 
     path = _config(tmp_path / "c.yaml", sigma=1.5)
-    assert numbering.current_preprocessing_id(path) == \
+    assert numbering.pin_preprocessing_id(path) == \
         compute_preprocessing_id(str(path))
 
 
-def test_current_preprocessing_id_is_none_without_a_config(tmp_path):
+def test_pin_preprocessing_id_is_none_without_a_config(tmp_path):
     """Отсутствие конфига не должно валить старт прогона."""
     import numbering
 
-    assert numbering.current_preprocessing_id(tmp_path / "нет.yaml") is None
+    assert numbering.pin_preprocessing_id(tmp_path / "нет.yaml") is None
 
 
 def test_different_configs_give_different_ids(tmp_path):
     """Иначе тест на закрепление ничего не доказывает."""
     import numbering
 
-    a = numbering.current_preprocessing_id(
+    a = numbering.pin_preprocessing_id(
         _config(tmp_path / "a" / "c.yaml", sigma=1.0))
-    b = numbering.current_preprocessing_id(
+    b = numbering.pin_preprocessing_id(
         _config(tmp_path / "b" / "c.yaml", sigma=2.0))
     assert a is not None and b is not None and a != b
+
+
+def test_pinning_also_records_what_the_id_means(tmp_path):
+    """Закрепить метку, по которой нельзя узнать настройки, бессмысленно."""
+    import numbering
+    from preprocessing_version import get_version_config
+
+    path = _config(tmp_path / "recorded" / "c.yaml", sigma=4.25)
+    prep_id = numbering.pin_preprocessing_id(path)
+
+    stored = get_version_config(prep_id)
+    assert stored is not None
+    assert stored["steps"][0]["params"]["sigma"] == 4.25
