@@ -9,7 +9,7 @@ import logging
 import time
 import sys
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Импорт из utils
 from utils.config_loader import (
@@ -502,8 +502,38 @@ def run_pipeline(
         logger.info(f"  {status_symbol} {stage_name}: {result['status']} ({time_str})")
     
     logger.info("="*70)
-    
+
+    _write_sigma_events(
+        config, project_root, pipeline_stats,
+        datetime.now(timezone.utc),
+        dry_run, logger,
+    )
+
     return pipeline_stats
+
+
+def _write_sigma_events(
+    config, project_root, pipeline_stats, finished_at, dry_run, logger,
+) -> None:
+    """События исследований этого запуска — в его logs/. Сбой записи не роняет прогон."""
+    if dry_run or any(r.get("status") == "FAILED" for r in pipeline_stats.values()):
+        return
+    backend = str(Path(project_root) / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    try:
+        from sigma_period_stats import write_run_events
+        path = write_run_events(
+            config["general"]["root_output_dir"],
+            config["general"].get("lesion_type") or "glioblastoma",
+            finished_at=finished_at,
+            kappa_user_name=config["general"].get("kappa_user_name"),
+        )
+    except Exception as exc:
+        logger.warning(f"SIGMA events were not written: {exc}")
+        return
+    if path is not None:
+        logger.info(f"SIGMA events: {path}")
 
 
 # ============================================
