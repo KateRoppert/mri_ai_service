@@ -11,12 +11,13 @@ See docs/superpowers/specs/2026-09-21-bids-numbering-per-dataset-design.md.
 """
 
 import logging
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Optional, Tuple, Union
 
 from kappa_auth import get_session
 from kappa_dataset_resolver import dataset_floor, resolve_or_create
 from pipeline_monitor import PREPROCESSING_CONFIG
-from preprocessing_version import compute_preprocessing_id
+from preprocessing_version import compute_preprocessing_id, register_version
 from utils.bids_allocator import dataset_scope, local_scope, pending_scope, set_floor
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,31 @@ async def scope_for_run(
     if floor is not None:
         set_floor(scope, floor)
     return scope, dataset_id, None
+
+
+def pin_preprocessing_id(
+    config_path: Optional[Union[str, Path]] = None,
+) -> Optional[str]:
+    """The preprocessing id to pin on a run that starts now.
+
+    One definition of WHICH file the id comes from, shared by the run-start
+    path in app.py and the requeue path, so the two cannot drift apart. The
+    file is read here, at start, which is the only moment the answer is
+    certainly right: by upload time the operator may have edited it (KI-085).
+
+    Returns None when the config is missing or unreadable — a run must still
+    start, and the uploader's own fallback covers a NULL id.
+    """
+    path = Path(config_path) if config_path is not None else PREPROCESSING_CONFIG
+    if not path.is_file():
+        logger.warning(
+            "Preprocessing config not found, run left unpinned: %s", path,
+        )
+        return None
+    # register_version both computes the id and records the settings behind
+    # it, so the label written onto the data stays resolvable afterwards. It
+    # never raises and returns None when the config cannot be read.
+    return register_version(str(path))
 
 
 def scope_from_dataset_id(dataset_id: Optional[int], lesion_type: str) -> str:

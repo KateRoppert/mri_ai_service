@@ -549,6 +549,13 @@ async def start_pipeline(
         run_id, lesion_type, request.kappa_session_id, intends_upload=True
     )
 
+    # Pinned here, next to the dataset and for the same reason: by upload time
+    # the live preprocessing config may be a different file, and a deferred
+    # delivery would then label this run's data with settings it never used
+    # (KI-085). Deliberately above the busy-path check below — nothing may sit
+    # between that check and the row write.
+    run_preprocessing_id = numbering.pin_preprocessing_id()
+
     # Upload intent, recorded at birth. Every run started from the web UI is
     # meant for Kappa — including one started while Kappa is unreachable, which
     # is the whole point of deferred delivery. The owning account may be
@@ -579,6 +586,7 @@ async def start_pipeline(
         kappa_dataset_id=kappa_dataset_id,
         kappa_upload_status=upload_status,
         kappa_user_id=upload_user_id,
+        preprocessing_id=run_preprocessing_id,
     )
 
     # Открываем лог выгрузки в папке запуска: куда поедут пациенты и

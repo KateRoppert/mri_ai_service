@@ -68,6 +68,15 @@ class PipelineRun(Base):
     # session, and for runs started before this column existed.
     kappa_dataset_id = Column(Integer, nullable=True)
 
+    # The preprocessing config this run actually used, pinned at start
+    # (backend/numbering.py). Recomputing it at upload time read the LIVE
+    # config file, so a deferred delivery — an outage, offline mode, a
+    # backfill months later — labelled the data with today's settings instead
+    # of the ones it was processed with (KI-085). NULL means the run predates
+    # this column; KappaUploader then falls back to reading the file, the same
+    # way it falls back for kappa_dataset_id.
+    preprocessing_id = Column(String, nullable=True)
+
     # Остановка оператором: на каком этапе прервали и кто нажал кнопку.
     stopped_at_stage = Column(Integer, nullable=True)
     stopped_by = Column(String, nullable=True)
@@ -142,6 +151,7 @@ def create_pipeline_run(
     kappa_upload_status: Optional[str] = None,
     kappa_user_id: Optional[int] = None,
     reprocessed_sessions: Optional[str] = None,
+    preprocessing_id: Optional[str] = None,
 ) -> PipelineRun:
     """Создать новый запуск pipeline.
 
@@ -154,6 +164,10 @@ def create_pipeline_run(
     when the caller supplied a live Kappa session, None (the default) for
     CLI/orchestrator runs that never intended to upload. A None status keeps
     the run out of the deferred-delivery worker's queue permanently.
+
+    preprocessing_id is the config the run is about to use, pinned here
+    because by upload time the live config file may be a different one
+    (KI-085). None for paths that do not pass through the web UI.
     """
     run_id = run_id or str(uuid.uuid4())
 
@@ -169,6 +183,7 @@ def create_pipeline_run(
         kappa_upload_status=kappa_upload_status,
         kappa_user_id=kappa_user_id,
         reprocessed_sessions=reprocessed_sessions,
+        preprocessing_id=preprocessing_id,
     )
     
     db.add(run)
@@ -353,6 +368,7 @@ def init_db():
     _migrate_add_kappa_delivery()
     _migrate_add_reprocessed_sessions()
     _migrate_add_queued_requeue()
+    _migrate_add_preprocessing_id()
 
 
 def _migrate_add_lesion_type():
@@ -421,6 +437,20 @@ def _migrate_add_queued_requeue():
         if 'queued_requeue_at' not in cols:
             conn.execute(sqlalchemy.text(
                 "ALTER TABLE pipeline_runs ADD COLUMN queued_requeue_at DATETIME"
+            ))
+            conn.commit()
+
+
+def _migrate_add_preprocessing_id():
+    """Add pipeline_runs.preprocessing_id if it is not there yet."""
+    import sqlalchemy
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            sqlalchemy.text("PRAGMA table_info(pipeline_runs)")
+        )]
+        if 'preprocessing_id' not in cols:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE pipeline_runs ADD COLUMN preprocessing_id VARCHAR"
             ))
             conn.commit()
 

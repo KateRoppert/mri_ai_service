@@ -85,9 +85,54 @@ def _migrate_from_json(db: Session) -> int:
     return count
 
 
+def _migrate_study_hash_index() -> None:
+    """Replace the unique index on study_hash with one on (study, dataset).
+
+    Idempotent, and it refuses rather than merges: these are clinical
+    records, and deciding which of two rows is the right one is not a job for
+    automation. On a conflict the DB is left untouched and the pairs are
+    named in the log.
+    """
+    import sqlalchemy
+    from database import engine
+
+    with engine.connect() as conn:
+        names = {row[0] for row in conn.execute(sqlalchemy.text(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='patient_registry'"
+        ))}
+        if "ix_patient_registry_study_dataset" in names:
+            return
+
+        conflicts = list(conn.execute(sqlalchemy.text(
+            "SELECT study_hash, COALESCE(kappa_dataset_id, 0) AS ds, "
+            "       COUNT(*) AS n "
+            "FROM patient_registry GROUP BY 1, 2 HAVING n > 1"
+        )))
+        if conflicts:
+            lines = ", ".join(
+                f"{row[0]}@{row[1]} x{row[2]}" for row in conflicts)
+            logger.error(
+                "Реестр: нельзя перевести на ключ (исследование, датасет) — "
+                "в базе уже есть дубли: %s. База не изменена.", lines,
+            )
+            return
+
+        if "ix_patient_registry_study_hash" in names:
+            conn.execute(sqlalchemy.text(
+                "DROP INDEX ix_patient_registry_study_hash"))
+        conn.execute(sqlalchemy.text(
+            "CREATE UNIQUE INDEX ix_patient_registry_study_dataset "
+            "ON patient_registry (study_hash, COALESCE(kappa_dataset_id, 0))"
+        ))
+        conn.commit()
+        logger.info("Реестр: ключ переведён на (исследование, датасет)")
+
+
 def ensure_tables():
     """Создать таблицы и выполнить миграцию, если нужно."""
     init_registry_tables()
+    _migrate_study_hash_index()
 
     db = SessionLocal()
     try:
@@ -115,9 +160,27 @@ def register_patient(
     """
     db = SessionLocal()
     try:
+        # Exact pair first; then the row session_registry left behind with no
+        # dataset, which this upload CLAIMS rather than duplicating. That
+        # hand-off — local row written when the run finishes, Kappa ids filled
+        # in by the upload — is what session_registry's docstring relies on,
+        # and it has to survive the move to a per-dataset key (KI-084). Only
+        # when neither exists is a new row created.
+        if kappa_dataset_id is None:
+            same_dataset = PatientRegistry.kappa_dataset_id.is_(None)
+        else:
+            same_dataset = PatientRegistry.kappa_dataset_id == kappa_dataset_id
+
         existing = db.query(PatientRegistry).filter(
-            PatientRegistry.study_hash == study_hash
+            PatientRegistry.study_hash == study_hash,
+            same_dataset,
         ).first()
+
+        if existing is None and kappa_dataset_id is not None:
+            existing = db.query(PatientRegistry).filter(
+                PatientRegistry.study_hash == study_hash,
+                PatientRegistry.kappa_dataset_id.is_(None),
+            ).first()
 
         if existing:
             # Keep bids_id in sync with the allocator. The BIDS subject can change
@@ -170,14 +233,20 @@ def register_patient(
         db.close()
 
 
-def find_by_study_hash(study_hash: str) -> Optional[Dict[str, Any]]:
-    """Найти запись по study_hash."""
+def find_by_study_hash(study_hash: str) -> List[Dict[str, Any]]:
+    """Все записи этого исследования, по одной на датасет Kappa.
+
+    A study legitimately lives in more than one dataset (KI-084), so this can
+    no longer return a single row. Always a list — possibly empty, possibly
+    holding one entry whose kappa_dataset_id is None (produced locally, not
+    delivered yet).
+    """
     db = SessionLocal()
     try:
-        record = db.query(PatientRegistry).filter(
+        records = db.query(PatientRegistry).filter(
             PatientRegistry.study_hash == study_hash
-        ).first()
-        return _to_dict(record) if record else None
+        ).all()
+        return [_to_dict(r) for r in records]
     finally:
         db.close()
 

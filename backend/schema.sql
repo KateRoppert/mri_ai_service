@@ -12,6 +12,18 @@ CREATE TABLE pipeline_runs (
 	completed_at DATETIME, 
 	error_message TEXT, 
 	config_path VARCHAR, 
+	lesion_type VARCHAR, 
+	kappa_dataset_id INTEGER, 
+	preprocessing_id VARCHAR, 
+	stopped_at_stage INTEGER, 
+	stopped_by VARCHAR, 
+	parent_run_id VARCHAR, 
+	kappa_upload_status VARCHAR, 
+	kappa_upload_next_attempt DATETIME, 
+	kappa_upload_detail TEXT, 
+	kappa_user_id INTEGER, 
+	reprocessed_sessions TEXT, 
+	queued_requeue_at DATETIME, 
 	PRIMARY KEY (run_id)
 );
 CREATE INDEX ix_pipeline_runs_run_id ON pipeline_runs (run_id);
@@ -28,6 +40,19 @@ CREATE TABLE stage_executions (
 	PRIMARY KEY (id)
 );
 CREATE INDEX ix_stage_executions_run_id ON stage_executions (run_id);
+CREATE TABLE kappa_sessions (
+	session_id VARCHAR NOT NULL, 
+	kappa_token VARCHAR NOT NULL, 
+	user_id INTEGER, 
+	user_type_id INTEGER, 
+	user_name VARCHAR, 
+	first_name VARCHAR, 
+	last_name VARCHAR, 
+	token_expiry VARCHAR, 
+	org_details TEXT, 
+	created_at DATETIME, 
+	PRIMARY KEY (session_id)
+);
 CREATE TABLE patient_registry (
 	id INTEGER NOT NULL, 
 	study_hash VARCHAR NOT NULL, 
@@ -45,13 +70,14 @@ CREATE TABLE patient_registry (
 	updated_at DATETIME, 
 	PRIMARY KEY (id)
 );
-CREATE INDEX ix_patient_registry_bids_id ON patient_registry (bids_id);
-CREATE INDEX ix_patient_registry_pipeline_run_id ON patient_registry (pipeline_run_id);
-CREATE UNIQUE INDEX ix_patient_registry_study_hash ON patient_registry (study_hash);
-CREATE INDEX ix_patient_registry_kappa_entity_id ON patient_registry (kappa_entity_id);
 CREATE INDEX ix_patient_registry_original_patient_id ON patient_registry (original_patient_id);
-CREATE INDEX ix_patient_registry_patient_date ON patient_registry (original_patient_id, scan_date);
 CREATE INDEX ix_patient_registry_kappa_dataset_id ON patient_registry (kappa_dataset_id);
+CREATE INDEX ix_patient_registry_bids_id ON patient_registry (bids_id);
+CREATE UNIQUE INDEX ix_patient_registry_study_dataset ON patient_registry (study_hash, COALESCE(kappa_dataset_id, 0));
+CREATE INDEX ix_patient_registry_pipeline_run_id ON patient_registry (pipeline_run_id);
+CREATE INDEX ix_patient_registry_study_hash ON patient_registry (study_hash);
+CREATE INDEX ix_patient_registry_patient_date ON patient_registry (original_patient_id, scan_date);
+CREATE INDEX ix_patient_registry_kappa_entity_id ON patient_registry (kappa_entity_id);
 CREATE TABLE validations (
 	id INTEGER NOT NULL, 
 	entity_id VARCHAR NOT NULL, 
@@ -63,11 +89,11 @@ CREATE TABLE validations (
 	created_at DATETIME, 
 	PRIMARY KEY (id)
 );
-CREATE INDEX ix_validations_created_at ON validations (created_at);
-CREATE INDEX ix_validations_dataset_id ON validations (dataset_id);
 CREATE INDEX ix_validations_user_id ON validations (user_id);
-CREATE INDEX ix_validations_entity_user ON validations (entity_id, user_id);
 CREATE INDEX ix_validations_entity_id ON validations (entity_id);
+CREATE INDEX ix_validations_dataset_id ON validations (dataset_id);
+CREATE INDEX ix_validations_created_at ON validations (created_at);
+CREATE INDEX ix_validations_entity_user ON validations (entity_id, user_id);
 CREATE TABLE mask_versions (
 	id INTEGER NOT NULL, 
 	entity_id VARCHAR NOT NULL, 
@@ -78,9 +104,16 @@ CREATE TABLE mask_versions (
 	uploaded_by_name VARCHAR, 
 	file_path VARCHAR NOT NULL, 
 	file_name VARCHAR NOT NULL, 
-	created_at DATETIME, kappa_file_id VARCHAR, 
+	kappa_file_id VARCHAR, 
+	created_at DATETIME, 
 	PRIMARY KEY (id)
 );
 CREATE INDEX ix_mask_versions_entity_version ON mask_versions (entity_id, version);
 CREATE INDEX ix_mask_versions_created_at ON mask_versions (created_at);
 CREATE INDEX ix_mask_versions_entity_id ON mask_versions (entity_id);
+CREATE TABLE preprocessing_versions (
+	preprocessing_id VARCHAR NOT NULL, 
+	created_at DATETIME, 
+	config_json TEXT NOT NULL, 
+	PRIMARY KEY (preprocessing_id)
+);

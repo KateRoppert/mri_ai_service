@@ -81,7 +81,7 @@ UI в `backend/config.py` нумерует этапы 1–7, пропуская 
 
 ## Data stores
 
-- SQLite `backend/data/brain_lesion.db`: pipeline_runs, patient_registry, mask_versions, Kappa sessions, validations
+- SQLite `backend/data/brain_lesion.db`: pipeline_runs, patient_registry, mask_versions, Kappa sessions, validations, preprocessing_versions
 - Kappa: auth `https://kappa.nsu.ru:8061/user-micro-services/v2`, data `.../data-micro-services/v2` (`backend/kappa_auth.py`, `kappa_client.py`, `kappa_uploader.py`). v1 закрыт 13.11.2026 — любой путь под ним отдаёт 401 с пустым телом от nginx (KI-081, KI-082)
 - Сессии Kappa в БД, `kappa_session_id` на фронте в localStorage
 
@@ -122,6 +122,21 @@ UI в `backend/config.py` нумерует этапы 1–7, пропуская 
   (вне git) прибит `COMPOSE_FILE=docker-compose.yml:docker-compose.barguzin.yml`
   — но явный `-f` в командной строке **перебивает** эту переменную, а не
   добавляется к ней: либо передавать оба файла, либо ни одного.
+- **Происхождение данных фиксируется на старте прогона, не на выгрузке.**
+  `pipeline_runs.preprocessing_id` и `kappa_dataset_id` закрепляются при
+  старте (`numbering.pin_preprocessing_id`, `numbering.scope_for_run`), а
+  выгрузка их читает: отложенная доставка может случиться через дни или
+  месяцы, и живой конфиг к тому времени другой (KI-085). Считать что-либо из
+  `configs/preprocessing_config.yaml` в момент выгрузки — значит пометить
+  данные чужими настройками. История версий — таблица
+  `preprocessing_versions` в БД; `configs/preprocessing_versions.json` только
+  читается, писать в него из приложения нельзя (он в гите, `configs/`
+  смонтирован на запись).
+- **Реестр пациентов — одна строка на (исследование, датасет Kappa).** Не на
+  исследование: один человек в двух датасетах — это две записи со своими
+  `kappa_entity_id` (KI-084). Искать сущность надо с датасетом
+  (`find_by_bids_id(key, {dataset_id})`), а `find_by_study_hash` возвращает
+  список.
 - Не поднимать workers в stage 04/05 без пересчёта RAM: контейнер 20g, иначе OOM хоста. См. комментарии в `pipeline_config.yaml` и KI-042.
 - Stage 02 на анонимизированных BIDS ломает смысл — теги уже сняты.
 - `skip_existing` + requeue шарят один `output_path`.

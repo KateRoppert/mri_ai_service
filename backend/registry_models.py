@@ -3,7 +3,7 @@ SQLAlchemy модели для patient_registry и validations.
 Добавляются к существующим моделям в database.py.
 """
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Integer, Text, Index
+from sqlalchemy import Column, String, DateTime, Integer, Text, Index, text
 from sqlalchemy.orm import Session
 
 from database import Base, engine
@@ -43,7 +43,7 @@ class PatientRegistry(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Ключевые идентификаторы
-    study_hash = Column(String, nullable=False, index=True, unique=True)
+    study_hash = Column(String, nullable=False, index=True)
     bids_id = Column(String, nullable=False, index=True)
 
     # Оригинальные данные пациента (DICOM)
@@ -67,6 +67,24 @@ class PatientRegistry(Base):
         DateTime,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # One row per (study, Kappa dataset), not per study. A study legitimately
+    # lives in more than one dataset — the same person in two datasets is two
+    # different subject numbers — and the old single-row key made a second
+    # upload overwrite the first one's address (KI-084).
+    #
+    # COALESCE, because SQLite treats NULLs as distinct under UNIQUE: a plain
+    # UNIQUE(study_hash, kappa_dataset_id) would allow any number of
+    # not-yet-delivered duplicates of one study. 0 is not a Kappa dataset id
+    # (they are positive), so it is safe as "not delivered yet".
+    __table_args__ = (
+        Index(
+            "ix_patient_registry_study_dataset",
+            "study_hash",
+            text("COALESCE(kappa_dataset_id, 0)"),
+            unique=True,
+        ),
     )
 
 
@@ -151,6 +169,29 @@ class MaskVersion(Base):
 
 
 Index("ix_mask_versions_entity_version", MaskVersion.entity_id, MaskVersion.version)
+
+
+class PreprocessingVersion(Base):
+    """What a preprocessing_id actually means.
+
+    The id is a hash of the functional part of the preprocessing config, and
+    it is written into patient_registry for every uploaded study. Without the
+    settings behind it the hash is a number that cannot be checked against
+    anything — which is exactly what happened: register_version was never
+    called in production, so three of the four ids ever used had nothing
+    behind them (KI-085).
+
+    Lives in the DB, not in configs/preprocessing_versions.json: that file is
+    tracked by git and configs/ is mounted into the container read-write, so
+    writing it from the application would dirty the working copy on every
+    config change.
+    """
+    __tablename__ = "preprocessing_versions"
+
+    preprocessing_id = Column(String, primary_key=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    config_json = Column(Text, nullable=False)
+
 
 def init_registry_tables():
     """Создать таблицы реестра и валидаций (если их ещё нет)."""

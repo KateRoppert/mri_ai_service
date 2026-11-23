@@ -110,6 +110,13 @@ async def start_requeue(
     reprocessed = _purge_and_record(original_run.output_path)
     upload_status, upload_user_id = _upload_intent(kappa_session_id)
 
+    # NOT inherited from the original run, unlike kappa_dataset_id: a requeue
+    # reprocesses with the config in force now, so it earns its own id.
+    # Resuming a stopped run is the exception — it continues with the snapshot
+    # taken at stop time (app.py), and that file is the honest source. Passing
+    # None falls back to the live config, which is what a plain requeue wants.
+    preprocessing_id = numbering.pin_preprocessing_id(preprocessing_snapshot)
+
     run = create_pipeline_run(
         db,
         input_path=original_run.input_path,
@@ -120,6 +127,7 @@ async def start_requeue(
         kappa_upload_status=upload_status,
         kappa_user_id=upload_user_id,
         reprocessed_sessions=reprocessed,
+        preprocessing_id=preprocessing_id,
     )
 
     # Imported here, not at module scope: app imports pipeline_monitor, which

@@ -57,9 +57,11 @@ def test_register_and_find():
     assert record["study_hash"] == "test_hash_abc123"
     print(f"OK: registered {record['study_hash']}")
 
+    # Список, а не запись: одно исследование может лежать в нескольких
+    # датасетах Kappa (KI-084).
     found = find_by_study_hash("test_hash_abc123")
-    assert found is not None
-    assert found["patient_name"] == "John Doe"
+    assert len(found) == 1
+    assert found[0]["patient_name"] == "John Doe"
     print(f"OK: found by study_hash")
 
     found_list = find_by_patient_id("UPENN-GBM-00001")

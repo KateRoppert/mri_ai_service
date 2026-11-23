@@ -169,6 +169,11 @@ class PipelineMonitor:
                 run = _get_pipeline_run(db, run_id)
                 dataset_id = run.kappa_dataset_id if run else None
                 supersedes = _superseding(run) if run else set()
+                # Same story as the dataset: pinned at run start, because by
+                # now the live config file may be a different one (KI-085).
+                pinned_preprocessing_id = (
+                    getattr(run, "preprocessing_id", None) if run else None
+                )
             finally:
                 db.close()
 
@@ -182,6 +187,7 @@ class PipelineMonitor:
                 preprocessing_config_path=config_path,
                 dataset_id=dataset_id,
                 superseding_sessions=supersedes,
+                preprocessing_id=pinned_preprocessing_id,
             )
             logger.info("KappaUploader created for run %s (dataset_id=%s)",
                         run_id, dataset_id)

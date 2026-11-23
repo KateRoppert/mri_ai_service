@@ -83,6 +83,7 @@ class KappaUploader:
         preprocessing_config_path: str,
         dataset_id: Optional[int] = None,
         superseding_sessions=frozenset(),
+        preprocessing_id: Optional[str] = None,
     ):
         self.run_id = run_id
         self.output_path = Path(output_path)
@@ -101,8 +102,15 @@ class KappaUploader:
         # correction would never arrive.
         self.superseding_sessions = set(superseding_sessions or ())
 
-        # Вычисляем preprocessing_id
-        self.preprocessing_id = compute_preprocessing_id(preprocessing_config_path)
+        # Pinned at run start (backend/numbering.py) and read off the run row
+        # by both build sites. Recomputed from the file ONLY when the run
+        # predates that column: the path points at the LIVE config, and a
+        # deferred delivery can run days or months after the processing it
+        # labels (KI-085). Same shape of fallback as dataset_id above.
+        self.preprocessing_id = (
+            preprocessing_id
+            or compute_preprocessing_id(preprocessing_config_path)
+        )
         logger.info(
             "KappaUploader: run=%s, lesion=%s, prep_id=%s",
             run_id, lesion_type, self.preprocessing_id,

@@ -63,6 +63,9 @@ def build_uploader(run, session: Dict[str, Any]):
         preprocessing_config_path=str(PREPROCESSING_CONFIG),
         dataset_id=run.kappa_dataset_id,
         superseding_sessions=_superseding(run),
+        # Pinned when the run started. None for runs older than that column,
+        # and KappaUploader then falls back to PREPROCESSING_CONFIG above.
+        preprocessing_id=getattr(run, "preprocessing_id", None),
     )
 
 
