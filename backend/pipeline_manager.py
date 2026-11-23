@@ -188,6 +188,7 @@ class PipelineManager:
         output_path: str,
         lesion_type: str = "glioblastoma",
         numbering_scope: Optional[str] = None,
+        kappa_user_name: Optional[str] = None,
     ) -> Path:
         """
         Создаёт runtime конфигурацию для запуска pipeline
@@ -200,6 +201,9 @@ class PipelineManager:
                 (backend/numbering.py resolves it at run start); None for a
                 run with no Kappa session, which falls back to lesion_type-
                 scoped numbering
+            kappa_user_name: логин Kappa, от имени которого стартовал прогон.
+                По нему событие СИГМА выбирает организацию. None — прогон
+                без учётки, организацию не выдумываем.
             
         Returns:
             Путь к созданному конфиг-файлу
@@ -226,6 +230,7 @@ class PipelineManager:
         # dataset this run uploads to, fixed once here so numbering and
         # upload cannot target different datasets.
         config['general']['numbering_scope'] = numbering_scope
+        config['general']['kappa_user_name'] = kappa_user_name
         
         # ВАЖНО: Преобразуем относительные пути к скриптам в абсолютные
         # Иначе они будут искаться относительно runtime_configs директории
@@ -268,6 +273,7 @@ class PipelineManager:
         lesion_type: str = "glioblastoma",
         preprocessing_snapshot: Optional[Path] = None,
         numbering_scope: Optional[str] = None,
+        kappa_user_name: Optional[str] = None,
     ) -> Path:
         """
         Build a new run's runtime YAML from a stopped run's retained config.
@@ -297,6 +303,9 @@ class PipelineManager:
         # the PARENT run's dataset (backend/numbering.scope_from_dataset_id),
         # not whatever this stopped run itself last numbered into.
         config["general"]["numbering_scope"] = numbering_scope
+        # This run's starter, not whoever started the stopped run. A resume
+        # without a session must not keep the previous login.
+        config["general"]["kappa_user_name"] = kappa_user_name
 
         for stage_name, stage_config in config.get("stages", {}).items():
             if not isinstance(stage_config, dict):
@@ -411,6 +420,7 @@ class PipelineManager:
         snapshot_runtime_config: Optional[Path] = None,
         preprocessing_snapshot: Optional[Path] = None,
         numbering_scope: Optional[str] = None,
+        kappa_user_name: Optional[str] = None,
     ) -> Optional[subprocess.Popen]:
         """
         Запускает pipeline как subprocess
@@ -465,12 +475,14 @@ class PipelineManager:
                     lesion_type=lesion_type,
                     preprocessing_snapshot=preprocessing_snapshot,
                     numbering_scope=numbering_scope,
+                    kappa_user_name=kappa_user_name,
                 )
             else:
                 # Создаём runtime конфиг from the live template
                 config_path = self.create_runtime_config(
                     run_id, input_path, output_path, lesion_type=lesion_type,
                     numbering_scope=numbering_scope,
+                    kappa_user_name=kappa_user_name,
                 )
             
             # Формируем команду запуска

@@ -3,10 +3,13 @@
 """
 
 from pathlib import Path
+import json
+import logging
 import tempfile
 import pytest
 import yaml
 import sys
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch, MagicMock
 import subprocess
 
@@ -18,6 +21,7 @@ from orchestrator import (
     build_command,
     run_stage,
     check_if_critical_error,
+    _write_sigma_events,
     format_elapsed_time,
     create_output_directories,
     setup_logger
@@ -332,3 +336,47 @@ def test_stage_01_without_a_scope_is_unchanged():
     cmd = build_command("stage_01_reorganize", config, Path("/project"))
 
     assert "--numbering-scope" not in cmd
+
+
+def test_a_successful_run_leaves_sigma_events_in_logs(tmp_path):
+    report = (
+        tmp_path / "segmentation" / "sub-001" / "ses-001" / "anat" / "glioblastoma"
+        / "sub-001_ses-001_t1_volume_report.json"
+    )
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({"total_tumor": {"voxel_count": 4}}), encoding="utf-8")
+    config = create_test_config()
+    config["general"]["root_output_dir"] = tmp_path
+    config["general"]["lesion_type"] = "glioblastoma"
+    config["general"]["kappa_user_name"] = "e.roppert"
+
+    _write_sigma_events(
+        config, Path(__file__).parent,
+        {"stage_06_segmentation": {"status": "SUCCESS"}},
+        datetime(2026, 11, 16, 9, 20, tzinfo=timezone.utc),
+        False, logging.getLogger("test-sigma"),
+    )
+
+    written = json.loads((tmp_path / "logs" / "sigma_events.json").read_text(encoding="utf-8"))
+    assert written == [{
+        "Id": "sub-001",
+        "modality": "Mri",
+        "timestamp": "2026-11-16T09:20:00Z",
+        "source": "Federal Center of Neurosurgery",
+        "description": "glioblastoma",
+    }]
+    assert not (tmp_path / "logs" / "sigma_period_stats.json").exists()
+
+
+def test_a_failed_run_does_not_write_sigma_events(tmp_path):
+    config = create_test_config()
+    config["general"]["root_output_dir"] = tmp_path
+
+    _write_sigma_events(
+        config, Path(__file__).parent,
+        {"stage_06_segmentation": {"status": "FAILED"}},
+        datetime(2026, 11, 16, 9, 20, tzinfo=timezone.utc),
+        False, logging.getLogger("test-sigma"),
+    )
+
+    assert not (tmp_path / "logs" / "sigma_events.json").exists()

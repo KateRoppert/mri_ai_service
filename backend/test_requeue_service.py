@@ -11,6 +11,7 @@ another patient:
     corrected while waiting, and that patient's old version would stay in
     Kappa silently — the exact defect fixed in feat/kappa-replace-on-reprocess.
 """
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -112,6 +113,29 @@ async def test_the_new_run_inherits_the_path_and_the_dataset():
         assert new_run.lesion_type == "multiple_sclerosis"
         assert new_run.kappa_dataset_id == 158
         assert new_run.parent_run_id == original.run_id
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_requeue_passes_the_starter_login_to_the_pipeline():
+    db = SessionLocal()
+    try:
+        original = _original(db, output_path="/out/svc-login")
+        with patch("session_artifacts.purge_sessions_marked_for_reprocess",
+                   return_value={}), \
+             patch("app.run_pipeline_background") as background, \
+             patch("kappa_auth.get_session",
+                   return_value={"user_id": 26, "user_name": "e.roppert"}), \
+             patch("pipeline_monitor.pipeline_monitor.start_monitoring",
+                   new=AsyncMock()):
+            await requeue_service.start_requeue(db, original, "sid")
+            for _ in range(50):
+                if background.called:
+                    break
+                await asyncio.sleep(0.01)
+
+        assert background.call_args.kwargs["kappa_user_name"] == "e.roppert"
     finally:
         db.close()
 

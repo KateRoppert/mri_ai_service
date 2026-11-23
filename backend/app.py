@@ -278,6 +278,7 @@ def run_pipeline_background(
     snapshot_runtime_config: Optional[Path] = None,
     preprocessing_snapshot: Optional[Path] = None,
     numbering_scope: Optional[str] = None,
+    kappa_user_name: Optional[str] = None,
 ):
     """
     Фоновая задача для запуска pipeline
@@ -308,6 +309,7 @@ def run_pipeline_background(
         snapshot_runtime_config=snapshot_runtime_config,
         preprocessing_snapshot=preprocessing_snapshot,
         numbering_scope=numbering_scope,
+        kappa_user_name=kappa_user_name,
     )
     
     if not process:
@@ -564,11 +566,13 @@ async def start_pipeline(
     # not pass through here and so stay out of the queue by construction.
     upload_status = "pending"
     upload_user_id = None
+    upload_user_name = None
     if request.kappa_session_id:
         from kappa_auth import get_session as _get_kappa_session
         _session = _get_kappa_session(request.kappa_session_id)
         if _session:
             upload_user_id = _session.get("user_id")
+            upload_user_name = _session.get("user_name")
 
     # Again, with the row write as the very next statement. `await
     # scope_for_run` above yields the event loop, so two simultaneous starts
@@ -603,6 +607,7 @@ async def start_pipeline(
         db,
         lesion_type=lesion_type,
         numbering_scope=numbering_scope,
+        kappa_user_name=upload_user_name,
     )
 
     # Запускаем мониторинг (из асинхронного контекста)
@@ -3358,6 +3363,23 @@ async def get_kappa_file(dataset_id: int, file_id: str, session_id: str):
         raise HTTPException(status_code=404, detail="Файл не найден")
 
     return Response(content=content, media_type="application/gzip")
+
+@app.get("/api/sigma/period-stats")
+def sigma_period_stats(start: Optional[str] = None, end: Optional[str] = None):
+    """Свод исследований за период. В СИГМУ отсюда ничего не уходит."""
+    from sigma_period_stats import PeriodBoundsError, build_period_stats, parse_period
+
+    try:
+        start_dt, end_dt = parse_period(start, end)
+    except PeriodBoundsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db = SessionLocal()
+    try:
+        return build_period_stats(db, start_dt, end_dt)
+    finally:
+        db.close()
+
 
 # ============================================
 # СТАТИКА ФРОНТЕНДА (React production build)

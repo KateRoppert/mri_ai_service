@@ -85,12 +85,12 @@ def _upload_intent(kappa_session_id: Optional[str]):
     """Delivery intent recorded at birth, same as the start endpoint: a run
     carrying a Kappa session owes an upload from the moment it exists."""
     if not kappa_session_id:
-        return None, None
+        return None, None, None
     from kappa_auth import get_session
     session = get_session(kappa_session_id)
     if not session:
-        return None, None
-    return "pending", session.get("user_id")
+        return None, None, None
+    return "pending", session.get("user_id"), session.get("user_name")
 
 
 async def start_requeue(
@@ -108,7 +108,7 @@ async def start_requeue(
     """
     lesion_type = original_run.lesion_type or "glioblastoma"
     reprocessed = _purge_and_record(original_run.output_path)
-    upload_status, upload_user_id = _upload_intent(kappa_session_id)
+    upload_status, upload_user_id, upload_user_name = _upload_intent(kappa_session_id)
 
     # NOT inherited from the original run, unlike kappa_dataset_id: a requeue
     # reprocesses with the config in force now, so it earns its own id.
@@ -155,6 +155,7 @@ async def start_requeue(
                 snapshot_runtime_config=snapshot_runtime_config,
                 preprocessing_snapshot=preprocessing_snapshot,
                 numbering_scope=scope,
+                kappa_user_name=upload_user_name,
             )
         finally:
             launch_db.close()

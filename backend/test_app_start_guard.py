@@ -88,6 +88,23 @@ def test_refusal_does_not_touch_kappa():
     mock_scope.assert_not_awaited()
 
 
+def test_start_passes_the_kappa_login_into_the_pipeline():
+    body = {**_BODY, "kappa_session_id": "sid"}
+    with patch("app.pipeline_manager.validate_input_path", return_value=True), \
+         patch("app.get_active_run_by_output_path", return_value=None), \
+         patch("app.numbering.scope_for_run", new=AsyncMock(return_value=_scope())), \
+         patch("app.create_pipeline_run", return_value=_new_run()), \
+         patch("kappa_run_log.log_start"), \
+         patch("kappa_auth.get_session",
+               return_value={"user_id": 26, "user_name": "e.roppert"}), \
+         patch("app.run_pipeline_background") as background, \
+         patch("app.pipeline_monitor.start_monitoring", new=AsyncMock()):
+        response = client.post("/api/pipeline/start", json=body)
+
+    assert response.status_code == 200, response.text
+    assert background.call_args.kwargs["kappa_user_name"] == "e.roppert"
+
+
 def test_start_proceeds_when_the_path_is_free():
     with patch("app.pipeline_manager.validate_input_path", return_value=True), \
          patch("app.get_active_run_by_output_path", return_value=None), \
