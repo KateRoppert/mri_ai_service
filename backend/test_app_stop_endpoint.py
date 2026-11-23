@@ -157,6 +157,21 @@ def _session_with_run(tmp_path, run_id="run-1", status="pending"):
     return db
 
 
+def test_the_starter_login_reaches_the_orchestrator_config(tmp_path):
+    from app import run_pipeline_background
+
+    db = _session_with_run(tmp_path, status="pending")
+    try:
+        with patch("app.pipeline_manager.start_pipeline", return_value=None) as start:
+            run_pipeline_background(
+                "run-1", "/in", "/out", db, kappa_user_name="e.roppert",
+            )
+
+        assert start.call_args.kwargs["kappa_user_name"] == "e.roppert"
+    finally:
+        db.close()
+
+
 def test_already_stopped_does_not_start_pipeline(tmp_path):
     """Stop committed before the running write — do not Popen an orchestrator."""
     from app import run_pipeline_background
